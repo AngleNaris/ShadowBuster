@@ -1,0 +1,73 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+secrets.json
+credentials.json
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging output
+/build/
+/dist/
+/packaging/out/
+/packaging/stage/
+*.log
+*.exe
+*.msi
+
+# Embedded browser and local tool state
+/webview_storage/
+/.zcode/
+
+# Generated visual runs and UI verification screenshots
+/visual/
+/ui_check*.png
+/ui_final*.png
+/ui_v3*.png
+/ui/final_check*.png
+
+# Local audio and model artifacts
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.aiff
+*.aif
+*.opus
+*.wma
+*.ckpt
+*.bin
+*.pth
+*.pt
+*.onnx
+*.safetensors
+
+# Temporary, backup, and OS files
+*.tmp
+*.bak
+*.orig
+*.rej
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowBuster</title>
+<link rel="icon" href="logo.png">
+<link rel="stylesheet" href="style.css?v=19">
+</head>
+<body>
+
+<!-- ═══ 处理特效层（canvas 暗紫能量频谱）═══ -->
+<canvas id="fx" class="fx-canvas" aria-hidden="true"></canvas>
+
+<div class="studio">
+
+  <!-- ═══ 无障碍实时播报（视觉提示改为红框后，仍向读屏播报）═══ -->
+  <div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- ═══ 顶栏：仅品牌 + 帮助 ═══ -->
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand-mark" src="logo.png" alt="" aria-hidden="true">
+      <span class="brand-name">SHADOWBUSTER</span>
+    </div>
+  </header>
+
+  <!-- ═══ 待处理队列（独立列）═══ -->
+  <section class="queue hdw" aria-label="待处理队列" data-need="请先添加要处理的歌曲">
+    <div class="queue-head">
+      <span class="queue-title">待处理</span>
+      <span class="queue-count" id="queue-count">0 首</span>
+    </div>
+    <div class="queue-list" id="file-list" role="list">
+      <span class="file-empty">尚未添加歌曲</span>
+    </div>
+    <div class="queue-actions">
+      <button class="btn btn-ghost queue-btn" id="btn-add">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z" fill="currentColor"/></svg>
+        <span>添加</span>
+      </button>
+      <button class="btn btn-ghost queue-btn" id="btn-clear" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12l-1 14H7L6 7Zm3-3h6l1 2H8l1-2Z" fill="currentColor"/></svg>
+        <span>清空</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ═══ 输出 / 参考音频 ═══ -->
+  <section class="files hdw" aria-label="输出设置">
+    <div class="file-row">
+      <span class="file-label">输出目录</span>
+      <input class="path-input" id="output-path" type="text" readonly placeholder="选择输出目录…" aria-label="输出目录路径" data-need="请先选择输出目录">
+      <button class="btn btn-ghost file-btn" id="btn-output">浏览</button>
+    </div>
+    <div class="file-row">
+      <span class="file-label">参考音频</span>
+      <input class="path-input" id="ref-path" type="text" readonly placeholder="可选 · 自定义风格基准" aria-label="参考音频路径">
+      <button class="btn btn-ghost file-btn" id="btn-ref">选择</button>
+    </div>
+  </section>
+
+  <!-- ═══ 参数卡片 ═══ -->
+  <section class="racks" aria-label="处理参数">
+    <div class="rack hdw" data-rack="lew">
+      <div class="rack-head">
+        <span class="rack-index">01</span>
+        <h2 class="rack-title">高频</h2>
+        <button class="icon-btn rack-help" data-help="lew" title="参数说明" aria-label="高频 参数说明" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
+        </button>
+      </div>
+      <div class="rack-body">
+        <div class="knob-wrap">
+          <div class="knob" id="knob-quality" tabindex="0" role="slider" aria-label="质量档" aria-valuemin="0" aria-valuemax="2" aria-valuenow="1" data-min="0" data-max="2" data-step="1" data-default="1">
+            <div class="knob-tick" aria-hidden="true"></div>
+          </div>
+          <label class="knob-label">质量档</label>
+          <output class="knob-value" id="val-quality">标准</output>
+        </div>
+        <div class="knob-wrap">
+          <div class="knob" id="knob-guidance" tabindex="0" role="slider" aria-label="重建引导" aria-valuemin="0" aria-valuemax="20" aria-valuenow="15" data-min="0" data-max="20" data-step="1" data-default="15">
+            <div class="knob-tick" aria-hidden="true"></div>
+          </div>
+          <label class="knob-label">重建引导</label>
+          <output class="knob-value" id="val-guidance">1.5</output>
+        </div>
+      </div>
+    </div>
+
+    <div class="rack hdw" data-rack="bass">
+      <div class="rack-head">
+        <span class="rack-index">02</span>
+        <h2 class="rack-title">低频</h2>
+        <button class="icon-btn rack-help" data-help="bass" title="参数说明" aria-label="低频 参数说明" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
+        </button>
+      </div>
+      <div class="rack-body">
+        <div class="knob-wrap">
+          <div class="knob" id="knob-sub" tabindex="0" role="slider" aria-label="Sub 次低音提升" aria-valuemin="0" aria-valuemax="12" aria-valuenow="6" data-min="0" data-max="12" data-step="1" data-default="6">
+            <div class="knob-tick" aria-hidden="true"></div>
+          </div>
+          <label class="knob-label">Sub 提升</label>
+          <output class="knob-value" id="val-sub">+6 dB</output>
+        </div>
+        <div class="knob-wrap">
+          <div class="knob" id="knob-punch" tabindex="0" role="slider" aria-label="鼓身 60-120Hz" aria-valuemin="0" aria-valuemax="10" aria-valuenow="2" data-min="0" data-max="10" data-step="1" data-default="2">
+            <div class="knob-tick" aria-hidden="true"></div>
+          </div>
+          <label class="knob-label">鼓身</label>
+          <output class="knob-value" id="val-punch">+2 dB</output>
+        </div>
+        <div class="knob-wrap">
+          <div class="knob" id="knob-trans" tabindex="0" role="slider" aria-label="瞬态强调" aria-valuemin="0" aria-valuemax="10" aria-valuenow="3" data-min="0" data-max="10" data-step="1" data-default="3">
+            <div class="knob-tick" aria-hidden="true"></div>
+          </div>
+          <label class="knob-label">瞬态</label>
+          <output class="knob-value" id="val-trans">0.30</output>
+        </div>
+        <div class="knob-wrap">
+          <div class="knob" id="knob-sat" tabindex="0" role="slider" aria-label="谐波饱和" aria-valuemin="0" aria-valuemax="10" aria-valuenow="3" data-min="0" data-max="10" data-step="1" data-default="3">
+            <div class="knob-tick" aria-hidden="true"></div>
+          </div>
+          <label class="knob-label">谐波饱和</label>
+          <output class="knob-value" id="val-sat">0.30</output>
+        </div>
+      </div>
+    </div>
+
+    <div class="rack hdw" data-rack="soren">
+      <div class="rack-head">
+        <span class="rack-index">03</span>
+        <h2 class="rack-title">母带</h2>
+        <button class="icon-btn rack-help" data-help="soren" title="参数说明" aria-label="母带 参数说明" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
+        </button>
+      </div>
+      <div class="rack-body rack-fields">
+        <div class="field">
+          <span class="field-label">流派</span>
+          <div class="dropdown" id="dd-genre">
+            <button type="button" class="dd-trigger" id="dd-genre-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span id="dd-genre-label">流行 Pop</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="square"/></svg>
+            </button>
+            <div class="dd-panel" id="dd-genre-panel" role="listbox" aria-label="流派"></div>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">响度</span>
+          <div class="dropdown" id="dd-loudness">
+            <button type="button" class="dd-trigger" id="dd-loudness-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span id="dd-loudness-label">标准</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="square"/></svg>
+            </button>
+            <div class="dd-panel" id="dd-loudness-panel" role="listbox" aria-label="响度"></div>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">EQ 风格</span>
+          <div class="seg" role="group" aria-label="EQ 风格">
+            <button type="button" class="seg-btn" data-eq="Neutral" aria-pressed="true">平直</button>
+            <button type="button" class="seg-btn" data-eq="Warm" aria-pressed="false">温暖</button>
+            <button type="button" class="seg-btn" data-eq="Bright" aria-pressed="false">明亮</button>
+            <button type="button" class="seg-btn" data-eq="Fusion" aria-pressed="false">融合</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 阶段流水线 ═══ -->
+  <section class="pipeline hdw" aria-label="处理进度">
+    <div class="stages" id="stages">
+      <div class="stage" data-stage="0"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">高频</span></div>
+      <div class="stage" data-stage="1"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">分离低频</span></div>
+      <div class="stage" data-stage="2"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">低频增强</span></div>
+      <div class="stage" data-stage="3"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">母带</span></div>
+    </div>
+  </section>
+
+  <!-- ═══ 错误弹窗：任何错误均以风格一致的窗口呈现；成功不显示任何日志 ═══ -->
+  <div class="err-modal" id="err-modal" role="alertdialog" aria-modal="true" aria-labelledby="err-title" hidden>
+    <div class="err-backdrop" id="err-backdrop"></div>
+    <div class="err-box" role="document">
+      <div class="err-head">
+        <span class="err-mark">!</span>
+        <span class="err-title" id="err-title">处理出错</span>
+        <button class="icon-btn err-close" id="err-close" title="关闭" aria-label="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="square"/></svg>
+        </button>
+      </div>
+      <div class="err-body" id="err-body"></div>
+      <div class="err-foot">
+        <button class="btn btn-primary err-ok" id="err-ok">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ 主操作：全宽 · 处理中变停止 + 进度条 ═══ -->
+  <footer class="dock">
+    <button class="btn btn-primary btn-process" id="btn-process">
+      <svg class="proc-icon" id="proc-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" fill="currentColor"/></svg>
+      <span class="proc-label" id="process-label">BUSTER!</span>
+    </button>
+  </footer>
+
+  <!-- ═══ 参数说明浮层（可拖动 / 可关闭）═══ -->
+  <div class="help-dialog" id="help-dialog" role="dialog" aria-modal="false" aria-labelledby="help-title">
+    <div class="help-head" id="help-drag">
+      <span class="help-title" id="help-title">参数说明</span>
+      <button class="icon-btn help-close" id="help-close" title="关闭" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="square"/></svg>
+      </button>
+    </div>
+    <div class="help-body" id="help-body"></div>
+  </div>
+
+</div>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script src="app.js?v=16"></script>
+</body>
+</html>
