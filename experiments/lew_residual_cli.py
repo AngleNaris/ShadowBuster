@@ -37,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ratio-limit", default=0.5, type=float)
     parser.add_argument("--activity-floor-db", default=-60.0, type=float)
     parser.add_argument("--support-floor-db", default=-70.0, type=float)
+    parser.add_argument("--constructive-gate-dry-floor-db", default=-120.0, type=float)
     parser.add_argument("--lowband-max-db", default=-35.0, type=float)
     parser.add_argument("--silent-max-db", default=-40.0, type=float)
     parser.add_argument("--silence-db", default=-60.0, type=float)
@@ -57,6 +58,7 @@ def main(argv=None) -> int:
         alignment_windows=args.alignment_windows,
         alignment_lowpass_hz=args.alignment_lowpass_hz, ratio_limit=args.ratio_limit,
         activity_floor_db=args.activity_floor_db, support_floor_db=args.support_floor_db,
+        constructive_gate_dry_floor_db=args.constructive_gate_dry_floor_db,
         lowband_max_db=args.lowband_max_db, silent_max_db=args.silent_max_db,
         silence_db=args.silence_db,
     )

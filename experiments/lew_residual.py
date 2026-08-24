@@ -340,12 +340,68 @@ def consistency_mask(residual_spectra: list[np.ndarray], floor: float = 1e-12) -
     return np.clip(coherence * agreement, 0.0, 1.0)
 
 
+def constructive_residual_gate(dry_spectrum: np.ndarray, candidate_residual: np.ndarray, *,
+                               dry_floor_db: float = -120.0) -> tuple[np.ndarray, dict]:
+    """Reject destructive residual coefficients without changing dry or residual phase."""
+    dry = np.asarray(dry_spectrum)
+    candidate = np.asarray(candidate_residual)
+    if dry.shape != candidate.shape or dry.ndim < 1 or dry.size == 0:
+        raise ValueError("dry and candidate spectra must have matching nonempty shapes")
+    if not np.iscomplexobj(dry) or not np.iscomplexobj(candidate):
+        raise ValueError("dry and candidate spectra must be complex")
+    if not np.isfinite(dry).all() or not np.isfinite(candidate).all():
+        raise ValueError("dry and candidate spectra must contain only finite coefficients")
+    dry_floor_db = _finite_number("constructive_gate_dry_floor_db", dry_floor_db, maximum=0.0)
+
+    dry_magnitude = np.abs(dry)
+    reference = float(np.max(dry_magnitude)) if dry.size else 0.0
+    dry_floor = max(reference * 10 ** (dry_floor_db / 20), np.finfo(np.float64).tiny)
+    meaningful = dry_magnitude > dry_floor
+    candidate_magnitude = np.abs(candidate)
+    candidate_active = candidate_magnitude > 0.0
+    cross_term = np.real(np.conj(dry) * candidate)
+    cross_tolerance = 8 * np.finfo(np.float64).eps * dry_magnitude * candidate_magnitude
+    destructive = meaningful & candidate_active & (cross_term < -cross_tolerance)
+
+    accepted = candidate.copy()
+    accepted[destructive] = 0.0
+    # Guard the exact energy invariant against exceptional roundoff while retaining phase.
+    energy_tolerance = 16 * np.finfo(np.float64).eps
+    reduced = meaningful & (np.abs(dry + accepted) < dry_magnitude * (1.0 - energy_tolerance))
+    accepted[reduced] = 0.0
+    destructive |= reduced
+    candidate_bins = int(np.count_nonzero(candidate_active))
+    rejected_bins = int(np.count_nonzero(destructive))
+    accepted_bins = candidate_bins - rejected_bins
+
+    if meaningful.any():
+        dry_energy = np.square(dry_magnitude[meaningful])
+        mixed_energy = np.square(np.abs((dry + accepted)[meaningful]))
+        minimum_energy_ratio = float(np.min(mixed_energy / dry_energy))
+    else:
+        minimum_energy_ratio = 1.0
+    stats = {
+        "enabled": True,
+        "dry_floor_db": dry_floor_db,
+        "dry_floor": dry_floor,
+        "meaningful_bins": int(np.count_nonzero(meaningful)),
+        "candidate_bins": candidate_bins,
+        "accepted_bins": accepted_bins,
+        "rejected_destructive_bins": rejected_bins,
+        "accepted_fraction": float(accepted_bins / candidate_bins) if candidate_bins else 1.0,
+        "rejected_destructive_fraction": float(rejected_bins / candidate_bins) if candidate_bins else 0.0,
+        "minimum_analysis_bin_energy_ratio": minimum_energy_ratio,
+    }
+    return accepted, stats
+
+
 def extract_added(dry: np.ndarray, wet: np.ndarray, *, extra_wets=(), strength: float = 0.5,
                   n_fft: int = 4096, hop: int = 1024, max_lag: int = 64,
                   min_correlation: float = 0.90, alignment_windows: int = 7,
                   alignment_lowpass_hz: float = 5_000.0,
                   activity_floor_db: float = -60.0, ratio_limit: float = 0.5,
-                  support_floor_db: float = -70.0):
+                  support_floor_db: float = -70.0,
+                  constructive_gate_dry_floor_db: float = -120.0):
     dry = validate_audio(dry, "dry")
     wet = validate_audio(wet, "wet")
     require_matching_audio(dry, wet, SAMPLE_RATE, SAMPLE_RATE)
@@ -373,8 +429,13 @@ def extract_added(dry: np.ndarray, wet: np.ndarray, *, extra_wets=(), strength: 
     mask = mask * soft_support_mask(residual_specs[0], dry_spec, ratio_limit, support_floor_db)
     if extras:
         mask = mask * consistency_mask(residual_specs)
-    added = istft_channels(residual_specs[0] * mask * strength, len(dry), n_fft=n_fft, hop=hop)
-    return added, {"passed": True, "primary": verification, "extras": extra_verifications}
+    candidate = residual_specs[0] * mask * strength
+    accepted, constructive_gate = constructive_residual_gate(
+        dry_spec, candidate, dry_floor_db=constructive_gate_dry_floor_db,
+    )
+    added = istft_channels(accepted, len(dry), n_fft=n_fft, hop=hop)
+    return added, {"passed": True, "primary": verification, "extras": extra_verifications,
+                   "constructive_gate": constructive_gate}
 
 
 def mix_without_normalization(dry: np.ndarray, added: np.ndarray, *, allow_over: bool = False):
@@ -473,6 +534,7 @@ def run_experiment(input_path, output_dir, *, extra_wet_paths=(), strength=0.5, 
                    n_fft=4096, hop=1024, max_lag=64, min_correlation=0.90,
                    alignment_windows=7, alignment_lowpass_hz=5_000.0, ratio_limit=0.5,
                    activity_floor_db=-60.0, support_floor_db=-70.0,
+                   constructive_gate_dry_floor_db=-120.0,
                    lowband_max_db=-35.0, silent_max_db=-40.0, silence_db=-60.0) -> dict:
     started_wall = time.time()
     started = time.monotonic()
@@ -508,6 +570,7 @@ def run_experiment(input_path, output_dir, *, extra_wet_paths=(), strength=0.5, 
         min_correlation=min_correlation, alignment_windows=alignment_windows,
         alignment_lowpass_hz=alignment_lowpass_hz, activity_floor_db=activity_floor_db,
         ratio_limit=ratio_limit, support_floor_db=support_floor_db,
+        constructive_gate_dry_floor_db=constructive_gate_dry_floor_db,
     )
     residual = wet - dry
     mixed, clipping = mix_without_normalization(dry, added, allow_over=allow_over)
@@ -525,7 +588,10 @@ def run_experiment(input_path, output_dir, *, extra_wet_paths=(), strength=0.5, 
               "min_correlation": float(min_correlation), "alignment_windows": int(alignment_windows),
               "alignment_lowpass_hz": float(alignment_lowpass_hz),
               "ratio_limit": float(ratio_limit), "activity_floor_db": float(activity_floor_db),
-              "support_floor_db": float(support_floor_db), "lowband_max_db": float(lowband_max_db),
+              "support_floor_db": float(support_floor_db),
+              "constructive_gate": True,
+              "constructive_gate_dry_floor_db": float(constructive_gate_dry_floor_db),
+              "lowband_max_db": float(lowband_max_db),
               "silent_max_db": float(silent_max_db), "silence_db": float(silence_db)}
     artifacts = [_artifact(path) for path in
                  (prepared_path, wet_path, residual_path, added_path, mix_path)]
@@ -535,6 +601,7 @@ def run_experiment(input_path, output_dir, *, extra_wet_paths=(), strength=0.5, 
                   "apollo_git": _git_info(lew_script.parent)}
     report = {"input": _artifact(source), "sample_rate": SAMPLE_RATE,
               "shape": list(dry.shape), "params": params, "alignment": alignment,
+              "constructive_gate": alignment["constructive_gate"],
               "conservation": conservation, "clipping": clipping,
               "git": _git_info(Path(__file__).resolve().parents[1]), "provenance": provenance,
               "runtime": {"started_unix": started_wall, "total_seconds": time.monotonic() - started,

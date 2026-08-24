@@ -11,6 +11,7 @@ from experiments.lew_residual import (
     SAMPLE_RATE,
     activity_gate,
     consistency_mask,
+    constructive_residual_gate,
     extract_added,
     frequency_mask,
     istft_channels,
@@ -113,6 +114,65 @@ class LewResidualTests(unittest.TestCase):
         opposite = consistency_mask([base, -base])
         self.assertGreater(float(np.min(same)), 0.85)
         self.assertLess(float(np.max(opposite)), 1e-12)
+
+    def test_constructive_gate_admits_same_phase_and_rejects_opposite_phase(self):
+        dry = np.array([1 + 1j, 2 - 1j], dtype=np.complex128)
+        same_phase = dry * np.array([0.25, 0.5])
+        admitted, admitted_stats = constructive_residual_gate(dry, same_phase)
+        np.testing.assert_array_equal(admitted, same_phase)
+        self.assertEqual(admitted_stats["accepted_fraction"], 1.0)
+        self.assertEqual(admitted_stats["rejected_destructive_fraction"], 0.0)
+
+        opposite_phase = -0.25 * dry
+        rejected, rejected_stats = constructive_residual_gate(dry, opposite_phase)
+        np.testing.assert_array_equal(rejected, np.zeros_like(opposite_phase))
+        self.assertEqual(rejected_stats["accepted_fraction"], 0.0)
+        self.assertEqual(rejected_stats["rejected_destructive_fraction"], 1.0)
+        self.assertEqual(rejected_stats["minimum_analysis_bin_energy_ratio"], 1.0)
+
+    def test_constructive_gate_quadrature_preserves_phase_and_magnitude(self):
+        dry = np.array([1 + 2j, -3 + 0.5j], dtype=np.complex128)
+        quadrature = 0.4j * dry
+        accepted, stats = constructive_residual_gate(dry, quadrature)
+        np.testing.assert_array_equal(accepted, quadrature)
+        self.assertGreaterEqual(stats["minimum_analysis_bin_energy_ratio"], 1.0)
+        self.assertTrue(np.all(np.abs(dry + accepted) >= np.abs(dry)))
+
+    def test_constructive_gate_stft_domain_invariant_and_near_zero_dry(self):
+        dry = (self.rng.normal(size=(65, 9, 2)) +
+               1j * self.rng.normal(size=(65, 9, 2)))
+        candidate = 0.3 * (self.rng.normal(size=dry.shape) +
+                           1j * self.rng.normal(size=dry.shape))
+        dry[0, 0, 0] = 0.0
+        dry[1, 0, 0] = 1e-30 + 0j
+        candidate_before = candidate.copy()
+        accepted, stats = constructive_residual_gate(dry, candidate)
+        meaningful = np.abs(dry) > stats["dry_floor"]
+        ratio = np.abs(dry[meaningful] + accepted[meaningful]) / np.abs(dry[meaningful])
+        self.assertGreaterEqual(float(np.min(ratio)), 1.0 - 2e-15)
+        self.assertGreaterEqual(stats["minimum_analysis_bin_energy_ratio"], 1.0 - 4e-15)
+        # The gate only retains or zeros coefficients, including ratio-masked candidates.
+        retained = accepted != 0
+        np.testing.assert_array_equal(accepted[retained], candidate_before[retained])
+        self.assertEqual(accepted[0, 0, 0], candidate_before[0, 0, 0])
+        self.assertEqual(accepted[1, 0, 0], candidate_before[1, 0, 0])
+
+    def test_extract_added_reports_gate_and_preserves_low_band_conservation(self):
+        length = SAMPLE_RATE
+        time = np.arange(length) / SAMPLE_RATE
+        dry = (0.1 * np.sin(2 * np.pi * 3000 * time) +
+               0.05 * np.sin(2 * np.pi * 10000 * time))[:, None]
+        wet = dry + (0.01 * np.sin(2 * np.pi * 1000 * time) +
+                     0.005 * np.sin(2 * np.pi * 10000 * time))[:, None]
+        added, report = extract_added(dry, wet, strength=1.0)
+        gate = report["constructive_gate"]
+        self.assertGreaterEqual(gate["minimum_analysis_bin_energy_ratio"], 1.0 - 4e-15)
+        self.assertGreaterEqual(gate["accepted_fraction"], 0.0)
+        self.assertLessEqual(gate["accepted_fraction"], 1.0)
+        low_added = np.fft.rfft(added[:, 0])
+        frequencies = np.fft.rfftfreq(length, 1 / SAMPLE_RATE)
+        low = frequencies < 4000
+        self.assertLess(np.linalg.norm(low_added[low]), 1e-5 * np.linalg.norm(np.fft.rfft(dry[:, 0])[low]))
 
     def test_strength_zero_produces_no_added_signal(self):
         dry = self.rng.normal(0, 0.05, (12000, 1))
