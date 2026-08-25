@@ -11,7 +11,7 @@
 ; 取消下方 [Languages] 注释。
 ; ══════════════════════════════════════════════════════════════════
 #define MyAppName "ShadowBuster"
-#define MyAppVersion "1.2.2"
+#define MyAppVersion "1.2.3"
 #define MyAppExeName "ShadowBuster.exe"
 
 [Setup]

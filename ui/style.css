@@ -157,14 +157,28 @@ body {
 }
 .file-empty { color: var(--c-text-faint); font-size: 11.5px; padding: var(--s-1) var(--s-2); }
 .file-item {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--s-2);
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) 22px; align-items: center; gap: var(--s-2);
   padding: 3px var(--s-2);
   font-size: 11.5px; font-family: var(--mono); color: var(--c-text-dim);
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .file-item:hover { background: var(--c-panel-2); color: var(--c-text); }
+.fi-status {
+  width: 7px; height: 7px;
+  background: var(--c-text-faint); border: 1px solid var(--c-border);
+  box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.7);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.file-item.processing { color: var(--c-support); background: rgba(55, 166, 214, 0.08); }
+.file-item.processing .fi-status {
+  background: var(--c-support); border-color: var(--c-support);
+  box-shadow: 0 0 7px rgba(55, 166, 214, 0.8);
+  animation: led-blink 1.1s var(--ease) infinite;
+}
 .file-item.done { color: var(--c-ok); text-shadow: 0 0 6px rgba(63, 191, 127, 0.55); }
+.file-item.done .fi-status { background: var(--c-ok); border-color: var(--c-ok); box-shadow: 0 0 7px rgba(63, 191, 127, 0.75); }
 .file-item.fail { color: var(--c-err); text-shadow: 0 0 6px rgba(255, 77, 79, 0.5); }
+.file-item.fail .fi-status { background: var(--c-err); border-color: var(--c-err); box-shadow: 0 0 7px rgba(255, 77, 79, 0.7); }
 .file-item.leaving {
   opacity: 0; transform: translateX(-6px);
   transition: opacity 140ms var(--ease), transform 140ms var(--ease);
@@ -188,6 +202,10 @@ body {
 }
 .queue-btn { width: 100%; height: 30px; }
 .queue-btn svg { width: 14px; height: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .file-item.processing .fi-status { animation: none; }
+}
 
 /* ═══ 文件设置行 ═══ */
 .files {
@@ -537,6 +555,16 @@ body {
 }
 .btn-process .proc-icon { width: 18px; height: 18px; z-index: 1; }
 .btn-process .proc-label { z-index: 1; }
+.btn-process .proc-remaining {
+  z-index: 1;
+  min-width: 72px;
+  padding-left: var(--s-2);
+  border-left: 1px solid rgba(255, 255, 255, 0.35);
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0; text-align: left;
+  color: rgba(255, 255, 255, 0.82);
+}
+.btn-process .proc-remaining[hidden] { display: none; }
 /* 按钮即进度条：填充层（纯绿色 + 发光，无渐变） */
 .btn-process::before {
   content: "";

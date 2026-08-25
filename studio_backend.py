@@ -465,9 +465,10 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     return str(out_final)
 
 
-def run_batch(input_files, output_dir, *, progress=None, cancel=None, **kwargs):
+def run_batch(input_files, output_dir, *, progress=None, file_finished=None, cancel=None, **kwargs):
     """批处理：逐个文件跑完整链路。
     progress(file_idx, file_total, stage_idx, frac, label, file_name)
+    file_finished(file_idx, file_total, file_name, succeeded, error)
     """
     if os.environ.get("SB_TRACE"):
         print(f"[trace] run_batch start files={len(input_files)} kwargs={list(kwargs)}", flush=True)
@@ -485,16 +486,29 @@ def run_batch(input_files, output_dir, *, progress=None, cancel=None, **kwargs):
             if progress:
                 progress(idx, len(files), stage_idx, frac, label, f.name)
 
+        if progress:
+            progress(idx, len(files), 0, 0.0, "开始处理", f.name)
+
         try:
             out = run_pipeline(f, output_dir, progress=file_progress, cancel=cancel, **kwargs)
             results.append((str(f), str(out), None))
+            if file_finished:
+                file_finished(idx, len(files), f.name, True, "")
         except PipelineError as e:
-            results.append((str(f), None, str(e)))
+            if cancel and cancel():
+                raise
+            error = str(e)
+            results.append((str(f), None, error))
+            if file_finished:
+                file_finished(idx, len(files), f.name, False, error)
         except Exception as e:
             if os.environ.get("SB_TRACE"):
                 import traceback
                 traceback.print_exc()
-            results.append((str(f), None, f"{type(e).__name__}: {e}"))
+            error = f"{type(e).__name__}: {e}"
+            results.append((str(f), None, error))
+            if file_finished:
+                file_finished(idx, len(files), f.name, False, error)
     return results
 
 

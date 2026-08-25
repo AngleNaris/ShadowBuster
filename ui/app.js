@@ -11,7 +11,9 @@
     reference: "",
     eq: "Neutral",
     startTime: 0,
-    fi: 0, ftotal: 0, si: 0, frac: 0,  // 总进度
+    fi: 0, ftotal: 0, si: 0, frac: 0,
+    currentFileIndex: -1,
+    fileStatuses: [],
   };
 
   /* ─── 桥接（QWebChannel 信号模式）─── */
@@ -22,13 +24,27 @@
       api = channel.objects.bridge;
       window.pyApi = api;
       api.fileProgress.connect((fi, ftotal, fname) => {
+        const changedFile = state.currentFileIndex !== fi;
         state.fi = fi; state.ftotal = ftotal;
+        if (changedFile) {
+          state.currentFileIndex = fi;
+          state.si = 0; state.frac = 0; progDisplay = 0;
+          setFileStatus(fi, "processing", true);
+          updateRemainingCount();
+        }
         state.lastFracAt = Date.now();
       });
       api.stageChanged.connect((i, frac, label) => {
         state.si = i; state.frac = frac;
         state.lastFracAt = Date.now();
         setStage(i, frac);
+      });
+      api.fileFinished.connect((fi, ftotal, fname, succeeded, error) => {
+        state.fi = fi; state.ftotal = ftotal;
+        state.frac = 1;
+        progDisplay = 100;
+        processBtn.style.setProperty("--btn-progress", "100%");
+        setFileStatus(fi, succeeded ? "done" : "fail");
       });
       // logLine 不再渲染（UI 禁止显示任何日志）
       api.done.connect((path, ok, fail, errText) => {
@@ -40,9 +56,6 @@
         document.querySelectorAll(".stage").forEach((s) => {
           s.classList.remove("active", "error", "done");
           if (fail > 0) s.classList.add("error"); else s.classList.add("done");
-        });
-        document.querySelectorAll(".file-item").forEach((el) => {
-          if (!el.classList.contains("fail")) el.classList.add("done");
         });
         // 仅失败时弹窗；无错误不显示任何日志/提示，静默完成
         if (fail > 0) {
@@ -127,7 +140,8 @@
     el.classList.remove("need");
   }
 
-  /* ─── 阶段与总进度 ─── */
+  /* ─── 阶段与当前文件进度 ─── */
+  const STAGE_COUNT = Math.max(1, document.querySelectorAll(".stage").length);
   function setStage(i, frac) {
     document.querySelectorAll(".stage").forEach((s, idx) => {
       s.classList.toggle("active", idx === i);
@@ -139,22 +153,21 @@
   state.lastFracAt = 0;
   let progDisplay = 0, progRaf = 0;
   function realPct() {
-    const total = state.ftotal || 1;
-    return ((state.fi + (state.si + state.frac) / 4) / total) * 100;
+    return ((state.si + state.frac) / STAGE_COUNT) * 100;
   }
   function progressLoop() {
     if (!state.processing) return;
-    const total = state.ftotal || 1;
     const real = realPct();
-    const stageTop = ((state.fi + (state.si + 1) / 4) / total) * 100;   // 阶段上界
+    const stageTop = ((state.si + 1) / STAGE_COUNT) * 100;
     if (Date.now() - state.lastFracAt > 700) {
-      // 阶段暂无真实进度：缓慢趋近上界（留 1.5% 余量，不提前"完成"）
-      const target = Math.min(stageTop - 1.5, real);
+      const margin = Math.min(1.5, 100 / STAGE_COUNT / 10);
+      const target = Math.max(real, stageTop - margin);
       progDisplay += (target - progDisplay) * 0.004;
     } else {
-      progDisplay = real;
+      progDisplay = Math.max(progDisplay, real);
     }
-    processBtn.style.setProperty("--btn-progress", `${Math.max(0, Math.min(100, progDisplay))}%`);
+    progDisplay = Math.max(0, Math.min(100, progDisplay));
+    processBtn.style.setProperty("--btn-progress", `${progDisplay}%`);
     progRaf = requestAnimationFrame(progressLoop);
   }
   function startProgressLoop() { if (!progRaf) progRaf = requestAnimationFrame(progressLoop); }
@@ -339,6 +352,31 @@
   /* ─── 队列管理 ─── */
   const fileListEl = $("file-list");
   const clearBtn = $("btn-clear");
+  const FILE_STATUS_LABELS = {
+    pending: "待处理",
+    processing: "处理中",
+    done: "已完成",
+    fail: "处理失败",
+  };
+  function setFileStatus(index, status, follow = false) {
+    if (index < 0 || index >= state.files.length) return;
+    state.fileStatuses[index] = status;
+    const item = fileListEl.children[index];
+    if (!item || !item.classList.contains("file-item")) return;
+    item.classList.remove("processing", "done", "fail");
+    if (status !== "pending") item.classList.add(status);
+    if (status === "processing") item.setAttribute("aria-current", "true");
+    else item.removeAttribute("aria-current");
+    const name = item.querySelector(".fi-name")?.textContent || "";
+    item.setAttribute("aria-label", `${name}，${FILE_STATUS_LABELS[status]}`);
+    if (status !== "pending") announce(`${name}，${FILE_STATUS_LABELS[status]}`);
+    if (follow) {
+      item.scrollIntoView({
+        block: "nearest",
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      });
+    }
+  }
   function renderFileList() {
     fileListEl.innerHTML = "";
     if (!state.files.length) {
@@ -350,8 +388,13 @@
     state.files.forEach((f, i) => {
       const name = f.replace(/\\/g, "/").split("/").pop();
       const item = document.createElement("div");
-      item.className = "file-item";
-      item.innerHTML = `<span class="fi-name" title="${f}">${name}</span>` +
+      const status = state.fileStatuses[i] || "pending";
+      item.className = `file-item${status === "pending" ? "" : ` ${status}`}`;
+      item.setAttribute("role", "listitem");
+      item.setAttribute("aria-label", `${name}，${FILE_STATUS_LABELS[status]}`);
+      if (status === "processing") item.setAttribute("aria-current", "true");
+      item.innerHTML = `<span class="fi-status" aria-hidden="true"></span>` +
+        `<span class="fi-name" title="${escapeHtml(f)}">${escapeHtml(name)}</span>` +
         `<button class="fi-x" aria-label="移除" title="移除">` +
         `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="square"/></svg>` +
         `</button>`;
@@ -360,6 +403,7 @@
         item.classList.add("leaving");
         setTimeout(() => {
           state.files.splice(i, 1);
+          state.fileStatuses.splice(i, 1);
           renderFileList();
         }, 150);
       });
@@ -374,7 +418,9 @@
     if (state.processing) return;
     const paths = await api.selectInputs();
     if (paths && paths.length) {
-      state.files.push(...paths.filter((p) => !state.files.includes(p)));
+      const additions = paths.filter((p) => !state.files.includes(p));
+      state.files.push(...additions);
+      state.fileStatuses.push(...additions.map(() => "pending"));
       renderFileList();
     }
   }
@@ -382,6 +428,7 @@
   $("btn-clear").addEventListener("click", () => {
     if (state.processing) return;
     state.files = [];
+    state.fileStatuses = [];
     renderFileList();
   });
 
@@ -413,7 +460,12 @@
   /* ─── 主按钮：开始 / 停止（进度条）─── */
   const processBtn = $("btn-process");
   const processLabel = $("process-label");
+  const processRemaining = $("process-remaining");
   const procIcon = $("proc-icon");
+  function updateRemainingCount() {
+    const remaining = Math.max(0, state.ftotal - state.fi - 1);
+    processRemaining.textContent = `剩余 ${remaining} 个`;
+  }
   const PROC_ICON_PLAY = '<path d="M8 5v14l11-7L8 5Z" fill="currentColor"/>';
   const PROC_ICON_STOP = '<path d="M7 7h10v10H7z" fill="currentColor"/>';
 
@@ -530,6 +582,7 @@
     processBtn.classList.remove("processing", "stop");
     procIcon.innerHTML = PROC_ICON_PLAY;
     processLabel.textContent = "BUSTER!";
+    processRemaining.hidden = true;
     processBtn.style.setProperty("--btn-progress", "0%");
     btnFx.stop();
   }
@@ -539,6 +592,8 @@
     processBtn.classList.add("processing", "stop");
     procIcon.innerHTML = PROC_ICON_STOP;
     processLabel.textContent = "停止";
+    updateRemainingCount();
+    processRemaining.hidden = false;
     btnFx.start();
     startProgressLoop();
   }
@@ -563,10 +618,12 @@
 
     state.startTime = Date.now();
     state.fi = 0; state.ftotal = state.files.length; state.si = 0; state.frac = 0;
+    state.currentFileIndex = -1;
+    state.fileStatuses = state.files.map(() => "pending");
+    renderFileList();
     fx.setActive(true);
     setProcessing();
     document.querySelectorAll(".stage").forEach((s) => s.classList.remove("active", "done", "error"));
-    document.querySelectorAll(".file-item").forEach((el) => el.classList.remove("done", "fail"));
 
     try {
       await api.process({

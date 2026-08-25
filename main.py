@@ -34,6 +34,7 @@ class Bridge(QObject):
 
     stageChanged = Signal(int, float, str)   # stage idx, frac, label
     fileProgress = Signal(int, int, str)     # file idx (0-based), total, file name
+    fileFinished = Signal(int, int, str, bool, str)  # file idx, total, name, succeeded, error
     logLine = Signal(str, str)               # text, css class
     done = Signal(str, int, int, str)        # 输出路径, 成功数, 失败数, 失败详情
     failed = Signal(str)                     # 错误消息
@@ -118,6 +119,9 @@ class Bridge(QObject):
                 self.fileProgress.emit(fi, ftotal, fname)
                 self.stageChanged.emit(si, frac, label)
 
+            def file_finished(fi, ftotal, fname, succeeded, error):
+                self.fileFinished.emit(fi, ftotal, fname, succeeded, error)
+
             # 旋钮映射：Sub 直接等位传递（前端 0–12 即 0–12 dB，刻度不被放大）；
             # sat / trans 是 0–10 的比例档，折算到 0–1；punch 直接等位传递 0–10 dB。
             sub_db = float(params.get("sub", 6))            # 0–12 dB（数值 = 显示）
@@ -139,6 +143,7 @@ class Bridge(QObject):
                 reference=params.get("reference") or None,
                 device=backend.auto_device(),
                 progress=progress,
+                file_finished=file_finished,
                 cancel=lambda: self._cancel_flag.is_set(),
             )
             ok = sum(1 for _, _, err in results if err is None)
