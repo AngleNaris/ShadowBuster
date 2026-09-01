@@ -5,7 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ShadowBuster</title>
 <link rel="icon" href="logo.png">
-<link rel="stylesheet" href="style.css?v=19">
+<script>
+/* 主题引导：首帧渲染前应用持久化的深/浅色与主题色，避免启动闪烁。
+   与 app.js 的主题模块共用 sb_param_ 前缀的 localStorage 存储。 */
+(function () {
+  try {
+    var g = function (k, d) { var v = localStorage.getItem("sb_param_" + k); return v === null ? d : v; };
+    var root = document.documentElement;
+    root.dataset.mode = g("ui_mode", "dark") === "light" ? "light" : "dark";
+    root.dataset.accent = g("ui_accent", "violet");
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
 
@@ -17,12 +29,12 @@
   <!-- ═══ 无障碍实时播报（视觉提示改为红框后，仍向读屏播报）═══ -->
   <div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
-  <!-- ═══ 顶栏：仅品牌 + 帮助 ═══ -->
+  <!-- ═══ 顶栏：品牌居中，点击 logo 打开设置 ═══ -->
   <header class="topbar">
-    <div class="brand">
+    <button class="brand" id="btn-settings" type="button" title="设置" aria-label="设置" aria-haspopup="dialog">
       <img class="brand-mark" src="logo.png" alt="" aria-hidden="true">
       <span class="brand-name">SHADOWBUSTER</span>
-    </div>
+    </button>
   </header>
 
   <!-- ═══ 待处理队列（独立列）═══ -->
@@ -176,7 +188,8 @@
       <div class="stage" data-stage="0"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">高频</span></div>
       <div class="stage" data-stage="1"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">分离低频</span></div>
       <div class="stage" data-stage="2"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">低频增强</span></div>
-      <div class="stage" data-stage="3"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">母带</span></div>
+      <div class="stage" data-stage="3"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">鼓增强</span></div>
+      <div class="stage" data-stage="4"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">母带</span></div>
     </div>
   </section>
 
@@ -217,9 +230,65 @@
     </div>
     <div class="help-body" id="help-body"></div>
   </div>
+  <!-- ═══ 设置弹窗：版本 / 更新（占位）/ 主题色 / 深浅色 ═══ -->
+  <div class="settings-modal" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="settings-backdrop" id="settings-backdrop"></div>
+    <div class="settings-box" role="document">
+      <div class="settings-head">
+        <span class="settings-title" id="settings-title">设置</span>
+        <button class="icon-btn settings-close" id="settings-close" title="关闭" aria-label="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="square"/></svg>
+        </button>
+      </div>
+      <div class="settings-body">
+        <div class="set-row">
+          <div class="set-info">
+            <span class="set-label">版本</span>
+            <span class="set-desc">当前安装的 ShadowBuster 版本</span>
+          </div>
+          <span class="set-value" id="set-version">—</span>
+        </div>
+        <div class="set-row">
+          <div class="set-info">
+            <span class="set-label">软件更新</span>
+            <span class="set-desc">通过 GitHub Releases 获取新版本</span>
+          </div>
+          <div class="set-action">
+            <button class="btn btn-ghost set-btn" id="btn-check-update" disabled>检查更新</button>
+            <span class="set-status" id="update-status">即将上线</span>
+          </div>
+        </div>
+        <div class="set-row set-row-col">
+          <div class="set-info">
+            <span class="set-label">主题色</span>
+            <span class="set-desc">界面强调色，即时生效</span>
+          </div>
+          <div class="swatches" role="group" aria-label="主题色" id="accent-swatches">
+            <label class="swatch swatch-custom" id="swatch-custom" title="自定义颜色">
+              <input type="color" id="accent-custom-picker" aria-label="自定义颜色">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z" fill="currentColor"/></svg>
+            </label>
+          </div>
+        </div>
+        <div class="set-row">
+          <div class="set-info">
+            <span class="set-label">外观模式</span>
+            <span class="set-desc">深色 / 浅色界面</span>
+          </div>
+          <div class="seg cols-2" role="group" aria-label="外观模式">
+            <button type="button" class="seg-btn" data-mode="dark" aria-pressed="true">深色</button>
+            <button type="button" class="seg-btn" data-mode="light" aria-pressed="false">浅色</button>
+          </div>
+        </div>
+      </div>
+      <div class="settings-foot">
+        <button class="btn btn-primary" id="settings-ok">完成</button>
+      </div>
+    </div>
+  </div>
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="app.js?v=16"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

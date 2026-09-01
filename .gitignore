@@ -71,3 +71,10 @@ ENV/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# UI 验证截图（开发过程产物）
+/ui_fix*.png
+/ui_set*.png
+/ui_v2*.png
+/ui_packaged*.png
+/ui_shot*.png

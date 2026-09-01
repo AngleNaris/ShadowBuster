@@ -136,6 +136,19 @@ Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue
 Remove-Item $pip240 -Recurse -Force -ErrorAction SilentlyContinue
 if ($rc -ne 0) { throw "omegaconf 安装失败(exit=$rc)" }
 
+# [4b] 体积裁剪：只删运行期确定不需要的内容。
+#   - __pycache__：字节码缓存，运行时自动再生（约 25MB）
+#   - sklearn：推理链路（lew/bass/drum/demucs/Soren）无任何 import（约 45MB；
+#     注意 numba/statsmodels/pandas 是 Soren 母带的硬依赖，必须保留）
+#   - torch/include、torch/testing：C++ 头文件与测试夹具，仅构建/开发用（约 63MB；
+#     不删 torch/_inductor——未来若启用 torch.compile 会需要）
+Write-Host "  [4b] 体积裁剪 ..."
+Get-ChildItem $site -Directory -Filter "__pycache__" -Recurse -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-Item -Path "$site\sklearn", "$site\scikit_learn-*.dist-info",
+          "$site\torch\include", "$site\torch\testing" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
 # [4a] 清理 *.dist-info\licenses 深层许可目录：
 # torch 的第三方许可树路径极深，安装到 Program Files 会超 Windows MAX_PATH(260)，
 # 解压会报"找不到路径"并整包回滚。这些许可只是元数据、运行不需要，剪掉。

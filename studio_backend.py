@@ -1,4 +1,4 @@
-"""SorenStudio 后端管线：Lew 高频 → Demucs 分离 → bass 增强 → Soren 母带
+"""SorenStudio 后端管线：Lew 高频 → Demucs 4-stem 分离 → bass 增强 → drums 增强 → Soren 母带
 所有阶段调用已验证的命令行工具（subprocess），支持进度回调与取消。
 """
 import os
@@ -9,6 +9,10 @@ import tempfile
 import threading
 import subprocess
 from pathlib import Path
+
+# 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
+# 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
+APP_VERSION = "1.3.0"
 
 if getattr(sys, "frozen", False):
     # PyInstaller 冻结后 __file__ 在 _internal 里，exe 同级才是安装根目录
@@ -351,7 +355,7 @@ def stage_lew(input_wav, out_wav, device="cuda", progress=None, quality=1, guida
 
 def stage_demucs(input_wav, out_dir, progress=None, cancel=None):
     if progress:
-        progress(0.0, "Demucs 分离贝斯")
+        progress(0.0, "Demucs 四轨分离")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)   # demucs 的 -o 目录需先存在（cwd 也要可进入）
     env = os.environ.copy()
@@ -364,33 +368,64 @@ def stage_demucs(input_wav, out_dir, progress=None, cancel=None):
         env["TORCH_HOME"] = str(torch_home)
         env["HF_HOME"] = str(hf_home)
         env["HF_HUB_OFFLINE"] = "1"
-    cmd = [PYTHON, "-m", "demucs", "--two-stems=bass", "--other-method=minus",
-           "--float32", "--clip-mode=none", "-n", "htdemucs",
+    # 4-stem 全轨输出（vocals/drums/bass/other，求和≈原曲）：鼓的 punch/瞬态处理
+    # 需要作用在鼓所在的轨上（实测 kick 起音 ~100% 落在 drums 轨），两轨模式拿不到 drums
+    cmd = [PYTHON, "-m", "demucs", "--float32", "--clip-mode=none", "-n", "htdemucs",
            "-o", str(out_dir), str(input_wav)]
     # 流式解析 demucs 的 tqdm 百分比 → 真实阶段进度
     _run_stream(cmd, out_dir, env=env, cancel=cancel,
-                on_progress=(lambda f: progress(f, "Demucs 分离贝斯")) if progress else None)
+                on_progress=(lambda f: progress(f, "Demucs 四轨分离")) if progress else None)
     if progress:
         progress(1.0, "分离完成")
 
 
+def _rest_files(stem_dir):
+    """4-stem 输出的"其余轨"：vocals + other；兼容旧 two-stems 输出（minus_bass/no_bass）。"""
+    stem_dir = Path(stem_dir)
+    if (stem_dir / "vocals.wav").exists() and (stem_dir / "other.wav").exists():
+        return [stem_dir / "vocals.wav", stem_dir / "other.wav"]
+    for name in ("minus_bass.wav", "no_bass.wav"):
+        p = stem_dir / name
+        if p.exists():
+            return [p]
+    raise PipelineError(f"分离产物缺失（需要 vocals/other 或 no_bass）: {stem_dir}")
+
+
 def stage_bass(stem_dir, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
-               bass_gain_db= 0.0, progress=None, cancel=None):
+               bass_gain_db=0.0, progress=None, cancel=None):
     if progress:
         progress(0.0, "贝斯增强")
     bass = stem_dir / "bass.wav"
-    no_bass = stem_dir / "minus_bass.wav"
-    if not no_bass.exists():
-        no_bass = stem_dir / "no_bass.wav"
-    if not bass.exists() or not no_bass.exists():
+    if not bass.exists():
         raise PipelineError(f"分离产物缺失: {stem_dir}")
+    rest = _rest_files(stem_dir)
     cmd = [PYTHON, str(APOLLO_DIR / "bass_enhance.py"),
-           "--bass", str(bass), "--no-bass", str(no_bass), "--out", str(out_wav),
+           "--bass", str(bass), "--no-bass", *map(str, rest), "--out", str(out_wav),
            "--sub-db", str(sub_db), "--sat", str(sat), "--punch-db", str(punch_db),
            "--trans", str(trans), "--bass-gain-db", str(bass_gain_db)]
     _run_stream(cmd, APOLLO_DIR, cancel=cancel)
     if progress:
         progress(1.0, "贝斯增强完成")
+
+
+def stage_drums(stem_dir, rest_wav, out_wav, punch_db=2.0, trans=0.3,
+                drums_gain_db=0.0, progress=None, cancel=None):
+    """鼓增强：punch/瞬态处理施加到鼓所在的轨上（4-stem 的 drums 轨）。"""
+    if progress:
+        progress(0.0, "鼓增强")
+    stem_dir = Path(stem_dir)
+    drums = stem_dir / "drums.wav"
+    if not drums.exists():
+        # 旧 two-stems 产物没有 drums 轨：跳过增强，透传贝斯阶段结果
+        shutil.copyfile(rest_wav, out_wav)
+    else:
+        cmd = [PYTHON, str(APOLLO_DIR / "drum_enhance.py"),
+               "--drums", str(drums), "--rest", str(rest_wav), "--out", str(out_wav),
+               "--punch-db", str(punch_db), "--trans", str(trans),
+               "--drums-gain-db", str(drums_gain_db)]
+        _run_stream(cmd, APOLLO_DIR, cancel=cancel)
+    if progress:
+        progress(1.0, "鼓增强完成")
 
 
 def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
@@ -436,6 +471,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     lew_out = work / f"{stem}_lew.wav"
     stems_out = work / "stems"
     bass_out = work / f"{stem}_bassmix.wav"
+    drum_out = work / f"{stem}_drummix.wav"
 
     def cb(i):
         def inner(frac, label):
@@ -449,13 +485,16 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
         stage_lew(input_wav, lew_out, device=device, progress=cb(0),
                   quality=quality, guidance=guidance, cancel=cancel)
         stage_demucs(lew_out, stems_out, progress=cb(1), cancel=cancel)
-        stage_bass(stems_out / "htdemucs" / lew_out.stem, bass_out,
-                   sub_db=sub_db, sat=sat, punch_db=punch_db, trans=trans,
-                   bass_gain_db=bass_gain_db, progress=cb(2),
-                   cancel=cancel)
-        stage_soren(bass_out, out_final, genre=genre, loudness=loudness,
+        stem_dir = stems_out / "htdemucs" / lew_out.stem
+        # punch/瞬态本意是鼓处理，实测只对 drums 轨生效 → 从贝斯阶段移到鼓阶段
+        stage_bass(stem_dir, bass_out, sub_db=sub_db, sat=sat,
+                   punch_db=0.0, trans=0.0, bass_gain_db=bass_gain_db,
+                   progress=cb(2), cancel=cancel)
+        stage_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
+                    progress=cb(3), cancel=cancel)
+        stage_soren(drum_out, out_final, genre=genre, loudness=loudness,
                     eq_profile=eq_profile, reference=reference,
-                    lowpass_cutoff=lowpass_cutoff, progress=cb(3),
+                    lowpass_cutoff=lowpass_cutoff, progress=cb(4),
                     cancel=cancel)
     except PipelineError:
         raise

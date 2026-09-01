@@ -14,7 +14,7 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS",
                       "--disable-sandbox --no-sandbox --disable-dev-shm-usage")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot, QUrl
+from PySide6.QtCore import QObject, Qt, Signal, Slot, QUrl, QEvent, QTimer
 from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow
 from PySide6.QtWebChannel import QWebChannel
@@ -27,6 +27,89 @@ ROOT = Path(__file__).parent
 UI_INDEX = ROOT / "ui" / "index.html"
 
 AUDIO_FILTER = "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac);;所有文件 (*.*)"
+AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+
+# 主题对应的原生窗口底色（与 ui/style.css 的 --c-bg 一致）
+THEME_WINDOW_COLOR = {"dark": "#141218", "light": "#f1f0f1"}
+
+
+class DropAwareWebEngineView(QWebEngineView):
+    """支持 OS 文件拖入的 WebEngine 视图。
+
+    拖放事件落在 WebEngine 的内部渲染控件（focusProxy）上而不是视图本身，
+    必须向该控件安装事件过滤器拦截；JS 侧拿不到拖入文件的完整路径，
+    因此在 Qt 层取 url 列表后经 Signal 推给前端。
+    """
+
+    filesDropped = Signal(list)
+    dragHover = Signal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self._drop_installed = False
+
+    def event(self, ev):
+        # focusProxy 在页面首次渲染后才存在：子控件挂载时延迟安装一次
+        if not self._drop_installed and ev.type() == QEvent.Type.ChildAdded:
+            QTimer.singleShot(0, self._install_drop_filter)
+        return super().event(ev)
+
+    def _install_drop_filter(self):
+        proxy = self.focusProxy()
+        if proxy is not None and not self._drop_installed:
+            proxy.installEventFilter(self)
+            self._drop_installed = True
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+            if ev.mimeData().hasUrls():
+                ev.acceptProposedAction()
+                self.dragHover.emit(True)
+                return True
+        elif t == QEvent.Type.DragLeave:
+            self.dragHover.emit(False)
+        elif t == QEvent.Type.Drop:
+            self.dragHover.emit(False)
+            if ev.mimeData().hasUrls():
+                paths = [u.toLocalFile() for u in ev.mimeData().urls()
+                         if u.isLocalFile() and Path(u.toLocalFile()).suffix.lower() in AUDIO_EXTS]
+                ev.acceptProposedAction()
+                if paths:
+                    self.filesDropped.emit(paths)
+                return True
+        return super().eventFilter(obj, ev)
+
+
+def apply_native_theme(window, mode):
+    """原生窗口底色与标题栏跟随主题。
+
+    WebView 内容覆盖整个客户区，原生底色只在边缘/露底时可见；标题栏颜色
+    走 DWM：Win11 22000+ 支持 CAPTION_COLOR 精确着色，Win10 仅
+    USE_IMMERSIVE_DARK_MODE（深色标题栏）生效，浅色标题栏跟随系统设置。
+    """
+    color = QColor(THEME_WINDOW_COLOR.get(mode, THEME_WINDOW_COLOR["dark"]))
+    pal = window.palette()
+    pal.setColor(QPalette.Window, color)
+    window.setPalette(pal)
+    try:
+        window.view.page().setBackgroundColor(color)
+    except Exception:
+        pass
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+    try:
+        hwnd = int(window.winId())
+        dwm = ctypes.windll.dwmapi
+        dark = wintypes.BOOL(1 if mode == "dark" else 0)
+        dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark))
+        cr = wintypes.DWORD(color.red() | (color.green() << 8) | (color.blue() << 16))
+        dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cr), ctypes.sizeof(cr))  # CAPTION_COLOR
+    except Exception:
+        pass
 
 
 class Bridge(QObject):
@@ -38,6 +121,8 @@ class Bridge(QObject):
     logLine = Signal(str, str)               # text, css class
     done = Signal(str, int, int, str)        # 输出路径, 成功数, 失败数, 失败详情
     failed = Signal(str)                     # 错误消息
+    filesDropped = Signal(list)              # OS 拖入的音频文件路径列表
+    dragHover = Signal(bool)                 # 文件正在拖入悬停（前端高亮队列）
 
     def __init__(self, window):
         super().__init__()
@@ -103,8 +188,18 @@ class Bridge(QObject):
     @Slot()
     def help(self):
         self.logLine.emit(
-            "链路: Lew 高频重建 → Demucs 贝斯分离 → 贝斯增强 → Soren 母带。"
+            "链路: Lew 高频重建 → Demucs 四轨分离 → 贝斯增强 → 鼓增强 → Soren 母带。"
             "旋钮双击复位；参考音频与流派二选一；处理中可点取消。", "")
+
+    @Slot(result=str)
+    def appVersion(self):
+        """设置界面显示的应用版本号（单一来源：studio_backend.APP_VERSION）。"""
+        return backend.APP_VERSION
+
+    @Slot(str)
+    def setNativeTheme(self, mode):
+        """浅/深色模式切换时同步原生窗口底色与标题栏颜色。"""
+        apply_native_theme(self._window, mode)
 
     # ── 后台管线 ──
     def _run_batch(self, params):
@@ -172,12 +267,7 @@ class StudioWindow(QMainWindow):
         self.setFixedSize(1020, 820)
         self.setWindowIcon(QIcon(str(ROOT / "ui" / "logo.ico")))
 
-        # 暗色窗口底色
-        pal = self.palette()
-        pal.setColor(QPalette.Window, QColor("#141218"))
-        self.setPalette(pal)
-
-        self.view = QWebEngineView(self)
+        self.view = DropAwareWebEngineView(self)
         self.view.setContextMenuPolicy(Qt.NoContextMenu)
 
         # 显式使用命名 Profile 并开启持久存储，
@@ -196,7 +286,13 @@ class StudioWindow(QMainWindow):
         self.bridge = Bridge(self)
         self.channel.registerObject("bridge", self.bridge)
         self.view.page().setWebChannel(self.channel)
+        # OS 拖入文件 → 桥接信号 → 前端队列
+        self.view.filesDropped.connect(self.bridge.filesDropped)
+        self.view.dragHover.connect(self.bridge.dragHover)
         self.setCentralWidget(self.view)
+
+        # 原生底色 + 标题栏跟随主题（默认深色；浅色由前端桥接触发切换）
+        apply_native_theme(self, "dark")
 
         self.view.load(QUrl.fromLocalFile(str(UI_INDEX.resolve())))
 

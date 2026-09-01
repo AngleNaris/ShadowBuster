@@ -73,6 +73,12 @@
         showErrorModal("处理过程发生错误，未能完成。", msg || "", "");
         finishProcessing();
       });
+      // OS 文件拖入：Qt 层取路径后推给前端队列
+      api.filesDropped.connect((paths) => addPaths(paths));
+      api.dragHover.connect((on) => {
+        const q = document.querySelector(".queue");
+        if (q) q.classList.toggle("drop-hover", !!on);
+      });
       resolve();
     });
   });
@@ -94,6 +100,119 @@
     const n = parseFloat(raw);
     return Number.isFinite(n) ? n : fallback;
   }
+
+  /* ─── 主题：深/浅色 + 强调色（localStorage 持久化，首帧由 index.html 引导脚本应用）─── */
+  const ACCENTS = [
+    { id: "violet", name: "暗紫", sw: "#4f378b" },
+    { id: "indigo", name: "靛蓝", sw: "#2f4d9e" },
+    { id: "ember",  name: "酒红", sw: "#7a2740" },
+    { id: "moss",   name: "墨绿", sw: "#2f5e46" },
+    { id: "amber",  name: "琥珀", sw: "#8a5a1e" },
+  ];
+  const CUSTOM_KEY = "ui_accent_custom";
+  function hexToHsl(hex) {
+    const n = hex.replace("#", "");
+    const r = parseInt(n.slice(0, 2), 16) / 255;
+    const g = parseInt(n.slice(2, 4), 16) / 255;
+    const b = parseInt(n.slice(4, 6), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    const l = (max + min) / 2;
+    let h = 0, s = 0;
+    if (d > 0) {
+      s = d / (1 - Math.abs(2 * l - 1));
+      if (max === r) h = 60 * (((g - b) / d) % 6);
+      else if (max === g) h = 60 * ((b - r) / d + 2);
+      else h = 60 * ((r - g) / d + 4);
+    }
+    if (h < 0) h += 360;
+    return { h, s: s * 100, l: l * 100 };
+  }
+  function hslToHex(h, s, l) {
+    s /= 100; l /= 100;
+    const k = (n) => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+    const to = (x) => Math.round(x * 255).toString(16).padStart(2, "0");
+    return "#" + to(f(0)) + to(f(8)) + to(f(4));
+  }
+  const theme = (() => {
+    const root = document.documentElement;
+    const rootStyle = root.style;
+    let mode = root.dataset.mode === "light" ? "light" : "dark";
+    let accent = (root.dataset.accent === "custom" || ACCENTS.some((a) => a.id === root.dataset.accent))
+      ? root.dataset.accent : "violet";
+    const notify = () => document.dispatchEvent(new CustomEvent("sb-theme"));
+    /* 自定义主题色：内联变量覆盖样式表。强调色直接取所选拾色值，中性色按
+       色相派生（饱和度/亮度公式与内置主题的 CSS 生成规则完全一致），
+       浅色模式下一组主色显式取浅色中性值。 */
+    const INLINE_VARS = ["--c-accent", "--c-accent-hi", "--c-accent-rgb", "--logo-hue-rotate",
+      "--fx-hue-1", "--fx-hue-2", "--c-bg", "--c-panel", "--c-panel-2", "--c-key", "--c-border",
+      "--n-head", "--n-code", "--n-dot", "--n-radial", "--n-knob1", "--n-knob2", "--n-knob-b",
+      "--n-scr1", "--n-scr2", "--n-scr3", "--n-scr-b"];
+    const LIGHT_NEUTRALS = { "--c-bg": "#f1f0f1", "--c-panel": "#fafafa", "--c-panel-2": "#ffffff",
+      "--c-key": "#e9e8ea", "--c-border": "#d6d5d8" };
+    const DARK_NEUTRALS = [["--c-bg", 10, 8], ["--c-panel", 11, 14], ["--c-panel-2", 11, 18],
+      ["--c-key", 12, 16], ["--c-border", 10, 22], ["--n-head", 12, 21], ["--n-code", 13, 9],
+      ["--n-dot", 11, 11], ["--n-radial", 14, 9], ["--n-knob1", 11, 23], ["--n-knob2", 10, 11],
+      ["--n-knob-b", 10, 29], ["--n-scr1", 6, 38], ["--n-scr2", 9, 19], ["--n-scr3", 12, 9],
+      ["--n-scr-b", 14, 5]];
+    function applyCustom() {
+      const hex = loadValue(CUSTOM_KEY, "#4f378b");
+      const { h, s, l } = hexToHsl(hex);
+      const hi = hslToHex(h, Math.min(s, 60), Math.min(68, Math.max(30, l + 15)));
+      const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+      const set = (k, v) => rootStyle.setProperty(k, v);
+      set("--c-accent", hex);
+      set("--c-accent-hi", hi);
+      set("--c-accent-rgb", `${r}, ${g}, ${b}`);
+      set("--logo-hue-rotate", Math.round(((h - 262 + 540) % 360) - 180) + "deg");
+      set("--fx-hue-1", Math.round(h));
+      set("--fx-hue-2", Math.round((h + 330) % 360));
+      if (mode === "light") {
+        Object.keys(LIGHT_NEUTRALS).forEach((k) => set(k, LIGHT_NEUTRALS[k]));
+      } else {
+        DARK_NEUTRALS.forEach(([k, s2, l2]) => set(k, hslToHex(h, s2, l2)));
+      }
+    }
+    function clearCustom() {
+      INLINE_VARS.forEach((k) => rootStyle.removeProperty(k));
+    }
+    function apply() {
+      root.dataset.mode = mode;
+      root.dataset.accent = accent;
+      if (accent === "custom") applyCustom(); else clearCustom();
+      notify();   // fx canvas 等读取 CSS 变量的模块按事件刷新
+    }
+    apply();
+    function setAccentInternal(id) {
+      if (id === accent) return;
+      if (id !== "custom" && !ACCENTS.some((a) => a.id === id)) return;
+      accent = id;
+      saveValue("ui_accent", accent);
+      apply();
+    }
+    return {
+      apply,
+      get mode() { return mode; },
+      get accent() { return accent; },
+      get customColor() { return loadValue(CUSTOM_KEY, "#4f378b"); },
+      setMode(v) {
+        if (v === mode) return;
+        mode = v === "light" ? "light" : "dark";
+        saveValue("ui_mode", mode);
+        apply();
+        if (api && api.setNativeTheme) {
+          try { api.setNativeTheme(mode); } catch (e) {}
+        }
+      },
+      setAccent(id) { setAccentInternal(id); },
+      setCustomColor(hex) {
+        if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return;
+        saveValue(CUSTOM_KEY, hex);
+        if (accent === "custom") apply(); else setAccentInternal("custom");
+      },
+    };
+  })();
 
   /* ─── 硬件面板：注入四角螺丝（共享契约，纯装饰）─── */
   document.querySelectorAll(".hdw").forEach((panel) => {
@@ -414,15 +533,17 @@
       clearNeed(document.querySelector(".queue"));
     }
   }
+  function addPaths(paths) {
+    if (state.processing || !paths || !paths.length) return;
+    const additions = paths.filter((p) => !state.files.includes(p));
+    if (!additions.length) return;
+    state.files.push(...additions);
+    state.fileStatuses.push(...additions.map(() => "pending"));
+    renderFileList();
+  }
   async function addFiles() {
     if (state.processing) return;
-    const paths = await api.selectInputs();
-    if (paths && paths.length) {
-      const additions = paths.filter((p) => !state.files.includes(p));
-      state.files.push(...additions);
-      state.fileStatuses.push(...additions.map(() => "pending"));
-      renderFileList();
-    }
+    addPaths(await api.selectInputs());
   }
   $("btn-add").addEventListener("click", addFiles);
   $("btn-clear").addEventListener("click", () => {
@@ -735,12 +856,95 @@
     dragBar.addEventListener("pointerup", up);
   });
 
-  /* ─── 处理特效：向上粒子 + 底部紫色渐变动态（无波形条）─── */
+  /* ─── 设置弹窗：版本 / 更新占位 / 主题色 / 外观模式 ─── */
+  const settingsModal = $("settings-modal");
+  let settingsTrigger = null;
+  function fillVersion() {
+    const vEl = $("set-version");
+    if (api && api.appVersion) {
+      try { api.appVersion((v) => { vEl.textContent = v || "—"; }); } catch (e) {}
+    }
+  }
+  function openSettings(trigger) {
+    settingsTrigger = trigger || null;
+    fillVersion();
+    settingsModal.classList.add("open");
+    if (settingsTrigger) settingsTrigger.focus({ preventScroll: true });
+  }
+  function closeSettings() {
+    if (!settingsModal.classList.contains("open")) return;
+    settingsModal.classList.remove("open");
+    if (settingsTrigger) { settingsTrigger.focus({ preventScroll: true }); settingsTrigger = null; }
+  }
+  $("btn-settings").addEventListener("click", (e) => {
+    if (settingsModal.classList.contains("open")) closeSettings();
+    else openSettings(e.currentTarget);
+  });
+  $("settings-close").addEventListener("click", closeSettings);
+  $("settings-ok").addEventListener("click", closeSettings);
+  $("settings-backdrop").addEventListener("click", closeSettings);
+  // 占位：GitHub 更新入口，待接入 Releases 检查后启用按钮
+  $("btn-check-update").addEventListener("click", () => {
+    $("update-status").textContent = "占位：即将接入 GitHub Releases";
+  });
+
+  // 主题色 swatches（预设插入到自定义选择器之前）
+  const swWrap = $("accent-swatches");
+  const customLabel = $("swatch-custom");
+  const customPicker = $("accent-custom-picker");
+  function syncSwatches() {
+    swWrap.querySelectorAll(".swatch").forEach((s) => s.setAttribute("aria-pressed", "false"));
+    if (theme.accent === "custom") {
+      customLabel.setAttribute("aria-pressed", "true");
+      customLabel.style.background = theme.customColor;   // 选中后显示所选颜色本体
+    } else {
+      const btn = swWrap.querySelector(`.swatch[data-accent="${theme.accent}"]`);
+      if (btn) btn.setAttribute("aria-pressed", "true");
+    }
+  }
+  ACCENTS.forEach((a) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "swatch";
+    b.dataset.accent = a.id;
+    b.style.setProperty("--sw", a.sw);
+    b.title = a.name;
+    b.setAttribute("aria-label", `主题色 ${a.name}`);
+    b.addEventListener("click", () => { theme.setAccent(a.id); syncSwatches(); });
+    swWrap.insertBefore(b, customLabel);
+  });
+  customPicker.addEventListener("input", () => {
+    theme.setCustomColor(customPicker.value);
+    syncSwatches();
+  });
+  syncSwatches();
+  // 外观模式分段按钮
+  const modeBtns = document.querySelectorAll("#settings-modal .seg-btn[data-mode]");
+  const syncModeBtns = () => modeBtns.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === theme.mode)));
+  modeBtns.forEach((b) => b.addEventListener("click", () => { theme.setMode(b.dataset.mode); syncModeBtns(); }));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && settingsModal.classList.contains("open")) closeSettings();
+  });
+
+  /* ─── 处理特效：向上粒子 + 底部主题色渐变动态（无波形条）─── */
   const fx = (() => {
     const canvas = $("fx");
     const ctx = canvas.getContext("2d");
     let active = false, raf = 0;
     let particles = [];
+    // 主题色跟随：从 CSS 变量取值，主题切换（sb-theme 事件）时刷新
+    let hue1 = 260, hue2 = 215, accentRgb = "109,85,184";
+    function readThemeColors() {
+      const cs = getComputedStyle(document.documentElement);
+      const h1 = parseInt(cs.getPropertyValue("--fx-hue-1"), 10);
+      const h2 = parseInt(cs.getPropertyValue("--fx-hue-2"), 10);
+      if (Number.isFinite(h1)) hue1 = h1;
+      if (Number.isFinite(h2)) hue2 = h2;
+      const rgb = (cs.getPropertyValue("--c-accent-rgb") || "").trim();
+      if (/^\d{1,3},\s*\d{1,3},\s*\d{1,3}$/.test(rgb)) accentRgb = rgb;
+    }
+    readThemeColors();
+    document.addEventListener("sb-theme", readThemeColors);
 
     function resize() {
       canvas.width = window.innerWidth * devicePixelRatio;
@@ -755,7 +959,7 @@
           vx: (Math.random() - 0.5) * 0.4,
           vy: -(0.6 + Math.random() * 1.6),
           r: 0.6 + Math.random() * 1.8,
-          hue: Math.random() < 0.7 ? 260 : 215,
+          hue: Math.random() < 0.7 ? hue1 : hue2,
           a: 0.3 + Math.random() * 0.5,
         });
       }
@@ -764,14 +968,14 @@
       if (!active) return;
       const w = window.innerWidth, h = window.innerHeight;
       ctx.clearRect(0, 0, w, h);
-      // 底部紫色渐变动态：缓呼吸 + 渐停点缓慢漂移
+      // 底部主题色渐变动态：缓呼吸 + 渐停点缓慢漂移
       const t = Date.now() / 1000;
       const breath = 0.09 + 0.06 * Math.sin(t * 1.4);
       const drift = 0.22 + 0.10 * Math.sin(t * 0.35);
       const g = ctx.createLinearGradient(0, h * 0.60, 0, h);
-      g.addColorStop(0, "rgba(109,85,184,0)");
-      g.addColorStop(drift, `rgba(109,85,184,${(0.10 + breath * 0.3).toFixed(3)})`);
-      g.addColorStop(1, `rgba(109,85,184,${breath.toFixed(3)})`);
+      g.addColorStop(0, `rgba(${accentRgb},0)`);
+      g.addColorStop(drift, `rgba(${accentRgb},${(0.10 + breath * 0.3).toFixed(3)})`);
+      g.addColorStop(1, `rgba(${accentRgb},${breath.toFixed(3)})`);
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, w, h);
       spawnParticles();
@@ -796,7 +1000,13 @@
   })();
 
   window.addEventListener("resize", () => fx.resizeCanvas());
-  ready.then(() => { /* 状态栏初始留空 */ });
+  ready.then(() => {
+    // 桥接就绪：同步原生窗口底色（浅色模式启动时）并回填版本号
+    if (api && api.setNativeTheme) {
+      try { api.setNativeTheme(theme.mode); } catch (e) {}
+    }
+    fillVersion();
+  });
 
   document.addEventListener("dragover", (e) => e.preventDefault());
   document.addEventListener("drop", (e) => e.preventDefault());

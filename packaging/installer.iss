@@ -11,7 +11,7 @@
 ; 取消下方 [Languages] 注释。
 ; ══════════════════════════════════════════════════════════════════
 #define MyAppName "ShadowBuster"
-#define MyAppVersion "1.2.3"
+#define MyAppVersion "1.3.0"  ; 与 studio_backend.APP_VERSION 保持一致（tests/test_app_version.py 校验）
 #define MyAppExeName "ShadowBuster.exe"
 
 [Setup]
