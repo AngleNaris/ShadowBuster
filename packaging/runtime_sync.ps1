@@ -83,6 +83,7 @@ if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -F
 Assert-NonEmptyFile $venvPy "依赖安装 Python"
 Assert-NonEmptyFile "$srcApollo\lew_upscale.py" "Lew 入口"
 Assert-NonEmptyFile "$srcApollo\bass_enhance.py" "BASS 入口"
+Assert-NonEmptyFile "$srcApollo\drum_enhance.py" "Drum 入口"
 Assert-TreeHasNonEmptyFile "$srcApollo\look2hear" "look2hear 源码"
 Assert-TreeHasNonEmptyFile "$srcApollo\ckpts" "Apollo checkpoint"
 Assert-NonEmptyFile "$srcSoren\core_decrypted.py" "Soren 入口"
@@ -96,7 +97,7 @@ Assert-NonEmptyFile $ffmpeg "ffmpeg"
 New-Item -ItemType Directory -Force -Path "$stage\Apollo", "$stage\Soren_src", "$stage\ffmpeg\bin" | Out-Null
 
 Write-Host "[1/5] 拷贝 Apollo 工具链 ..."
-Copy-Item "$srcApollo\lew_upscale.py", "$srcApollo\bass_enhance.py", "$srcApollo\low_punch.py" "$stage\Apollo\" -ErrorAction SilentlyContinue
+Copy-Item "$srcApollo\lew_upscale.py", "$srcApollo\bass_enhance.py", "$srcApollo\drum_enhance.py", "$srcApollo\low_punch.py" "$stage\Apollo\" -ErrorAction SilentlyContinue
 Copy-Item "$srcApollo\look2hear" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 
@@ -224,6 +225,7 @@ if ($importRc -ne 0) { throw "关键依赖 import 验证失败(exit=$importRc)" 
 
 Assert-SameFile "$srcApollo\lew_upscale.py" "$stage\Apollo\lew_upscale.py" "Lew 入口"
 Assert-SameFile "$srcApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BASS 入口"
+Assert-SameFile "$srcApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"
 Assert-SameFile "$srcSoren\core_decrypted.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
