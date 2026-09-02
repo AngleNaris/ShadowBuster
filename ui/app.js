@@ -311,8 +311,10 @@
     function render() {
       knobEl.style.setProperty("--knob-a", angleOf(value));
       knobEl.style.setProperty("--knob-p", (value - min) / (max - min));
+      const text = fmt(value);
       knobEl.setAttribute("aria-valuenow", value);
-      valueEl.textContent = fmt(value);
+      knobEl.setAttribute("aria-valuetext", text);
+      valueEl.textContent = text;
       if (storeKey) saveValue(storeKey, value);
     }
     let dragging = false, lastY = 0, dragAccum = 0;
@@ -350,6 +352,57 @@
     return () => value;
   }
 
+  function bindFader(faderEl, valueEl, fmt, storeKey) {
+    const min = +faderEl.dataset.min, max = +faderEl.dataset.max;
+    const step = +faderEl.dataset.step, def = +faderEl.dataset.default;
+    let value = storeKey ? loadNumber(storeKey, def) : def;
+    value = Math.max(min, Math.min(max, Math.round(value / step) * step));
+
+    function setFromClientX(clientX) {
+      const rect = faderEl.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      value = Math.round((min + ratio * (max - min)) / step) * step;
+      render();
+    }
+    function render() {
+      const ratio = (value - min) / (max - min);
+      const text = fmt(value);
+      faderEl.style.setProperty("--fader-p", ratio);
+      faderEl.setAttribute("aria-valuenow", value);
+      faderEl.setAttribute("aria-valuetext", text);
+      valueEl.textContent = text;
+      if (storeKey) saveValue(storeKey, value);
+    }
+
+    let dragging = false;
+    faderEl.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      faderEl.setPointerCapture(e.pointerId);
+      setFromClientX(e.clientX);
+    });
+    faderEl.addEventListener("pointermove", (e) => { if (dragging) setFromClientX(e.clientX); });
+    const end = () => { dragging = false; };
+    faderEl.addEventListener("pointerup", end);
+    faderEl.addEventListener("pointercancel", end);
+    faderEl.addEventListener("dblclick", () => { value = def; render(); });
+    faderEl.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      value = Math.max(min, Math.min(max, value + (e.deltaY < 0 ? step : -step)));
+      render();
+    }, { passive: false });
+    faderEl.addEventListener("keydown", (e) => {
+      const delta = e.key === "ArrowUp" || e.key === "ArrowRight" ? step
+                  : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -step : 0;
+      if (delta) {
+        e.preventDefault();
+        value = Math.max(min, Math.min(max, value + delta));
+        render();
+      }
+    });
+    render();
+    return () => value;
+  }
+
   const getQuality = bindKnob($("knob-quality"), $("val-quality"),
     (v) => (["快速", "标准", "精细"])[v] || "标准", "quality");
   const getGuidance = bindKnob($("knob-guidance"), $("val-guidance"), (v) => (v / 10).toFixed(1), "guidance");
@@ -357,6 +410,46 @@
   const getSat = bindKnob($("knob-sat"), $("val-sat"), (v) => (v / 10).toFixed(2), "sat");
   const getPunch = bindKnob($("knob-punch"), $("val-punch"), (v) => `+${v} dB`, "punch");
   const getTrans = bindKnob($("knob-trans"), $("val-trans"), (v) => (v / 10).toFixed(2), "trans");
+  const getSpace = bindFader($("fader-space"), $("val-space"), (v) => (v / 10).toFixed(2), "space");
+  const getDenoise = bindFader($("fader-denoise"), $("val-denoise"), (v) => (v / 10).toFixed(2), "denoise");
+
+  /* ─── 面板 bypass 开关：关闭 = 该面板对应阶段全部跳过，状态持久化 ─── */
+  const BYPASS_CONTROLS = {
+    "bp-lew": ["lew"],
+    "bp-bass-drums": ["bass", "drums"],
+    "bp-reshape": ["reshape"],
+    "bp-soren": ["soren"],
+  };
+  const bypassState = {};
+  Object.entries(BYPASS_CONTROLS).forEach(([id, stages]) => {
+    const btn = $(id);
+    const rack = btn.closest(".rack");
+    const enabled = stages.every((stage) => loadValue("bypass_" + stage, "1") === "1");
+    stages.forEach((stage) => { bypassState[stage] = enabled; });
+
+    function render() {
+      btn.setAttribute("aria-checked", enabledForPanel() ? "true" : "false");
+      btn.querySelector(".bp-label").textContent = enabledForPanel() ? "开" : "关";
+      rack.dataset.bypassed = enabledForPanel() ? "0" : "1";
+    }
+
+    function enabledForPanel() {
+      return stages.every((stage) => bypassState[stage]);
+    }
+
+    render();
+    btn.addEventListener("click", () => {
+      const next = !enabledForPanel();
+      stages.forEach((stage) => {
+        bypassState[stage] = next;
+        saveValue("bypass_" + stage, next ? "1" : "0");
+      });
+      render();
+    });
+  });
+  function activeBypassList() {
+    return Object.entries(bypassState).filter(([, on]) => !on).map(([stage]) => stage);
+  }
 
   /* ─── 自定义下拉组件（非原生，同一契约）─── */
   function buildDropdown(ddId, options, initial, onChange, storeKey) {
@@ -458,10 +551,11 @@
 
   /* ─── EQ 分段 ─── */
   state.eq = loadValue("eq", "Neutral");
-  document.querySelectorAll(".seg-btn").forEach((btn) => {
+  const eqBtns = document.querySelectorAll(".seg-btn[data-eq]");
+  eqBtns.forEach((btn) => {
     btn.setAttribute("aria-pressed", btn.dataset.eq === state.eq ? "true" : "false");
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".seg-btn").forEach((b) => b.setAttribute("aria-pressed", "false"));
+      eqBtns.forEach((b) => b.setAttribute("aria-pressed", "false"));
       btn.setAttribute("aria-pressed", "true");
       state.eq = btn.dataset.eq;
       saveValue("eq", state.eq);
@@ -753,6 +847,8 @@
         reference: state.reference,
         quality: getQuality(), guidance: getGuidance(),
         sub: getSub(), sat: getSat(), punch: getPunch(), trans: getTrans(),
+        space: getSpace(), denoise: getDenoise(),
+        bypass: activeBypassList(),
         genre: state.reference ? "" : getGenre(),
         loudness: getLoudness(), eq: state.eq,
       });
@@ -779,6 +875,16 @@
         "<h3>瞬态（0.00 – 1.00）</h3><p>瞬态强调，单独放大鼓点起音，让节奏更清晰、不糊。</p>" +
         "<h3>谐波饱和（0.00 – 1.00）</h3><p>为低频加入模拟暖感：0.30 左右合适，太高会明显失真。</p>" +
         "<h3>操作</h3><ul><li>旋钮上下拖动或滚轮调节</li><li>双击旋钮恢复默认值</li></ul>",
+    },
+    space: {
+      title: "声场 · 参数说明",
+      html:
+        "<h3>声场（0.00 – 1.00）</h3><p>声场重塑强度（干湿比）：对分离出的铺底乐器/鼓做纯宽带 side 增益，把堆在中间的元素向两侧摊开。" +
+        "<b>0</b>＝完全保留原样，<b>1.00</b>＝全量重塑；默认 0.60。只动 side（左右差），人声与低频位置不变，单声道合并不受影响。</p>" +
+        "<h3>高频降噪（0.00 – 1.00）</h3><p>对铺底乐器轨 ≥10 kHz 的稳态沙沙噪声做门控衰减（自动噪声地板估计，类降噪采样）：贴着噪声电平的成分按比例衰减，" +
+        "突出的音乐瞬态（镲片敲击）原样保留。默认 0.20；AI 音乐的擦片毛刺感明显时可在 0.2–0.4 之间调。</p>" +
+        "<h3>面板开关</h3><p>关闭后，声场重塑与高频降噪会一起旁路；推子值保留，重新开启即可继续使用。</p>" +
+        "<h3>操作</h3><ul><li>沿推子点击或横向拖动</li><li>滚轮或方向键精细调节</li><li>双击推子恢复默认值</li></ul>",
     },
     soren: {
       title: "母带 · 参数说明",

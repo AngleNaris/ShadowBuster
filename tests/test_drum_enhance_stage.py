@@ -11,10 +11,11 @@ import soundfile as sf
 
 import studio_backend
 
-APOLLO_DIR = Path(studio_backend.APOLLO_DIR)
+APOLLO_DIR = Path(__file__).resolve().parents[1] / "apollo_scripts"
 if str(APOLLO_DIR) not in sys.path:
     sys.path.insert(0, str(APOLLO_DIR))
 
+import bass_enhance  # noqa: E402  (Apollo 工具脚本)
 import drum_enhance  # noqa: E402  (Apollo 工具脚本)
 
 
@@ -73,14 +74,13 @@ class StageCommandTests(unittest.TestCase):
         self.calls.append([str(c) for c in cmd])
         return ""
 
-    def test_stage_bass_sums_vocals_and_other(self):
+    def test_stage_bass_uses_complete_input_mix(self):
+        in_mix = _write_wav(self.root / "lew.wav")
         with mock.patch.object(studio_backend, "_run_stream", self._fake_stream):
-            studio_backend.stage_bass(self.stem, self.root / "bassmix.wav")
+            studio_backend.stage_bass(self.stem, in_mix, self.root / "bassmix.wav")
         cmd = self.calls[-1]
         self.assertTrue(any(c.endswith("bass_enhance.py") for c in cmd))
-        i = cmd.index("--no-bass")
-        self.assertEqual(cmd[i + 1], str(self.stem / "vocals.wav"))
-        self.assertEqual(cmd[i + 2], str(self.stem / "other.wav"))
+        self.assertEqual(cmd[cmd.index("--in-mix") + 1], str(in_mix))
 
     def test_stage_drums_invokes_drum_enhance(self):
         rest = _write_wav(self.root / "bassmix.wav")
@@ -90,7 +90,7 @@ class StageCommandTests(unittest.TestCase):
         cmd = self.calls[-1]
         self.assertTrue(any(c.endswith("drum_enhance.py") for c in cmd))
         self.assertEqual(cmd[cmd.index("--drums") + 1], str(self.stem / "drums.wav"))
-        self.assertEqual(cmd[cmd.index("--rest") + 1], str(rest))
+        self.assertEqual(cmd[cmd.index("--in-mix") + 1], str(rest))
         self.assertEqual(cmd[cmd.index("--punch-db") + 1], "2.0")
         self.assertEqual(cmd[cmd.index("--trans") + 1], "0.3")
 
@@ -121,6 +121,65 @@ class DrumEnhanceDSPTests(unittest.TestCase):
         # 鼓点段应被增强（punch bell + 瞬态）
         self.assertGreater(float(np.abs(out[: int(0.4 * self.sr)]).max()),
                            float(np.abs(self.drums[:, 0][: int(0.4 * self.sr)]).max()))
+
+
+class DeltaAddGainTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.sr = 44_100
+        t = np.arange(self.sr // 10) / self.sr
+        self.stem = np.column_stack((
+            0.04 * np.sin(2 * np.pi * 80 * t),
+            0.03 * np.sin(2 * np.pi * 90 * t),
+        )).astype(np.float32)
+        self.in_mix = np.column_stack((
+            0.08 * np.sin(2 * np.pi * 330 * t),
+            0.07 * np.sin(2 * np.pi * 440 * t),
+        )).astype(np.float32)
+        sf.write(self.root / "stem.wav", self.stem, self.sr, subtype="FLOAT")
+        sf.write(self.root / "in_mix.wav", self.in_mix, self.sr, subtype="FLOAT")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_bass_gain_is_added_against_original_stem(self):
+        output = self.root / "bass_out.wav"
+        argv = [
+            "bass_enhance.py",
+            "--bass", str(self.root / "stem.wav"),
+            "--in-mix", str(self.root / "in_mix.wav"),
+            "--out", str(output),
+            "--sub-db", "0",
+            "--punch-db", "0",
+            "--sat", "0",
+            "--trans", "0",
+            "--bass-gain-db", "6",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            bass_enhance.main()
+        actual, _ = sf.read(output, always_2d=True)
+        gain = 10 ** (6 / 20.0)
+        expected = self.in_mix + self.stem * (gain - 1.0)
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-7)
+
+    def test_drum_gain_is_added_against_original_stem(self):
+        output = self.root / "drum_out.wav"
+        argv = [
+            "drum_enhance.py",
+            "--drums", str(self.root / "stem.wav"),
+            "--in-mix", str(self.root / "in_mix.wav"),
+            "--out", str(output),
+            "--punch-db", "0",
+            "--trans", "0",
+            "--drums-gain-db", "6",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            drum_enhance.main()
+        actual, _ = sf.read(output, always_2d=True)
+        gain = 10 ** (6 / 20.0)
+        expected = self.in_mix + self.stem * (gain - 1.0)
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-7)
 
 
 if __name__ == "__main__":

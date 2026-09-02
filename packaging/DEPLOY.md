@@ -3,15 +3,15 @@
 ## 现状与决策
 
 - 界面是 PySide6 + QtWebEngine（UI 外壳）。**已可独立打包**。
-- 处理管线是 4 个子进程阶段，工具链在开发机 `D:\_3.AI\audio_upscale\{Apollo, Soren_src}`，
-  依赖 Python 环境（含 torch）。**不能**把这些搬进外壳 exe（体积/兼容双输）。
+- 处理管线包含 Lew、Demucs、贝斯、鼓、声场/高频降噪、Soren 六阶段。AI 工具链在开发机 `D:\_3.AI\audio_upscale\{Apollo, Soren_src}`，
+  应用维护的贝斯/鼓/声场 DSP 源码在仓库 `apollo_scripts/`；运行时依赖 Python 环境（含 torch），**不能**把这些搬进外壳 exe（体积/兼容双输）。
 - 因此采用**"外壳 + runtime 双目录"**结构：UI exe 小，AI 运行时由安装器整体装配。
 
   | 组件 | 内容 | 大小量级 |
   |---|---|---|
   | ShadowBuster.exe (+PySide6/QtWebEngine) | UI + 桥接 | ~350–500 MB |
   | runtime/env/            | 便携推理解释器（torch **CUDA cu128** + demucs + librosa 等） | ~6 GB |
-  | runtime/Apollo/         | lew_upscale.py、bass_enhance.py、look2hear/、ckpts/ | ~1 GB（模型） |
+  | runtime/Apollo/         | lew_upscale.py、bass_enhance.py、drum_enhance.py、soundstage_reshape.py、look2hear/、ckpts/ | ~1 GB（模型） |
   | runtime/Soren_src/      | core_decrypted.py、test_model.py、model/、profiles/、secured_genres/ | ~1 GB（模型） |
   | runtime/ffmpeg/bin/     | ffmpeg.exe（后端自动探测） | ~80 MB |
 
@@ -54,7 +54,7 @@ powershell -File packaging\runtime_sync.ps1
 
 # 3) 生成安装包（需先装 Inno Setup 6；winget install JRSoftware.InnoSetup）
 iscc packaging\installer.iss
-# → packaging\out\ShadowBuster-Setup-1.2.0.exe
+# → packaging\out\ShadowBuster-Setup-1.4.0.exe
 ```
 
 ## 安装器（installer.iss）
@@ -63,9 +63,12 @@ iscc packaging\installer.iss
   （`DefaultDirName={autopf}`），向导显示目录选择页（`DisableDirPage=no`），用户可自选。
 - 完成页"立即启动"用 `runasoriginaluser`，避免应用带着管理员令牌跑。
 
-## 已验证（2026-08）
+## 已验证（2026-09，v1.4.0 最终发布构建）
 
-- stage runtime 直接跑通 4 阶段端到端（15s 音频 23s 完成，GPU）。
-- 静默安装到 `C:\Program Files\ShadowBuster` 成功；安装版真实任务 trace 显示
-  `auto_device: runtime probe -> 1`（走自带 runtime 且探测到 CUDA）。
-- 任务运行中点取消 → 数秒内无任何残留 python/ffmpeg 进程。
+- 自动测试：`124 passed, 13 subtests passed`；包含非零 bass/drums 整体增益的 delta-add 回归、精确旁路、立体声联动高频降噪与单声道兼容性验证。
+- 开发环境完整六阶段端到端处理通过：Lew 高频重建、Demucs 四轨分离、贝斯增强、鼓增强、声场重塑/高频降噪、Soren 母带均执行完成。
+- 实测输入 `xianshi_44k.wav`，声场干湿比 0.60、高频降噪 0.20。输出为 44.1 kHz 双声道，shape=`(8131905, 2)`，全部采样有限，峰值 `0.946060419`，RMS `0.237280827`；曲首高频不存在旧控制率滤波造成的异常衰减。
+- `runtime_sync.ps1` 从空目录重建运行时，验证 CUDA torch 2.7.1+cu128、SciPy 1.18.0、离线 htdemucs 权重、依赖导入和关键文件哈希，并生成 `critical-manifest.sha256`。
+- PyInstaller onedir 外壳与 Inno Setup 1.4.0 安装包构建通过。最终安装器大小 `2747962406` bytes，SHA-256：`d2e4ff5510024e470b00ae11617298bb77c4cb89042f5743f22ddd59c7401116`。
+- `packaging/install_test.ps1` 静默安装返回 `EXIT=0`；安装目录内 `soundstage_reshape.py`、`bass_enhance.py`、`drum_enhance.py` 与源码及 stage 的 SHA-256 完全一致，便携 Python 可成功导入 torch 2.7.1+cu128 和 scipy 1.18.0。
+- 已从修正版测试安装目录启动应用并视觉验证：1100×950 界面完整加载；文件队列为 158px 高，列表下方“添加 / 清空”按钮均保持 30px 完整高度；四个效果面板、两个声场推子、六阶段条和处理按钮均可见且未受挤压。

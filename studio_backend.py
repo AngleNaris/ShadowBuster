@@ -12,7 +12,7 @@ from pathlib import Path
 
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 if getattr(sys, "frozen", False):
     # PyInstaller 冻结后 __file__ 在 _internal 里，exe 同级才是安装根目录
@@ -391,16 +391,15 @@ def _rest_files(stem_dir):
     raise PipelineError(f"分离产物缺失（需要 vocals/other 或 no_bass）: {stem_dir}")
 
 
-def stage_bass(stem_dir, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
+def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
                bass_gain_db=0.0, progress=None, cancel=None):
     if progress:
         progress(0.0, "贝斯增强")
     bass = stem_dir / "bass.wav"
     if not bass.exists():
         raise PipelineError(f"分离产物缺失: {stem_dir}")
-    rest = _rest_files(stem_dir)
     cmd = [PYTHON, str(APOLLO_DIR / "bass_enhance.py"),
-           "--bass", str(bass), "--no-bass", *map(str, rest), "--out", str(out_wav),
+           "--bass", str(bass), "--in-mix", str(in_mix), "--out", str(out_wav),
            "--sub-db", str(sub_db), "--sat", str(sat), "--punch-db", str(punch_db),
            "--trans", str(trans), "--bass-gain-db", str(bass_gain_db)]
     _run_stream(cmd, APOLLO_DIR, cancel=cancel)
@@ -420,12 +419,36 @@ def stage_drums(stem_dir, rest_wav, out_wav, punch_db=2.0, trans=0.3,
         shutil.copyfile(rest_wav, out_wav)
     else:
         cmd = [PYTHON, str(APOLLO_DIR / "drum_enhance.py"),
-               "--drums", str(drums), "--rest", str(rest_wav), "--out", str(out_wav),
+               "--drums", str(drums), "--in-mix", str(rest_wav), "--out", str(out_wav),
                "--punch-db", str(punch_db), "--trans", str(trans),
                "--drums-gain-db", str(drums_gain_db)]
         _run_stream(cmd, APOLLO_DIR, cancel=cancel)
     if progress:
         progress(1.0, "鼓增强完成")
+
+
+def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0,
+                  progress=None, cancel=None):
+    """声场重塑（broadband delta-add）：wet 缩放全部处理差值，可附带 ≥10kHz 噪声地板降噪。
+
+    wet≤0 且 denoise≤0，或缺少 drums/other stems 时直接透传（位级不变）。
+    denoise>0 时即使 wet=0 也会运行，以允许单独使用高频降噪。
+    """
+    if progress:
+        progress(0.0, "声场重塑")
+    stems_dir = Path(stems_dir)
+    if (wet <= 0 and denoise <= 0) or not (stems_dir / "drums.wav").exists() or not (stems_dir / "other.wav").exists():
+        shutil.copyfile(in_mix, out_wav)
+    else:
+        cmd = [PYTHON, str(APOLLO_DIR / "soundstage_reshape.py"),
+               "--in-mix", str(in_mix), "--out-wav", str(out_wav),
+               "--stems-dir", str(stems_dir),
+               "--mode", "broadband", "--wet", str(wet)]
+        if denoise > 0:
+            cmd += ["--other-denoise-amount", str(denoise)]
+        _run_stream(cmd, APOLLO_DIR, cancel=cancel)
+    if progress:
+        progress(1.0, "声场重塑完成")
 
 
 def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
@@ -453,8 +476,14 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
 def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
                  bass_gain_db=0.0, genre="Pop", loudness="normal", eq_profile="Neutral",
                  reference=None, quality=1, guidance=1.5, device="cuda", progress=None,
-                 cancel=None, work_dir=None, lowpass_cutoff=None):
-    """执行单文件完整链路。progress(stage_idx, frac, label)。"""
+                 cancel=None, work_dir=None, lowpass_cutoff=None,
+                 space_wet=0.0, space_denoise=0.0,
+                 bypass=()):
+    """执行单文件完整链路。progress(stage_idx, frac, label)。
+
+    bypass: 可迭代的阶段名（lew/bass/drums/reshape/soren），命中的阶段位级跳过。
+    分离阶段不可 bypass（后续阶段依赖 stems 产物）。
+    """
     input_wav = Path(input_wav)
     if not input_wav.exists():
         raise PipelineError(f"输入文件不存在: {input_wav}")
@@ -466,12 +495,17 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     work = Path(work_dir) if work_dir else output_dir / ".sorenstudio_work"
     work.mkdir(parents=True, exist_ok=True)
 
+    bypass = set(bypass)
+    if not bypass <= {"lew", "bass", "drums", "reshape", "soren"}:
+        raise PipelineError(f"未知 bypass 阶段: {sorted(bypass)}")
+
     stem = input_wav.stem
     out_final = output_dir / f"{stem}_shadowbuster.wav"
     lew_out = work / f"{stem}_lew.wav"
     stems_out = work / "stems"
     bass_out = work / f"{stem}_bassmix.wav"
     drum_out = work / f"{stem}_drummix.wav"
+    shape_out = work / f"{stem}_shapemix.wav"
 
     def cb(i):
         def inner(frac, label):
@@ -482,20 +516,48 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
         return inner
 
     try:
-        stage_lew(input_wav, lew_out, device=device, progress=cb(0),
-                  quality=quality, guidance=guidance, cancel=cancel)
-        stage_demucs(lew_out, stems_out, progress=cb(1), cancel=cancel)
-        stem_dir = stems_out / "htdemucs" / lew_out.stem
-        # punch/瞬态本意是鼓处理，实测只对 drums 轨生效 → 从贝斯阶段移到鼓阶段
-        stage_bass(stem_dir, bass_out, sub_db=sub_db, sat=sat,
-                   punch_db=0.0, trans=0.0, bass_gain_db=bass_gain_db,
-                   progress=cb(2), cancel=cancel)
-        stage_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
-                    progress=cb(3), cancel=cancel)
-        stage_soren(drum_out, out_final, genre=genre, loudness=loudness,
-                    eq_profile=eq_profile, reference=reference,
-                    lowpass_cutoff=lowpass_cutoff, progress=cb(4),
-                    cancel=cancel)
+        if "lew" in bypass:
+            # 直接以原输入进入 Demucs；Demucs 会在解码时适配其模型采样率。
+            lew_src = input_wav
+            if progress:
+                cb(0)(1.0, "高频旁路")
+        else:
+            stage_lew(input_wav, lew_out, device=device, progress=cb(0),
+                      quality=quality, guidance=guidance, cancel=cancel)
+            lew_src = lew_out
+        stage_demucs(lew_src, stems_out, progress=cb(1), cancel=cancel)
+        stem_dir = stems_out / "htdemucs" / lew_src.stem
+        if "bass" in bypass:
+            shutil.copyfile(lew_src, bass_out)
+            if progress:
+                cb(2)(1.0, "贝斯旁路")
+        else:
+            stage_bass(stem_dir, lew_src, bass_out, sub_db=sub_db, sat=sat,
+                       punch_db=0.0, trans=0.0, bass_gain_db=bass_gain_db,
+                       progress=cb(2), cancel=cancel)
+        if "drums" in bypass:
+            shutil.copyfile(bass_out, drum_out)
+            if progress:
+                cb(3)(1.0, "鼓旁路")
+        else:
+            stage_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
+                        progress=cb(3), cancel=cancel)
+        if "reshape" in bypass:
+            shutil.copyfile(drum_out, shape_out)
+            if progress:
+                cb(4)(1.0, "声场旁路")
+        else:
+            stage_reshape(drum_out, stem_dir, shape_out, wet=space_wet,
+                          denoise=space_denoise, progress=cb(4), cancel=cancel)
+        if "soren" in bypass:
+            shutil.copyfile(shape_out, out_final)
+            if progress:
+                cb(5)(1.0, "母带旁路")
+        else:
+            stage_soren(shape_out, out_final, genre=genre, loudness=loudness,
+                        eq_profile=eq_profile, reference=reference,
+                        lowpass_cutoff=lowpass_cutoff, progress=cb(5),
+                        cancel=cancel)
     except PipelineError:
         raise
     finally:
@@ -564,6 +626,9 @@ if __name__ == "__main__":
     ap.add_argument("--eq-profile", default="Neutral")
     ap.add_argument("--reference", default=None)
     ap.add_argument("--lowpass-cutoff", type=float, default=None)
+    ap.add_argument("--space-wet", type=float, default=0.0)
+    ap.add_argument("--space-denoise", type=float, default=0.0)
+    ap.add_argument("--bypass", default="", help="逗号分隔的旁路阶段名")
     ap.add_argument("--cpu", action="store_true")
     args = ap.parse_args()
 
@@ -575,5 +640,7 @@ if __name__ == "__main__":
                        genre=args.genre, loudness=args.loudness,
                        eq_profile=args.eq_profile, reference=args.reference,
                        lowpass_cutoff=args.lowpass_cutoff,
+                       space_wet=args.space_wet, space_denoise=args.space_denoise,
+                       bypass=[b.strip() for b in args.bypass.split(",") if b.strip()],
                        device="cpu" if args.cpu else "cuda", progress=p)
     print(f"完成: {out}（{time.time()-t0:.0f}s）")

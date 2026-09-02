@@ -155,11 +155,12 @@ body {
 .queue {
   display: flex; flex-direction: column; gap: var(--s-2);
   padding: var(--s-3) var(--s-4);
-  flex: 1 1 auto; min-height: 0;
+  flex: 1 0 auto; min-height: 154px;
   animation: rise-in var(--dur-slow) var(--ease) backwards;
 }
 .queue-head {
   display: flex; justify-content: space-between; align-items: baseline;
+  flex: 0 0 auto;
 }
 .queue-title { font-size: 12px; font-weight: 700; letter-spacing: 1px; }
 .queue-count { font-size: 11px; font-family: var(--mono); color: var(--c-text-faint); }
@@ -213,6 +214,7 @@ body {
 .queue-actions {
   display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2);
   padding-top: var(--s-2);
+  flex: 0 0 auto;
 }
 .queue-btn { width: 100%; height: 30px; }
 .queue-btn svg { width: 14px; height: 14px; }
@@ -264,7 +266,7 @@ body {
 .file-btn { width: 64px; }
 
 /* ═══ 参数卡片 ═══ */
-.racks { display: grid; grid-template-columns: 1fr 1.45fr 1fr; gap: var(--s-3); }
+.racks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
 .rack {
   display: flex; flex-direction: column;
   transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
@@ -273,6 +275,7 @@ body {
 .rack:nth-child(1) { animation-delay: 100ms; }
 .rack:nth-child(2) { animation-delay: 160ms; }
 .rack:nth-child(3) { animation-delay: 220ms; }
+.rack:nth-child(4) { animation-delay: 280ms; }
 .rack:hover { border-color: var(--c-accent-hi); }
 .rack-head {
   display: flex; align-items: baseline; gap: var(--s-2);
@@ -340,6 +343,107 @@ body {
 .knob:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 2px; }
 .knob-label { font-size: 11px; color: var(--c-text-dim); }
 .knob-value { font-size: 12px; font-family: var(--mono); color: var(--c-text); min-height: 16px; }
+
+/* ═══ 声场横向推子：标签/轨道/数值共享纵向基线 ═══ */
+.fader-bank {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: var(--s-5);
+  padding-inline: var(--s-5);
+}
+.fader-wrap { display: flex; flex-direction: column; gap: var(--s-2); }
+.fader-meta { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); }
+.fader-label { font-size: 11px; color: var(--c-text-dim); }
+.fader-value {
+  min-width: 42px; text-align: right;
+  font-size: 12px; font-family: var(--mono); color: var(--c-text);
+}
+.fader {
+  --fader-p: 0;
+  position: relative;
+  height: 46px;
+  cursor: ew-resize;
+  touch-action: none;
+  overflow: visible;
+  isolation: isolate;
+  background: var(--c-panel-2);
+  border: 1px solid var(--n-knob-b);
+  box-shadow:
+    inset 0 1px 3px rgba(0,0,0,0.58),
+    inset 0 1px 0 rgba(255,255,255,0.055),
+    0 1px 0 rgba(255,255,255,0.025);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.fader::before {
+  content: "";
+  position: absolute; left: 17px; right: 17px; top: 50%; height: 8px;
+  transform: translateY(-50%);
+  background: var(--n-dot);
+  border: 1px solid rgba(0,0,0,0.78);
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.82),
+    0 1px 0 rgba(255,255,255,0.055);
+}
+.fader::after {
+  content: "";
+  position: absolute; left: 18px; right: 18px; top: 6px; bottom: 6px;
+  background:
+    repeating-linear-gradient(90deg, var(--c-text-faint) 0 1px, transparent 1px 9px) top / 100% 5px no-repeat,
+    repeating-linear-gradient(90deg, var(--c-text-faint) 0 1px, transparent 1px 9px) bottom / 100% 5px no-repeat;
+  opacity: 0.48;
+  pointer-events: none;
+}
+.fader-fill {
+  position: absolute; left: 18px; top: 50%; height: 3px;
+  width: calc((100% - 36px) * var(--fader-p));
+  transform: translateY(-50%);
+  background: var(--c-accent-hi);
+  box-shadow: 0 0 8px rgba(var(--c-accent-rgb),0.78);
+  pointer-events: none;
+}
+.fader-cap {
+  position: absolute; top: 8px;
+  left: calc(18px + (100% - 36px) * var(--fader-p));
+  width: 38px; height: 28px;
+  transform: translateX(-50%);
+  background: var(--n-knob1);
+  border: 1px solid var(--n-knob-b);
+  border-radius: 2px;
+  box-shadow:
+    0 2px 4px rgba(0,0,0,0.58),
+    inset 0 1px 0 rgba(255,255,255,0.1),
+    inset 0 -1px 0 rgba(0,0,0,0.38);
+  pointer-events: none;
+  transition: left 70ms linear, box-shadow var(--dur) var(--ease);
+  z-index: 4;
+}
+.fader-cap::before {
+  content: "";
+  position: absolute; left: 3px; right: 3px; top: 11px; height: 4px;
+  background: var(--c-accent-hi);
+  border-top: 1px solid rgba(255,255,255,0.35);
+  border-bottom: 1px solid rgba(0,0,0,0.65);
+  box-shadow: 0 0 5px rgba(var(--c-accent-rgb),0.55);
+}
+.fader-cap::after {
+  content: "";
+  position: absolute; inset: 3px;
+  border: 1px solid rgba(255,255,255,0.055);
+  pointer-events: none;
+}
+.fader:hover { border-color: var(--c-accent-hi); }
+.fader:hover .fader-cap {
+  box-shadow: 0 2px 5px rgba(0,0,0,0.62), 0 0 0 1px rgba(var(--c-accent-rgb),0.24), inset 0 1px 0 rgba(255,255,255,0.1);
+}
+.fader:active {
+  box-shadow: inset 0 3px 7px rgba(0,0,0,0.82), 0 0 0 3px rgba(var(--c-accent-rgb),0.14);
+}
+.fader:active .fader-cap {
+  transform: translateX(-50%) translateY(1px);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.12);
+}
+.fader:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 2px; }
 
 /* ═══ 表单字段 ═══ */
 .field { display: flex; flex-direction: column; gap: var(--s-1); }
@@ -936,3 +1040,37 @@ html[data-mode="light"] .knob::after {
   border-color: var(--c-accent-hi);
   box-shadow: 0 0 0 2px rgba(var(--c-accent-rgb),0.35), 0 0 18px rgba(var(--c-accent-rgb),0.28);
 }
+
+/* ═══ 面板 bypass 开关（rack 头部，硬件拨杆质感）═══ */
+.rack-bypass {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: none; padding: 2px 4px;
+  cursor: pointer; font: inherit;
+  color: var(--c-text-dim);
+}
+.rack-bypass:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 2px; }
+.bp-track {
+  width: 26px; height: 14px; position: relative;
+  background: var(--c-key);
+  border: 1px solid var(--c-border);
+  box-shadow: var(--inset-deep);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.bp-dot {
+  position: absolute; top: 1px; left: 1px;
+  width: 10px; height: 10px;
+  background: var(--c-text-faint);
+  transition: transform var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.bp-label { font-size: 10.5px; letter-spacing: 1px; min-width: 14px; text-align: center; }
+.rack-bypass[aria-checked="true"] .bp-track {
+  background: var(--c-accent); border-color: var(--c-accent-hi);
+}
+.rack-bypass[aria-checked="true"] .bp-dot {
+  transform: translateX(12px);
+  background: #fff;
+}
+.rack-bypass[aria-checked="true"] { color: var(--c-text); }
+.rack-bypass[aria-checked="false"] { color: var(--c-text-faint); }
+/* 旁路时只弱化参数区，开关本身保持清晰且参数仍可预调 */
+.rack[data-bypassed="1"] .rack-body { opacity: 0.55; }

@@ -26,11 +26,21 @@
 $ErrorActionPreference = "Stop"
 
 $root     = Split-Path $PSScriptRoot -Parent
+$workspace= Split-Path $root -Parent
 $stage    = "$root\packaging\stage\runtime"
-$srcApollo= "D:\_3.AI\audio_upscale\Apollo"
-$srcSoren = "D:\_3.AI\audio_upscale\Soren_src"
-$srcPy    = "C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12.11-windows-x86_64-none"
-$venvPy   = "D:\_3.AI\audio_upscale\UniverSR\.venv\Scripts\python.exe"
+$srcApollo= if ($env:SB_APOLLO) { $env:SB_APOLLO } else { Join-Path $workspace "Apollo" }
+$appApollo= Join-Path $root "apollo_scripts"
+$srcSoren = if ($env:SB_SOREN) { $env:SB_SOREN } else { Join-Path $workspace "Soren_src" }
+$srcPy    = if ($env:SB_PORTABLE_PYTHON) {
+    $env:SB_PORTABLE_PYTHON
+} else {
+    Join-Path $env:APPDATA "uv\python\cpython-3.12.11-windows-x86_64-none"
+}
+$venvPy   = if ($env:SB_PYTHON) {
+    $env:SB_PYTHON
+} else {
+    Join-Path $workspace "UniverSR\.venv\Scripts\python.exe"
+}
 $ffmpeg   = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
 if ($ffmpeg) {
     $ffmpegItem = Get-Item -LiteralPath $ffmpeg -Force
@@ -82,8 +92,9 @@ if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -F
 
 Assert-NonEmptyFile $venvPy "依赖安装 Python"
 Assert-NonEmptyFile "$srcApollo\lew_upscale.py" "Lew 入口"
-Assert-NonEmptyFile "$srcApollo\bass_enhance.py" "BASS 入口"
-Assert-NonEmptyFile "$srcApollo\drum_enhance.py" "Drum 入口"
+Assert-NonEmptyFile "$appApollo\bass_enhance.py" "BASS 入口"
+Assert-NonEmptyFile "$appApollo\drum_enhance.py" "Drum 入口"
+Assert-NonEmptyFile "$appApollo\soundstage_reshape.py" "声场重塑入口"
 Assert-TreeHasNonEmptyFile "$srcApollo\look2hear" "look2hear 源码"
 Assert-TreeHasNonEmptyFile "$srcApollo\ckpts" "Apollo checkpoint"
 Assert-NonEmptyFile "$srcSoren\core_decrypted.py" "Soren 入口"
@@ -97,7 +108,8 @@ Assert-NonEmptyFile $ffmpeg "ffmpeg"
 New-Item -ItemType Directory -Force -Path "$stage\Apollo", "$stage\Soren_src", "$stage\ffmpeg\bin" | Out-Null
 
 Write-Host "[1/5] 拷贝 Apollo 工具链 ..."
-Copy-Item "$srcApollo\lew_upscale.py", "$srcApollo\bass_enhance.py", "$srcApollo\drum_enhance.py", "$srcApollo\low_punch.py" "$stage\Apollo\" -ErrorAction SilentlyContinue
+Copy-Item "$srcApollo\lew_upscale.py", "$srcApollo\low_punch.py" "$stage\Apollo\" -ErrorAction SilentlyContinue
+Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApollo\soundstage_reshape.py" "$stage\Apollo\" -ErrorAction Stop
 Copy-Item "$srcApollo\look2hear" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 
@@ -226,8 +238,9 @@ if ($null -eq $previousPythonPath) {
 if ($importRc -ne 0) { throw "关键依赖 import 验证失败(exit=$importRc)" }
 
 Assert-SameFile "$srcApollo\lew_upscale.py" "$stage\Apollo\lew_upscale.py" "Lew 入口"
-Assert-SameFile "$srcApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BASS 入口"
-Assert-SameFile "$srcApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
+Assert-SameFile "$appApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BASS 入口"
+Assert-SameFile "$appApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
+Assert-SameFile "$appApollo\soundstage_reshape.py" "$stage\Apollo\soundstage_reshape.py" "声场重塑入口"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"
 Assert-SameFile "$srcSoren\core_decrypted.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
@@ -242,6 +255,7 @@ Assert-SameFile $ffmpeg "$stage\ffmpeg\bin\ffmpeg.exe" "ffmpeg"
 $manifestPath = "$stage\critical-manifest.sha256"
 $manifestRoots = @(
     "$stage\Apollo\lew_upscale.py", "$stage\Apollo\bass_enhance.py",
+    "$stage\Apollo\drum_enhance.py", "$stage\Apollo\soundstage_reshape.py",
     "$stage\Apollo\look2hear", "$stage\Apollo\ckpts",
     "$stage\Soren_src\core_decrypted.py", "$stage\Soren_src\test_model.py",
     "$stage\Soren_src\model",

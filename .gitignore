@@ -8,6 +8,7 @@ credentials.json
 *.key
 *.pfx
 *.p12
+*.crt
 
 # Python
 __pycache__/
@@ -29,9 +30,23 @@ ENV/
 /dist/
 /packaging/out/
 /packaging/stage/
+/packaging/test_install*/
+/runtime/
+/Apollo/
+/Soren_src/
 *.log
 *.exe
 *.msi
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.dmg
+*.appx
+*.appxbundle
+*.deb
+*.rpm
 
 # Embedded browser and local tool state
 /webview_storage/
@@ -39,6 +54,7 @@ ENV/
 
 # Generated visual runs and UI verification screenshots
 /visual/
+/screenshots/
 /ui_check*.png
 /ui_final*.png
 /ui_v3*.png
@@ -55,12 +71,23 @@ ENV/
 *.aif
 *.opus
 *.wma
+*.wave
 *.ckpt
 *.bin
 *.pth
 *.pt
 *.onnx
 *.safetensors
+*.joblib
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.pb
+*.tflite
+*.gguf
+*.npy
+*.npz
 
 # Temporary, backup, and OS files
 *.tmp

@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=24">
+<link rel="stylesheet" href="style.css?v=27">
 </head>
 <body>
 
@@ -81,6 +81,10 @@
         <button class="icon-btn rack-help" data-help="lew" title="参数说明" aria-label="高频 参数说明" aria-haspopup="dialog">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
         </button>
+        <button class="rack-bypass" id="bp-lew" type="button" role="switch" aria-checked="true" title="启用/旁路 高频面板" aria-label="高频面板开关">
+          <span class="bp-track"><span class="bp-dot"></span></span>
+          <span class="bp-label">开</span>
+        </button>
       </div>
       <div class="rack-body">
         <div class="knob-wrap">
@@ -106,6 +110,10 @@
         <h2 class="rack-title">低频</h2>
         <button class="icon-btn rack-help" data-help="bass" title="参数说明" aria-label="低频 参数说明" aria-haspopup="dialog">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
+        </button>
+        <button class="rack-bypass" id="bp-bass-drums" type="button" role="switch" aria-checked="true" title="启用/旁路 低频与鼓增强面板" aria-label="低频与鼓增强面板开关">
+          <span class="bp-track"><span class="bp-dot"></span></span>
+          <span class="bp-label">开</span>
         </button>
       </div>
       <div class="rack-body">
@@ -140,12 +148,52 @@
       </div>
     </div>
 
-    <div class="rack hdw" data-rack="soren">
+    <div class="rack hdw" data-rack="space">
       <div class="rack-head">
         <span class="rack-index">03</span>
+        <h2 class="rack-title">声场</h2>
+        <button class="icon-btn rack-help" data-help="space" title="参数说明" aria-label="声场 参数说明" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
+        </button>
+        <button class="rack-bypass" id="bp-reshape" type="button" role="switch" aria-checked="true" title="启用/旁路 声场面板" aria-label="声场面板开关">
+          <span class="bp-track"><span class="bp-dot"></span></span>
+          <span class="bp-label">开</span>
+        </button>
+      </div>
+      <div class="rack-body fader-bank">
+        <div class="fader-wrap">
+          <div class="fader-meta">
+            <span class="fader-label" id="label-space">声场</span>
+            <output class="fader-value" id="val-space">0.60</output>
+          </div>
+          <div class="fader" id="fader-space" tabindex="0" role="slider" aria-labelledby="label-space" aria-valuemin="0" aria-valuemax="10" aria-valuenow="6" aria-valuetext="0.60" data-min="0" data-max="10" data-step="1" data-default="6">
+            <span class="fader-fill" aria-hidden="true"></span>
+            <span class="fader-cap" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="fader-wrap">
+          <div class="fader-meta">
+            <span class="fader-label" id="label-denoise">高频降噪</span>
+            <output class="fader-value" id="val-denoise">0.20</output>
+          </div>
+          <div class="fader" id="fader-denoise" tabindex="0" role="slider" aria-labelledby="label-denoise" aria-valuemin="0" aria-valuemax="10" aria-valuenow="2" aria-valuetext="0.20" data-min="0" data-max="10" data-step="1" data-default="2">
+            <span class="fader-fill" aria-hidden="true"></span>
+            <span class="fader-cap" aria-hidden="true"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rack hdw" data-rack="soren">
+      <div class="rack-head">
+        <span class="rack-index">04</span>
         <h2 class="rack-title">母带</h2>
         <button class="icon-btn rack-help" data-help="soren" title="参数说明" aria-label="母带 参数说明" aria-haspopup="dialog">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
+        </button>
+        <button class="rack-bypass" id="bp-soren" type="button" role="switch" aria-checked="true" title="启用/旁路 母带面板" aria-label="母带面板开关">
+          <span class="bp-track"><span class="bp-dot"></span></span>
+          <span class="bp-label">开</span>
         </button>
       </div>
       <div class="rack-body rack-fields">
@@ -189,7 +237,8 @@
       <div class="stage" data-stage="1"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">分离低频</span></div>
       <div class="stage" data-stage="2"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">低频增强</span></div>
       <div class="stage" data-stage="3"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">鼓增强</span></div>
-      <div class="stage" data-stage="4"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">母带</span></div>
+      <div class="stage" data-stage="4"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">声场</span></div>
+      <div class="stage" data-stage="5"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">母带</span></div>
     </div>
   </section>
 
@@ -289,6 +338,6 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="app.js?v=20"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>
