@@ -56,6 +56,34 @@ def _reshape_bass(x, sr, sub_db, sub_fc):
     return _low_shelf(x, sr, sub_fc, sub_db)
 
 
+def _dynamic_side_shelf(x, sr, fc, gain_db, thr_pct=70.0, rel_db=6.0):
+    """de-esser 思路的 side 高频 shelf：boost 受 side 高频包络动态控制。
+
+    包络低于自身 P70 分位时给满 boost；超过后按 rel_db 线性收敛到 0
+    ——镲片瞬态（side 高频尖峰）时自动收，安静段保持拓宽。
+    """
+    left, right = x[:, 0], x[:, 1]
+    mid, side = (left + right) / 2.0, (left - right) / 2.0
+    g = 10 ** (gain_db / 20.0)
+    hp = signal.sosfiltfilt(signal.butter(2, fc, "highpass", fs=sr, output="sos"), side, padlen=0)
+    env = np.sqrt(np.maximum(signal.sosfilt(signal.butter(2, 10, "lowpass", fs=sr, output="sos"), hp ** 2), 0.0) + 1e-20)
+    env_db = 20 * np.log10(env + 1e-12)
+    thr = np.percentile(env_db, thr_pct)
+    gate = np.clip(1.0 - (env_db - thr) / rel_db, 0.0, 1.0)
+    gate = signal.sosfilt(signal.butter(2, 200, "lowpass", fs=sr, output="sos"), gate)  # 去锯齿
+    boosted_side = side + hp * (g - 1.0) * gate
+    return np.column_stack((mid + boosted_side, mid - boosted_side))
+
+
+# 模式预设: (other: shelf_db/shelf_fc/side_gain_db, drums: 同)
+MODES = {
+    "shelf3k":   dict(other=(3.0, 3500.0, 1.0), drums=(1.5, 5000.0, 0.0)),   # 原始版（擦片尖锐参照）
+    "shelf-air": dict(other=(3.0, 7000.0, 1.0), drums=(1.5, 8000.0, 0.0)),   # 倾斜上移出敏感区
+    "broadband": dict(other=(0.0, 3500.0, 3.0), drums=(0.0, 5000.0, 1.5)),   # 无频谱倾斜，纯 side 增益
+    "dynamic":   dict(other=(3.0, 3500.0, 1.0), drums=(1.5, 5000.0, 0.0)),   # 静态参数同 shelf3k + 动态门
+}
+
+
 def ensure_stems(in_wav, stems_dir, device="cuda"):
     """跑 demucs 4-stem（与主管线同一命令），返回 stems 目录。"""
     stems_dir = Path(stems_dir)
@@ -91,6 +119,9 @@ def main():
     ap.add_argument("--in-wav", required=True, type=Path)
     ap.add_argument("--out-wav", required=True, type=Path)
     ap.add_argument("--stems-dir", type=Path, default=None, help="demucs 输出根目录（缺省 in 同级 _reshape_stems）")
+    ap.add_argument("--mode", choices=list(MODES), default="shelf3k",
+                    help="shelf3k=原始版 | shelf-air=倾斜上移出敏感区 | broadband=纯side增益 | dynamic=动态门")
+    ap.add_argument("--wet", type=float, default=1.0, help="干湿比 0-1：缩放全部处理差值，0=与原曲逐样本一致")
     ap.add_argument("--other-side-high-db", type=float, default=3.0)
     ap.add_argument("--other-side-high-fc", type=float, default=3500.0)
     ap.add_argument("--other-side-gain-db", type=float, default=1.0)
@@ -108,9 +139,10 @@ def main():
     mix, sr = sf.read(in_wav, always_2d=True, dtype="float64")
     assert sr == SR, f"需要 {SR}Hz 输入（先用 ffmpeg 转采样率）"
 
+    preset = MODES[args.mode]
     params = {
-        "other": (args.other_side_high_db, args.other_side_high_fc, args.other_side_gain_db),
-        "drums": (args.drums_side_high_db, args.drums_side_high_fc, 0.0),
+        "other": preset["other"],
+        "drums": preset["drums"],
     }
     out = mix.copy()
     for name, (db, fc, gain) in params.items():
@@ -118,15 +150,23 @@ def main():
         n = min(len(stem), len(out))
         if s_sr != sr:
             raise SystemExit(f"{name} 采样率 {s_sr} != {sr}")
-        processed = _reshape_stem(stem[:n], sr, db, fc, gain)
+        if args.mode == "dynamic" and db > 0:
+            processed = _dynamic_side_shelf(stem[:n], sr, fc, db)
+        else:
+            processed = _reshape_stem(stem[:n], sr, db, fc, gain)
         out[:n] += processed - stem[:n]        # delta-add：只加处理差值
-        print(f"  {name}: side high +{db}dB@{fc:.0f}Hz, side gain +{gain}dB")
+        print(f"  {name}: shelf +{db}dB@{fc:.0f}Hz, side gain +{gain}dB"
+              + ("  [动态门]" if args.mode == "dynamic" and db > 0 else ""))
     if args.bass_sub_db:
         stem, s_sr = sf.read(stem_dir / "bass.wav", always_2d=True, dtype="float64")
         n = min(len(stem), len(out))
         processed = _reshape_bass(stem[:n], sr, args.bass_sub_db, args.bass_sub_fc)
         out[:n] += processed - stem[:n]
         print(f"  bass: low shelf +{args.bass_sub_db}dB@{args.bass_sub_fc:.0f}Hz")
+    wet = min(max(args.wet, 0.0), 2.0)
+    if wet != 1.0:
+        out = mix + (out - mix) * wet     # 干湿比：等比缩放全部处理差值
+        print(f"  干湿比 wet={wet:.2f} (0=原曲, 1=全量)")
 
     # 守恒自检：所有差值路径在零参数下恒等；此处再验证 out − mix 的能量与 delta 一致
     peak = np.abs(out).max()
