@@ -51,6 +51,46 @@ def _reshape_stem(x, sr, side_high_db, side_high_fc, side_gain_db):
     return np.column_stack((mid + side, mid - side))
 
 
+def _spectral_denoise(x, sr, fc=10000.0, amount=0.2, thr_ratio=1.5):
+    """频带降噪（Audition 噪声采样式，噪声地板自动估计）。
+
+    每个 bin 沿时间轴取 P15 = 噪声地板估计（稳态沙沙一直存在所以贴地板，
+    音乐瞬态偶尔出现所以分位数不受影响）。门限曲线与 Audition 对齐：
+    幅度 ≤ 地板（纯噪声）→ 衰减满 amount（20% ≈ -1.9dB）；
+    幅度 ≥ 1.5×地板（音乐瞬态）→ 原样通过。仅作用 fc 以上频段。
+    amount=0 恒等。
+    """
+    if amount <= 0:
+        return x
+    from scipy.ndimage import percentile_filter
+
+    def _denoise_channel(ch):
+        f, t, Z = signal.stft(ch, sr, nperseg=4096, noverlap=3072)
+        mag = np.abs(Z)
+        high = f >= fc
+        if not high.any():
+            return ch
+        floor_frames = max(3, int(round(3.0 / (t[1] - t[0]))))   # 3s 滑窗
+        sub = mag[high]
+        floor = percentile_filter(sub, percentile=15, size=(1, floor_frames), mode="nearest")
+        ratio = sub / (floor + 1e-12)
+        # Audition 对齐：ratio≤1（贴地板）满减；1→thr_ratio 线性过渡；≥thr_ratio 不动
+        likelihood = np.clip((thr_ratio - ratio) / (thr_ratio - 1.0), 0.0, 1.0)
+        gain = 1.0 - amount * likelihood
+        gain = signal.sosfilt(signal.butter(2, 30, "lowpass", fs=sr, output="sos"), gain)  # 防音乐噪声
+        Zg = Z.copy()
+        Zg[high] *= gain        # 逐 bin 增益：噪声 bin 衰减、瞬态 bin ≈ 1
+        _, xi = signal.istft(Zg, sr, nperseg=4096, noverlap=3072)
+        return xi[: len(ch)]
+    # scipy 1.18 的 stft 对 2D 输入有 bug，逐通道处理
+    outs = [_denoise_channel(x[:, c] if x.ndim == 2 else x)
+            for c in range(x.shape[1] if x.ndim == 2 else 1)]
+    y = np.column_stack(outs) if x.ndim == 2 else outs[0]
+    if not np.isfinite(y).all():
+        raise RuntimeError("spectral denoise produced non-finite samples")
+    return y.astype(x.dtype)
+
+
 def _reshape_bass(x, sr, sub_db, sub_fc):
     """bass 轨低频补偿：全频段低 shelf（包在 delta-add 里，归零恒等）。"""
     return _low_shelf(x, sr, sub_fc, sub_db)
@@ -129,6 +169,9 @@ def main():
     ap.add_argument("--drums-side-high-fc", type=float, default=5000.0)
     ap.add_argument("--bass-sub-db", type=float, default=0.0, help="bass 轨低频 shelf 补偿 dB")
     ap.add_argument("--bass-sub-fc", type=float, default=110.0)
+    ap.add_argument("--other-denoise-amount", type=float, default=0.0,
+                    help="other 轨 ≥fc 噪声地板降噪量 0-1（Audition 降噪量语义，贴地板 -amount*100%%）")
+    ap.add_argument("--other-denoise-fc", type=float, default=10000.0)
     ap.add_argument("--cpu", action="store_true")
     args = ap.parse_args()
 
@@ -154,6 +197,11 @@ def main():
             processed = _dynamic_side_shelf(stem[:n], sr, fc, db)
         else:
             processed = _reshape_stem(stem[:n], sr, db, fc, gain)
+        if name == "other" and args.other_denoise_amount > 0:
+            # 降噪放最后：清洗的是拓宽后的结果（噪声地板同样被拓宽抬响过）
+            processed = _spectral_denoise(processed, sr, args.other_denoise_fc,
+                                          args.other_denoise_amount)
+            print(f"  other: ≥{args.other_denoise_fc:.0f}Hz 噪声地板降噪 {args.other_denoise_amount*100:.0f}%")
         out[:n] += processed - stem[:n]        # delta-add：只加处理差值
         print(f"  {name}: shelf +{db}dB@{fc:.0f}Hz, side gain +{gain}dB"
               + ("  [动态门]" if args.mode == "dynamic" and db > 0 else ""))
