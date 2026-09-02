@@ -143,12 +143,13 @@ if ($rc -ne 0) { throw "omegaconf 安装失败(exit=$rc)" }
 #     注意 numba/statsmodels/pandas 是 Soren 母带的硬依赖，必须保留）
 #   - torch/include：C++ 头文件，仅构建扩展用（约 53MB；
 #     不删 torch/_inductor——未来若启用 torch.compile 会需要；
-#     不删 torch/testing——autograd/gradcheck 在 import 时即引用，删了 torch 起不来）
+#     不删 torch/testing——autograd/gradcheck 在 import 时即引用，删了 torch 起不来；
+#     不删 sklearn——Soren 的 model/ 是含 sklearn 对象的 joblib pickle，
+#     反序列化需要 sklearn 类，删了模型加载直接失败）
 Write-Host "  [4b] 体积裁剪 ..."
 Get-ChildItem $site -Directory -Filter "__pycache__" -Recurse -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Get-Item -Path "$site\sklearn", "$site\scikit_learn-*.dist-info",
-          "$site\torch\include" -ErrorAction SilentlyContinue |
+Get-Item -Path "$site\torch\include" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 # [4a] 清理 *.dist-info\licenses 深层许可目录：
