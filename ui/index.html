@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=27">
+<link rel="stylesheet" href="style.css?v=28">
 </head>
 <body>
 
@@ -36,6 +36,9 @@
       <span class="brand-name">SHADOWBUSTER</span>
     </button>
   </header>
+
+  <!-- ═══ 可滚动内容区：高度不足时出现滚动条，底部 BUSTER 按钮始终固定 ═══ -->
+  <main class="content" id="content">
 
   <!-- ═══ 待处理队列（独立列）═══ -->
   <section class="queue hdw" aria-label="待处理队列" data-need="请先添加要处理的歌曲">
@@ -241,6 +244,8 @@
       <div class="stage" data-stage="5"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">母带</span></div>
     </div>
   </section>
+
+  </main>
 
   <!-- ═══ 错误弹窗：任何错误均以风格一致的窗口呈现；成功不显示任何日志 ═══ -->
   <div class="err-modal" id="err-modal" role="alertdialog" aria-modal="true" aria-labelledby="err-title" hidden>

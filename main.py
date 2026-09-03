@@ -14,7 +14,7 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS",
                       "--disable-sandbox --no-sandbox --disable-dev-shm-usage")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot, QUrl, QEvent, QTimer
+from PySide6.QtCore import QObject, Qt, Signal, Slot, QUrl, QEvent, QTimer, QPoint, QSize, QSettings
 from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow
 from PySide6.QtWebChannel import QWebChannel
@@ -28,6 +28,12 @@ UI_INDEX = ROOT / "ui" / "index.html"
 
 AUDIO_FILTER = "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.aac);;所有文件 (*.*)"
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+
+# 窗口尺寸契约：宽度下限 = 四面板旋钮排布不被挤压的最小值；
+# 高度可在默认基础上伸缩，不足时前端内容区滚动、底部按钮固定。
+# 默认 1000×860：紧凑布局内容（705px）+ 顶栏/底部/间距（148px）+ 余量。
+MIN_WINDOW = (840, 600)
+DEFAULT_WINDOW = (1000, 860)
 
 # 主题对应的原生窗口底色（与 ui/style.css 的 --c-bg 一致）
 THEME_WINDOW_COLOR = {"dark": "#141218", "light": "#f1f0f1"}
@@ -272,8 +278,8 @@ class StudioWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ShadowBuster — 击碎暗影 · 重塑声浪")
-        self.resize(1100, 950)
-        self.setFixedSize(1100, 950)
+        self.setMinimumSize(*MIN_WINDOW)
+        self._restore_or_default_geometry()
         self.setWindowIcon(QIcon(str(ROOT / "ui" / "logo.ico")))
 
         self.view = DropAwareWebEngineView(self)
@@ -305,7 +311,40 @@ class StudioWindow(QMainWindow):
 
         self.view.load(QUrl.fromLocalFile(str(UI_INDEX.resolve())))
 
+    def _restore_or_default_geometry(self):
+        """恢复上次窗口几何；首次启动按屏幕自适应默认尺寸并居中。
+
+        默认高度取紧凑布局的内容高度，1080P 下不再占据近半屏；
+        SB_WINDOW_GEOMETRY=WxH 仅供自动化视觉验证固定初始尺寸。
+        """
+        override = os.environ.get("SB_WINDOW_GEOMETRY", "").strip()
+        if "x" in override:
+            try:
+                w, h = (int(v) for v in override.lower().split("x", 1))
+                self.resize(max(w, MIN_WINDOW[0]), max(h, MIN_WINDOW[1]))
+                return
+            except ValueError:
+                pass
+        settings = QSettings("AngleNaris", "ShadowBuster")
+        size = settings.value("window/size")
+        pos = settings.value("window/pos")
+        screen = self.screen().availableGeometry()
+        if isinstance(size, QSize) and isinstance(pos, QPoint) \
+                and any(s.availableGeometry().contains(pos) for s in QApplication.screens()):
+            w = max(MIN_WINDOW[0], min(size.width(), screen.width()))
+            h = max(MIN_WINDOW[1], min(size.height(), screen.height()))
+            self.resize(w, h)
+            self.move(pos)
+            return
+        w = max(MIN_WINDOW[0], min(DEFAULT_WINDOW[0], screen.width() - 32))
+        h = max(MIN_WINDOW[1], min(DEFAULT_WINDOW[1], screen.height() - 32))
+        self.resize(w, h)
+        self.move(screen.center().x() - w // 2, screen.center().y() - h // 2)
+
     def closeEvent(self, event):
+        settings = QSettings("AngleNaris", "ShadowBuster")
+        settings.setValue("window/size", self.size())
+        settings.setValue("window/pos", self.pos())
         self.bridge.cancel()
         backend.terminate_all()   # 兜底：杀掉仍在跑的推理子进程树
         event.accept()

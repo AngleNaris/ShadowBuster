@@ -12,7 +12,7 @@ from pathlib import Path
 
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 
 if getattr(sys, "frozen", False):
     # PyInstaller 冻结后 __file__ 在 _internal 里，exe 同级才是安装根目录
