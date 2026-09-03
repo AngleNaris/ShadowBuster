@@ -427,12 +427,30 @@ def stage_drums(stem_dir, rest_wav, out_wav, punch_db=2.0, trans=0.3,
         progress(1.0, "鼓增强完成")
 
 
-def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0,
+def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, progress=None, cancel=None):
+    """人声整体增益（delta-add 保留分离残差）：0 dB 位级透传，不启动子进程。"""
+    if progress:
+        progress(0.0, "人声调整")
+    stem_dir = Path(stem_dir)
+    vocals = stem_dir / "vocals.wav"
+    if gain_db == 0 or not vocals.exists():
+        shutil.copyfile(in_mix, out_wav)
+    else:
+        cmd = [PYTHON, str(APOLLO_DIR / "vocal_adjust.py"),
+               "--vocals", str(vocals), "--in-mix", str(in_mix), "--out", str(out_wav),
+               "--vocal-gain-db", str(gain_db)]
+        _run_stream(cmd, APOLLO_DIR, cancel=cancel)
+    if progress:
+        progress(1.0, "人声调整完成")
+
+
+def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0, width_db=3.0,
                   progress=None, cancel=None):
     """声场重塑（broadband delta-add）：wet 缩放全部处理差值，可附带 ≥10kHz 噪声地板降噪。
 
-    wet≤0 且 denoise≤0，或缺少 drums/other stems 时直接透传（位级不变）。
-    denoise>0 时即使 wet=0 也会运行，以允许单独使用高频降噪。
+    width_db 为宽度上限（other 轨 side 增益 dB，drums 自动取一半），wet 决定向该
+    宽度目标混合的比例。wet≤0 且 denoise≤0，或缺少 drums/other stems 时直接透传
+    （位级不变）。denoise>0 时即使 wet=0 也会运行，以允许单独使用高频降噪。
     """
     if progress:
         progress(0.0, "声场重塑")
@@ -443,7 +461,8 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0,
         cmd = [PYTHON, str(APOLLO_DIR / "soundstage_reshape.py"),
                "--in-mix", str(in_mix), "--out-wav", str(out_wav),
                "--stems-dir", str(stems_dir),
-               "--mode", "broadband", "--wet", str(wet)]
+               "--mode", "broadband", "--wet", str(wet),
+               "--side-gain-db", str(width_db)]
         if denoise > 0:
             cmd += ["--other-denoise-amount", str(denoise)]
         _run_stream(cmd, APOLLO_DIR, cancel=cancel)
@@ -474,14 +493,14 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
 
 
 def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
-                 bass_gain_db=0.0, genre="Pop", loudness="normal", eq_profile="Neutral",
-                 reference=None, quality=1, guidance=1.5, device="cuda", progress=None,
-                 cancel=None, work_dir=None, lowpass_cutoff=None,
-                 space_wet=0.0, space_denoise=0.0,
-                 bypass=()):
+                 bass_gain_db=0.0, vocal_gain_db=0.0, genre="Pop", loudness="normal",
+                 eq_profile="Neutral", reference=None, quality=1, guidance=1.5,
+                 device="cuda", progress=None, cancel=None, work_dir=None,
+                 lowpass_cutoff=None, space_wet=0.0, space_denoise=0.0,
+                 space_width_db=3.0, bypass=()):
     """执行单文件完整链路。progress(stage_idx, frac, label)。
 
-    bypass: 可迭代的阶段名（lew/bass/drums/reshape/soren），命中的阶段位级跳过。
+    bypass: 可迭代的阶段名（lew/vocals/bass/drums/reshape/soren），命中的阶段位级跳过。
     分离阶段不可 bypass（后续阶段依赖 stems 产物）。
     """
     input_wav = Path(input_wav)
@@ -496,7 +515,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     work.mkdir(parents=True, exist_ok=True)
 
     bypass = set(bypass)
-    if not bypass <= {"lew", "bass", "drums", "reshape", "soren"}:
+    if not bypass <= {"lew", "vocals", "bass", "drums", "reshape", "soren"}:
         raise PipelineError(f"未知 bypass 阶段: {sorted(bypass)}")
 
     stem = input_wav.stem
@@ -505,6 +524,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     stems_out = work / "stems"
     bass_out = work / f"{stem}_bassmix.wav"
     drum_out = work / f"{stem}_drummix.wav"
+    vocal_out = work / f"{stem}_vocalmix.wav"
     shape_out = work / f"{stem}_shapemix.wav"
 
     def cb(i):
@@ -542,13 +562,23 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
         else:
             stage_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
                         progress=cb(3), cancel=cancel)
+        vocal_src = drum_out
+        if "vocals" in bypass or vocal_gain_db == 0:
+            # 人声 0dB 或面板旁路：位级透传，不启动子进程
+            shutil.copyfile(drum_out, vocal_out)
+            if progress:
+                cb(4)(1.0, "人声旁路" if "vocals" in bypass else "人声 0dB")
+        else:
+            stage_vocals(stem_dir, drum_out, vocal_out, gain_db=vocal_gain_db,
+                         progress=cb(4), cancel=cancel)
         if "reshape" in bypass:
-            shutil.copyfile(drum_out, shape_out)
+            shutil.copyfile(vocal_src, shape_out)
             if progress:
                 cb(4)(1.0, "声场旁路")
         else:
-            stage_reshape(drum_out, stem_dir, shape_out, wet=space_wet,
-                          denoise=space_denoise, progress=cb(4), cancel=cancel)
+            stage_reshape(vocal_src, stem_dir, shape_out, wet=space_wet,
+                          denoise=space_denoise, width_db=space_width_db,
+                          progress=cb(4), cancel=cancel)
         if "soren" in bypass:
             shutil.copyfile(shape_out, out_final)
             if progress:
@@ -628,6 +658,10 @@ if __name__ == "__main__":
     ap.add_argument("--lowpass-cutoff", type=float, default=None)
     ap.add_argument("--space-wet", type=float, default=0.0)
     ap.add_argument("--space-denoise", type=float, default=0.0)
+    ap.add_argument("--space-width-db", type=float, default=3.0,
+                    help="声场宽度上限 dB（other 轨 side 增益，drums 自动取一半）")
+    ap.add_argument("--vocal-gain-db", type=float, default=0.0,
+                    help="人声整体增益 dB（0 = 直通）")
     ap.add_argument("--bypass", default="", help="逗号分隔的旁路阶段名")
     ap.add_argument("--cpu", action="store_true")
     args = ap.parse_args()
@@ -641,6 +675,8 @@ if __name__ == "__main__":
                        eq_profile=args.eq_profile, reference=args.reference,
                        lowpass_cutoff=args.lowpass_cutoff,
                        space_wet=args.space_wet, space_denoise=args.space_denoise,
+                       space_width_db=args.space_width_db,
+                       vocal_gain_db=args.vocal_gain_db,
                        bypass=[b.strip() for b in args.bypass.split(",") if b.strip()],
                        device="cpu" if args.cpu else "cuda", progress=p)
     print(f"完成: {out}（{time.time()-t0:.0f}s）")

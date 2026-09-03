@@ -225,16 +225,20 @@ class Bridge(QObject):
 
             # 旋钮映射：Sub 直接等位传递（前端 0–12 即 0–12 dB，刻度不被放大）；
             # sat / trans / denoise 是 0–10 的比例档，折算到 0–1；punch 直接等位传递 0–10 dB；
-            # space（声场干湿比）同样 0–10 折算 0–1。
+            # space（声场干湿比）同样 0–10 折算 0–1；space_width 为宽度上限 0–12 档折算 0–6 dB；
+            # vocal 为人声增益 -12~12 档折算 -6~+6 dB（0 = 直通）。
             sub_db = float(params.get("sub", 6))            # 0–12 dB（数值 = 显示）
             sat = float(params.get("sat", 3)) / 10.0        # 0–1.0
             punch_db = float(params.get("punch", 2))        # 0–10 dB（数值 = 显示）
             trans = float(params.get("trans", 3)) / 10.0    # 0–1.0
             space_wet = float(params.get("space", 6)) / 10.0      # 0–1.0，默认 0.6
             space_denoise = float(params.get("denoise", 2)) / 10.0  # 0–1.0，默认 0.2
+            space_width_db = float(params.get("space_width", 6)) / 2.0  # 0–6 dB，默认 3.0
+            vocal_gain_db = float(params.get("vocal", 0)) / 2.0   # -6~+6 dB，默认 0
             # bypass：面板开关关闭的阶段名集合
             bypass = [b for b in (params.get("bypass") or []) if b]
-            bypass = [b for b in bypass if b in ("lew", "bass", "drums", "reshape", "soren")]
+            bypass = [b for b in bypass
+                      if b in ("lew", "vocals", "bass", "drums", "reshape", "soren")]
             self.logLine.emit(f"── 开始批处理（{len(files)} 个文件）──", "")
             results = backend.run_batch(
                 files, params["output"],
@@ -244,6 +248,8 @@ class Bridge(QObject):
                 trans=trans,
                 space_wet=space_wet,
                 space_denoise=space_denoise,
+                space_width_db=space_width_db,
+                vocal_gain_db=vocal_gain_db,
                 bypass=bypass,
                 quality=int(params.get("quality", 1)),
                 guidance=float(params.get("guidance", 1.5)),

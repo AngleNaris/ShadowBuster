@@ -3,14 +3,15 @@
 面向 AI 生成音乐（Suno 等）与有损音频的一键式修复 + 母带桌面应用。信号链六阶段：
 
 ```
-Lew 高频重建 → Demucs 四轨分离 → 贝斯增强 → 鼓增强 → 声场重塑/高频降噪 → Soren 母带
+Lew 高频重建 → Demucs 四轨分离 → 贝斯增强 → 鼓增强 → 人声调整 → 声场重塑/高频降噪 → Soren 母带
 ```
 
 - **Lew 高频重建**：Apollo 架构超分辨率模型重绘丢失高频（质量档位控制分块/重叠，重建强度 0–2 为 wet/dry 混合）
 - **Demucs 四轨分离**：htdemucs 输出 vocals/drums/bass/other（求和≈原曲），为分轨处理提供基础
 - **贝斯增强**：30Hz sub 包裹感、<200Hz 谐波饱和（小音箱可闻低频）、RMS 门控
 - **鼓增强**：90Hz 鼓身 punch + 全频段瞬态强调，只作用于 drums 轨（实测 kick 起音 ~100% 落在该轨），快 attack 门控
-- **声场重塑/高频降噪**：以原混音为基底，对 drums/other 的 side 做宽带增益；独立干湿比控制拓宽强度，并在 other 轨 ≥10kHz 自动估计稳态噪声地板、按强度衰减沙沙伪影，保留高于噪声地板的音乐瞬态
+- **人声调整**：vocals 轨整体增益（-6 ~ +6 dB，delta-add 保留分离残差）——声场拓宽/母带频谱匹配会抬升伴奏相对能量让人声靠后，实测 300Hz 以上 side 比 mid 多涨 ~2dB，用该旋钮把人声拉回
+- **声场重塑/高频降噪**：以原混音为基底，对 drums/other 的 side 做宽带增益；「宽度」设定 side 增益上限（other=设定值、drums 自动取一半），独立干湿比控制向该宽度混合的比例，并在 other 轨 ≥10kHz 自动估计稳态噪声地板、按强度衰减沙沙伪影，保留高于噪声地板的音乐瞬态
 - **Soren 母带**：按曲风档案/参考曲做 RMS 匹配、频谱匹配 EQ、Mid/Side 处理、响度定版（lookahead limiter + 真峰值保护，24bit dither 输出）
 
 界面为 PySide6 + QtWebEngine（DAW 插件质感），支持深/浅色模式、五种预设 + 自定义主题色（整套中性色随色相派生）、文件拖放导入、参数持久化。
@@ -50,7 +51,8 @@ pip install PySide6 PyInstaller pytest numpy scipy soundfile
 | ffmpeg | `ffmpeg.exe` 加入 PATH | 官方构建 |
 
 本仓库的 `apollo_scripts/` 保存 ShadowBuster 自己维护的 `bass_enhance.py`（贝斯增强）、
-`drum_enhance.py`（鼓增强）和 `soundstage_reshape.py`（宽带声场重塑与 ≥10kHz 自动噪声地板降噪）。
+`drum_enhance.py`（鼓增强）、`soundstage_reshape.py`（宽带声场重塑与 ≥10kHz 自动噪声地板降噪）和
+`vocal_adjust.py`（人声整体增益）。
 构建时 `runtime_sync.ps1` 将这些应用源码与外部 Apollo AI 工具链组合进运行时；模型、AI 环境和上游 Apollo 源码不纳入本仓库。
 
 ### 3. 环境变量（开发机布局探测）

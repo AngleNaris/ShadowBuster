@@ -72,4 +72,4 @@ iscc packaging\installer.iss
 - PyInstaller onedir 外壳与 Inno Setup 1.4.0 安装包构建通过。最终安装器大小 `2747962406` bytes，SHA-256：`d2e4ff5510024e470b00ae11617298bb77c4cb89042f5743f22ddd59c7401116`。
 - `packaging/install_test.ps1` 静默安装返回 `EXIT=0`；安装目录内 `soundstage_reshape.py`、`bass_enhance.py`、`drum_enhance.py` 与源码及 stage 的 SHA-256 完全一致，便携 Python 可成功导入 torch 2.7.1+cu128 和 scipy 1.18.0。
 - 已从修正版测试安装目录启动应用并视觉验证：1100×950 界面完整加载；文件队列为 158px 高，列表下方“添加 / 清空”按钮均保持 30px 完整高度；四个效果面板、两个声场推子、六阶段条和处理按钮均可见且未受挤压。
-- v1.4.1 窗口紧凑化（可调宽度下限 840、自适应默认 1000×860、高度不足时内容区滚动且底部 BUSTER 按钮固定、几何记忆）已通过 124 项自动测试与默认/最小宽度/矮窗三档截图验证；安装包待下一次构建。
+- v1.4.1 变更（窗口紧凑化：可调宽度下限 840、自适应默认 1000×860、高度不足时内容区滚动且底部 BUSTER 按钮固定、几何记忆；声场新增「宽度」上限倒三角控件与 `--side-gain-db` 参数；高频面板新增「人声」增益旋钮，管线新增 `vocal_adjust.py` 阶段与 `vocals` bypass 名；修复盲听对比 FLOAT WAV 的 PEAK 时间戳确定性缺陷）已通过 132 项自动测试与三档几何截图验证；安装包待下一次构建。

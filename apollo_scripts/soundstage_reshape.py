@@ -202,6 +202,23 @@ def width_report(mix, out, sr):
     print(f"  mono fold-down 能量变化 {dr:+.2f}dB（相位抵消检查），与原 mono 相关 {corr:.4f}")
 
 
+def resolve_side_gains(mode, override_db=None):
+    """解析各轨 (shelf_db, shelf_fc, side_gain_db)；override_db 只替换 side 增益。
+
+    宽度上限语义：other 轨取设定值，drums 轨固定取一半（与 broadband 预设的
+    3.0/1.5 比例一致），避免鼓被拉散。shelf 参数仍来自模式预设。
+    """
+    preset = MODES[mode]
+    params = {"other": preset["other"], "drums": preset["drums"]}
+    if override_db is not None:
+        if not np.isfinite(override_db) or not 0.0 <= override_db <= 12.0:
+            raise ValueError("side gain must be finite and within [0, 12] dB")
+        override_db = float(override_db)
+        params["other"] = (preset["other"][0], preset["other"][1], override_db)
+        params["drums"] = (preset["drums"][0], preset["drums"][1], override_db * 0.5)
+    return params
+
+
 def main():
     ap = argparse.ArgumentParser(description="delta-add 声场重塑（管线内阶段：stems 由 stage_demucs 预先产出）")
     ap.add_argument("--in-mix", required=True, type=Path, help="输入混音（管线上一阶段产物或原曲）")
@@ -209,6 +226,8 @@ def main():
     ap.add_argument("--stems-dir", required=True, type=Path, help="demucs 4-stem 输出目录（含 drums/other.wav）")
     ap.add_argument("--mode", choices=list(MODES), default="broadband",
                     help="broadband=纯side增益（默认，音色最保真）| shelf3k | shelf-air | dynamic")
+    ap.add_argument("--side-gain-db", type=float, default=None,
+                    help="宽度上限 dB：覆盖模式预设的 side 增益（other=设定值，drums=一半）")
     ap.add_argument("--wet", type=float, default=1.0, help="干湿比 0-1：缩放全部处理差值，0=与输入逐样本一致")
     ap.add_argument("--other-denoise-amount", type=float, default=0.0,
                     help="other 轨 ≥fc 噪声地板降噪量 0-1（Audition 降噪量语义，贴地板 -amount*100%%）")
@@ -217,6 +236,9 @@ def main():
 
     if not np.isfinite(args.wet) or not 0.0 <= args.wet <= 1.0:
         ap.error("--wet must be finite and within [0, 1]")
+    if args.side_gain_db is not None and (
+            not np.isfinite(args.side_gain_db) or not 0.0 <= args.side_gain_db <= 12.0):
+        ap.error("--side-gain-db must be finite and within [0, 12]")
     if not np.isfinite(args.other_denoise_amount) or not 0.0 <= args.other_denoise_amount <= 1.0:
         ap.error("--other-denoise-amount must be finite and within [0, 1]")
     if not np.isfinite(args.other_denoise_fc) or not 0.0 < args.other_denoise_fc < SR / 2.0:
@@ -231,11 +253,7 @@ def main():
     mix, sr = sf.read(in_mix, always_2d=True, dtype="float64")
     assert sr == SR, f"需要 {SR}Hz 输入（先用 ffmpeg 转采样率）"
 
-    preset = MODES[args.mode]
-    params = {
-        "other": preset["other"],
-        "drums": preset["drums"],
-    }
+    params = resolve_side_gains(args.mode, args.side_gain_db)
     out = mix.copy()
     wet = args.wet
     for name, (db, fc, gain) in params.items():

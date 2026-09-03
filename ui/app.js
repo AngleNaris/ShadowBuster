@@ -403,9 +403,64 @@
     return () => value;
   }
 
+  /* ─── 声场宽度：倒三角计量控件（纵向拖动/滚轮/方向键，双击复位）─── */
+  function bindWidthMeter(meterEl, fmt, storeKey) {
+    const min = +meterEl.dataset.min, max = +meterEl.dataset.max;
+    const step = +meterEl.dataset.step, def = +meterEl.dataset.default;
+    let value = storeKey ? loadNumber(storeKey, def) : def;
+    value = Math.max(min, Math.min(max, Math.round(value / step) * step));
+    const valueEl = meterEl.querySelector(".width-value");
+
+    function render() {
+      meterEl.style.setProperty("--wp", (value - min) / (max - min));
+      const text = fmt(value);
+      meterEl.setAttribute("aria-valuenow", value);
+      meterEl.setAttribute("aria-valuetext", text);
+      valueEl.textContent = text;
+      if (storeKey) saveValue(storeKey, value);
+    }
+
+    let dragging = false, lastY = 0, dragAccum = 0;
+    meterEl.addEventListener("pointerdown", (e) => {
+      dragging = true; lastY = e.clientY;
+      meterEl.setPointerCapture(e.pointerId);
+    });
+    meterEl.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dy = lastY - e.clientY; lastY = e.clientY;
+      // 与旋钮同灵敏度：0.35，累加 8px 步进一次
+      dragAccum += dy * 0.35;
+      if (Math.abs(dragAccum) >= 8) {
+        const delta = Math.sign(dragAccum) * Math.max(1, Math.round(Math.abs(dragAccum) / 8));
+        dragAccum = 0;
+        value = Math.max(min, Math.min(max, value + delta * step));
+        render();
+      }
+    });
+    const end = () => { dragging = false; dragAccum = 0; };
+    meterEl.addEventListener("pointerup", end);
+    meterEl.addEventListener("pointercancel", end);
+    meterEl.addEventListener("dblclick", () => { value = def; render(); });
+    meterEl.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      value = Math.max(min, Math.min(max, value + (e.deltaY < 0 ? step : -step)));
+      render();
+    }, { passive: false });
+    meterEl.addEventListener("keydown", (e) => {
+      const d = e.key === "ArrowUp" || e.key === "ArrowRight" ? step
+              : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -step : 0;
+      if (d) { e.preventDefault(); value = Math.max(min, Math.min(max, value + d)); render(); }
+    });
+    render();
+    return () => value;
+  }
+
   const getQuality = bindKnob($("knob-quality"), $("val-quality"),
     (v) => (["快速", "标准", "精细"])[v] || "标准", "quality");
   const getGuidance = bindKnob($("knob-guidance"), $("val-guidance"), (v) => (v / 10).toFixed(1), "guidance");
+  const getVocal = bindKnob($("knob-vocal"), $("val-vocal"),
+    (v) => (v > 0 ? "+" : "") + (v / 2).toFixed(1) + " dB", "vocal");
+  const getWidth = bindWidthMeter($("width-meter"), (v) => "+" + (v / 2).toFixed(1), "space_width");
   const getSub = bindKnob($("knob-sub"), $("val-sub"), (v) => `+${v} dB`, "sub");
   const getSat = bindKnob($("knob-sat"), $("val-sat"), (v) => (v / 10).toFixed(2), "sat");
   const getPunch = bindKnob($("knob-punch"), $("val-punch"), (v) => `+${v} dB`, "punch");
@@ -415,7 +470,7 @@
 
   /* ─── 面板 bypass 开关：关闭 = 该面板对应阶段全部跳过，状态持久化 ─── */
   const BYPASS_CONTROLS = {
-    "bp-lew": ["lew"],
+    "bp-lew": ["lew", "vocals"],
     "bp-bass-drums": ["bass", "drums"],
     "bp-reshape": ["reshape"],
     "bp-soren": ["soren"],
@@ -848,6 +903,7 @@
         quality: getQuality(), guidance: getGuidance(),
         sub: getSub(), sat: getSat(), punch: getPunch(), trans: getTrans(),
         space: getSpace(), denoise: getDenoise(),
+        space_width: getWidth(), vocal: getVocal(),
         bypass: activeBypassList(),
         genre: state.reference ? "" : getGenre(),
         loudness: getLoudness(), eq: state.eq,
@@ -865,6 +921,7 @@
       html:
         "<h3>质量档</h3><p>高频重建的精细程度：<b>快速</b>＝适合试听；<b>标准</b>＝日常使用；<b>精细</b>＝细节最多、但最慢。</p>" +
         "<h3>重建引导（0 – 2）</h3><p>重建产物的保留比例：<b>0</b>＝完全保留原始信号，<b>2</b>＝完全采用重建结果，默认 1.5（约 75%）。建议 1.0 – 1.75。</p>" +
+        "<h3>人声（-6.0 – +6.0 dB）</h3><p>人声轨整体增益：声场拓宽与母带处理后若人声变靠后，+1.5 ~ +3 dB 可把人声拉回原位；<b>0.0</b>＝完全旁路。只改动人声轨差值，其余内容逐样本不变。</p>" +
         "<h3>操作</h3><ul><li>旋钮上下拖动或滚轮调节</li><li>双击旋钮恢复默认值</li></ul>",
     },
     bass: {
@@ -879,8 +936,9 @@
     space: {
       title: "声场 · 参数说明",
       html:
-        "<h3>声场（0.00 – 1.00）</h3><p>声场重塑强度（干湿比）：对分离出的铺底乐器/鼓做纯宽带 side 增益，把堆在中间的元素向两侧摊开。" +
-        "<b>0</b>＝完全保留原样，<b>1.00</b>＝全量重塑；默认 0.60。只动 side（左右差），人声与低频位置不变，单声道合并不受影响。</p>" +
+        "<h3>声场（0.00 – 1.00）</h3><p>声场重塑强度（干湿比）：向「宽度」目标混合的比例，把堆在中间的铺底/鼓元素向两侧摊开。" +
+        "<b>0</b>＝完全保留原样，<b>1.00</b>＝全量重塑；默认 0.60。只动 side（左右差），单声道合并不受影响。</p>" +
+        "<h3>宽度（0 – +6.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。默认 <b>+3.0</b>；与「声场」推子配合决定最终有多宽。</p>" +
         "<h3>高频降噪（0.00 – 1.00）</h3><p>对铺底乐器轨 ≥10 kHz 的稳态沙沙噪声做门控衰减（自动噪声地板估计，类降噪采样）：贴着噪声电平的成分按比例衰减，" +
         "突出的音乐瞬态（镲片敲击）原样保留。默认 0.20；AI 音乐的擦片毛刺感明显时可在 0.2–0.4 之间调。</p>" +
         "<h3>面板开关</h3><p>关闭后，声场重塑与高频降噪会一起旁路；推子值保留，重新开启即可继续使用。</p>" +

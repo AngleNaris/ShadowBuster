@@ -74,7 +74,18 @@ class StageReshapeTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--stems-dir") + 1], str(stems))
         self.assertEqual(cmd[cmd.index("--mode") + 1], "broadband")
         self.assertEqual(cmd[cmd.index("--wet") + 1], "0.6")
+        self.assertEqual(cmd[cmd.index("--side-gain-db") + 1], "3.0")
         self.assertIn("--other-denoise-amount", cmd)
+
+    def test_width_override_forwarded(self):
+        src = _write_wav(self.root / "in.wav")
+        _write_wav(self.root / "drums.wav")
+        _write_wav(self.root / "other.wav")
+        with mock.patch.object(studio_backend, "_run_stream", self._fake_stream):
+            studio_backend.stage_reshape(src, self.root, self.root / "o.wav",
+                                         wet=0.5, width_db=4.5)
+        cmd = self.calls[-1]
+        self.assertEqual(cmd[cmd.index("--side-gain-db") + 1], "4.5")
 
     def test_denoise_zero_omits_flag(self):
         src = _write_wav(self.root / "in.wav")
@@ -97,7 +108,7 @@ class PipelineBypassTests(unittest.TestCase):
         # 合法集合不应在参数校验层抛错（后续缺文件错误是另一回事）
         try:
             studio_backend.run_pipeline("missing.wav", tempfile.mkdtemp(),
-                                        bypass=("lew", "bass", "drums", "reshape", "soren"))
+                                        bypass=("lew", "vocals", "bass", "drums", "reshape", "soren"))
         except studio_backend.PipelineError as e:
             self.assertIn("不存在", str(e))  # 缺文件先于 bypass 报错
     def test_low_frequency_panel_bypass_neutralizes_bass_and_drums(self):
@@ -211,6 +222,25 @@ class SoundstageDSPTests(unittest.TestCase):
             mono, self.sr, punch_db=0.0, trans=0.0)
         np.testing.assert_allclose(bass, mono.astype(np.float32), rtol=0, atol=0)
         np.testing.assert_allclose(drums, mono, rtol=0, atol=0)
+
+
+class SideGainResolveTests(unittest.TestCase):
+    """宽度上限语义：other 取设定值，drums 固定取一半；越界/非有限值拒绝。"""
+
+    def test_default_uses_mode_preset(self):
+        gains = soundstage_reshape.resolve_side_gains("broadband")
+        self.assertEqual(gains["other"][2], 3.0)
+        self.assertEqual(gains["drums"][2], 1.5)
+
+    def test_override_applies_half_to_drums(self):
+        gains = soundstage_reshape.resolve_side_gains("broadband", 4.0)
+        self.assertEqual(gains["other"][2], 4.0)
+        self.assertEqual(gains["drums"][2], 2.0)
+
+    def test_override_rejects_invalid_values(self):
+        for bad in (-0.5, 12.5, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                soundstage_reshape.resolve_side_gains("broadband", bad)
 
 
 if __name__ == "__main__":

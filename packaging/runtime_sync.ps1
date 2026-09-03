@@ -95,6 +95,7 @@ Assert-NonEmptyFile "$srcApollo\lew_upscale.py" "Lew 入口"
 Assert-NonEmptyFile "$appApollo\bass_enhance.py" "BASS 入口"
 Assert-NonEmptyFile "$appApollo\drum_enhance.py" "Drum 入口"
 Assert-NonEmptyFile "$appApollo\soundstage_reshape.py" "声场重塑入口"
+Assert-NonEmptyFile "$appApollo\vocal_adjust.py" "人声入口"
 Assert-TreeHasNonEmptyFile "$srcApollo\look2hear" "look2hear 源码"
 Assert-TreeHasNonEmptyFile "$srcApollo\ckpts" "Apollo checkpoint"
 Assert-NonEmptyFile "$srcSoren\core_decrypted.py" "Soren 入口"
@@ -109,7 +110,7 @@ New-Item -ItemType Directory -Force -Path "$stage\Apollo", "$stage\Soren_src", "
 
 Write-Host "[1/5] 拷贝 Apollo 工具链 ..."
 Copy-Item "$srcApollo\lew_upscale.py", "$srcApollo\low_punch.py" "$stage\Apollo\" -ErrorAction SilentlyContinue
-Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApollo\soundstage_reshape.py" "$stage\Apollo\" -ErrorAction Stop
+Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApollo\soundstage_reshape.py", "$appApollo\vocal_adjust.py" "$stage\Apollo\" -ErrorAction Stop
 Copy-Item "$srcApollo\look2hear" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 
@@ -241,6 +242,7 @@ Assert-SameFile "$srcApollo\lew_upscale.py" "$stage\Apollo\lew_upscale.py" "Lew 
 Assert-SameFile "$appApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BASS 入口"
 Assert-SameFile "$appApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
 Assert-SameFile "$appApollo\soundstage_reshape.py" "$stage\Apollo\soundstage_reshape.py" "声场重塑入口"
+Assert-SameFile "$appApollo\vocal_adjust.py" "$stage\Apollo\vocal_adjust.py" "人声入口"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"
 Assert-SameFile "$srcSoren\core_decrypted.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
@@ -256,6 +258,7 @@ $manifestPath = "$stage\critical-manifest.sha256"
 $manifestRoots = @(
     "$stage\Apollo\lew_upscale.py", "$stage\Apollo\bass_enhance.py",
     "$stage\Apollo\drum_enhance.py", "$stage\Apollo\soundstage_reshape.py",
+    "$stage\Apollo\vocal_adjust.py",
     "$stage\Apollo\look2hear", "$stage\Apollo\ckpts",
     "$stage\Soren_src\core_decrypted.py", "$stage\Soren_src\test_model.py",
     "$stage\Soren_src\model",

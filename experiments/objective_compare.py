@@ -32,6 +32,22 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _strip_peak_timestamp(path: Path) -> None:
+    """libsndfile 给 FLOAT WAV 写 PEAK 块时附带创建时间戳，破坏逐字节确定性。
+
+    盲听密钥 JSON 记录产物哈希并要求同种子结果完全一致，这里把 PEAK 块的
+    timestamp 字段归零（只检索 data 块之前的头部区域，避免误伤音频字节）。
+    """
+    data = bytearray(path.read_bytes())
+    header_end = data.find(b"data")
+    if header_end == -1:
+        return
+    idx = data.find(b"PEAK", 0, header_end)
+    if idx != -1 and idx + 16 <= len(data):
+        data[idx + 12: idx + 16] = b"\x00\x00\x00\x00"
+        path.write_bytes(bytes(data))
+
+
 def _canonical_path(value, name: str) -> Path:
     if value is None or not str(value).strip():
         raise ValueError(f"{name} path is empty")
@@ -248,6 +264,7 @@ def generate_blind_comparison(dry_path, candidates: Mapping[str, object], blind_
             filename = anonymous[label]
             sf.write(stage / filename, auditions[label][0], sample_rate,
                      format="WAV", subtype="FLOAT")
+            _strip_peak_timestamp(stage / filename)
             output_hashes[label] = sha256_file(stage / filename)
         if blind_dir.exists():
             shutil.rmtree(blind_dir)
