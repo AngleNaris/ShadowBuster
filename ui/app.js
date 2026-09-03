@@ -403,7 +403,25 @@
     return () => value;
   }
 
-  /* ─── 声场宽度：倒三角控件（左右拖动张合顶边，双击复位）─── */
+  /* ─── 声场宽度：扇形计量控件（向右滑扩大/向左滑缩小，到 0 不反向；满扇形 100°）─── */
+  // 扇形：apex 固定在底部中点，半角 = 50°×frac；射线穿出侧壁时填充区沿壁补到顶。
+  function fanPath(w, h, frac) {
+    const inset = 3;
+    const ax = w / 2, ay = h - inset;
+    const left = inset, right = w - inset, top = inset;
+    if (frac <= 0.002) {
+      return `M ${ax - 0.75} ${ay} L ${ax - 0.75} ${top} L ${ax + 0.75} ${top} L ${ax + 0.75} ${ay} Z`;
+    }
+    const t = Math.tan((Math.PI / 180) * 50 * frac);
+    const dxTop = (ay - top) * t;
+    if (dxTop >= ax - left) {
+      const yWall = (ay - (ax - left) / t).toFixed(2);
+      return `M ${ax} ${ay} L ${left} ${yWall} L ${left} ${top} L ${right} ${top} L ${right} ${yWall} Z`;
+    }
+    const xL = (ax - dxTop).toFixed(2), xR = (ax + dxTop).toFixed(2);
+    return `M ${ax} ${ay} L ${xL} ${top} L ${xR} ${top} Z`;
+  }
+
   function bindWidthMeter(meterEl, fmt, storeKey) {
     const min = +meterEl.dataset.min, max = +meterEl.dataset.max;
     const step = +meterEl.dataset.step, def = +meterEl.dataset.default;
@@ -411,15 +429,26 @@
     value = Math.max(min, Math.min(max, Math.round(value / step) * step));
     const valueEl = meterEl.querySelector(".width-value");
 
-    // 左右拖动：宽度 = 指针到方块中线的距离 / 半程，顶边随之张合
+    // 拖动映射：中线 = 0，右缘 = 最大；向右滑扩大、向左滑缩小，
+    // 到 0 后继续向左被钳位（不再反向扩大）。
     function setFromClientX(clientX) {
       const rect = meterEl.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, Math.abs(clientX - rect.left - rect.width / 2) / (rect.width / 2)));
+      const x0 = rect.left + rect.width / 2;
+      const xMax = rect.left + rect.width - 3;
+      const ratio = Math.max(0, Math.min(1, (clientX - x0) / Math.max(1, xMax - x0)));
       value = Math.round((min + ratio * (max - min)) / step) * step;
       render();
     }
     function render() {
       meterEl.style.setProperty("--wp", (value - min) / (max - min));
+      const rect = meterEl.getBoundingClientRect();
+      if (rect.width > 10 && rect.height > 10) {
+        const w = Math.round(rect.width), h = Math.round(rect.height);
+        const svg = meterEl.querySelector(".width-fan");
+        svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+        svg.querySelector(".width-fan-max").setAttribute("d", fanPath(w, h, 1));
+        svg.querySelector(".width-fan-cur").setAttribute("d", fanPath(w, h, (value - min) / (max - min)));
+      }
       const text = fmt(value);
       meterEl.setAttribute("aria-valuenow", value);
       meterEl.setAttribute("aria-valuetext", text + " dB");
@@ -935,7 +964,7 @@
       html:
         "<h3>声场（0.00 – 1.00）</h3><p>声场重塑强度（干湿比）：向「宽度」目标混合的比例，把堆在中间的铺底/鼓元素向两侧摊开。" +
         "<b>0</b>＝完全保留原样，<b>1.00</b>＝全量重塑；默认 0.60。只动 side（左右差），单声道合并不受影响。</p>" +
-        "<h3>宽度（0 – +6.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。<b>左右拖动</b>三角形即可展开/收拢，顶边宽度就是当前宽度范围；默认 <b>+3.0</b>。与「声场」推子配合决定最终有多宽。</p>" +
+        "<h3>宽度（0 – +6.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。<b>向右拖动</b>扇形扩大、<b>向左拖动</b>缩小（到 0 后不再变化），扇形张角就是当前宽度范围，最大张角 100°；默认 <b>+3.0</b>。与「声场」推子配合决定最终有多宽。</p>" +
         "<h3>高频降噪（0.00 – 1.00）</h3><p>对铺底乐器轨 ≥10 kHz 的稳态沙沙噪声做门控衰减（自动噪声地板估计，类降噪采样）：贴着噪声电平的成分按比例衰减，" +
         "突出的音乐瞬态（镲片敲击）原样保留。默认 0.20；AI 音乐的擦片毛刺感明显时可在 0.2–0.4 之间调。</p>" +
         "<h3>面板开关</h3><p>关闭后，声场重塑与高频降噪会一起旁路；推子值保留，重新开启即可继续使用。</p>" +

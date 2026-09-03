@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=32">
+<link rel="stylesheet" href="style.css?v=33">
 </head>
 <body>
 
@@ -173,8 +173,10 @@
       <div class="rack-body fader-bank">
         <div class="width-col">
           <div class="width-meter" id="width-meter" tabindex="0" role="slider" aria-labelledby="label-width" aria-valuemin="0" aria-valuemax="12" aria-valuenow="6" aria-valuetext="+3.0 dB" data-min="0" data-max="12" data-step="1" data-default="6">
-            <span class="width-silhouette" aria-hidden="true"></span>
-            <span class="width-fill" aria-hidden="true"></span>
+            <svg class="width-fan" aria-hidden="true">
+              <path class="width-fan-max" d=""></path>
+              <path class="width-fan-cur" d=""></path>
+            </svg>
             <span class="width-value">+3.0</span>
           </div>
           <label class="knob-label" id="label-width">宽度</label>
@@ -360,6 +362,6 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="app.js?v=24"></script>
+<script src="app.js?v=25"></script>
 </body>
 </html>

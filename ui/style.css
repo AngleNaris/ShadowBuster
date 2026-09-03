@@ -449,10 +449,10 @@ body {
 }
 .fader:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 2px; }
 
-/* ═══ 声场面板：左侧宽度三角 + 右侧等宽推子列 ═══ */
+/* ═══ 声场面板：左侧宽度扇形 + 右侧等宽推子列（左右两列顶底对齐）═══ */
 .fader-bank {
   flex-direction: row;
-  align-items: center;
+  align-items: stretch;
   justify-content: flex-start;
   gap: var(--s-5);
   padding-inline: var(--s-5);
@@ -463,6 +463,7 @@ body {
   align-items: center;
   gap: var(--s-2);
   flex: 0 0 auto;
+  align-self: stretch;
 }
 .fader-stack {
   display: flex;
@@ -475,7 +476,9 @@ body {
 .width-meter {
   --wp: 1;
   position: relative;
-  width: 64px; height: 64px;
+  width: 64px;
+  flex: 1 1 auto;
+  min-height: 96px;
   background: var(--c-panel-2);
   border: 1px solid var(--n-knob-b);
   box-shadow:
@@ -484,26 +487,20 @@ body {
     0 1px 0 rgba(255,255,255,0.025);
   cursor: ew-resize;
   touch-action: none;
+  overflow: hidden;
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-/* 最大范围剪影（wp=1 的三角轮廓），低值时提示可达范围 */
-.width-silhouette {
-  position: absolute; inset: 3px;
-  clip-path: polygon(0 0, 100% 0, 50% 100%);
-  background: var(--n-dot);
+/* 扇形绘制层：max 剪影 = 100° 满扇形（可达范围），cur = 当前宽度扇形 */
+.width-fan {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  display: block;
   pointer-events: none;
 }
-/* 当前宽度填充：顶边从中心向两侧张合，apex 固定在底部中点 */
-.width-fill {
-  position: absolute; inset: 3px;
-  background: var(--c-accent-hi);
-  box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.55);
-  clip-path: polygon(
-    calc(50% - 50% * var(--wp)) 0,
-    calc(50% + 50% * var(--wp)) 0,
-    50% 100%);
-  pointer-events: none;
-  transition: clip-path 70ms linear;
+.width-fan-max { fill: var(--n-dot); }
+.width-fan-cur {
+  fill: var(--c-accent-hi);
+  filter: drop-shadow(0 0 6px rgba(var(--c-accent-rgb), 0.55));
 }
 /* 数值铭牌：常驻可读（自带底色，与填充对比稳定） */
 .width-value {
