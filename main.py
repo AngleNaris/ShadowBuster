@@ -48,6 +48,7 @@ class DropAwareWebEngineView(QWebEngineView):
     """
 
     filesDropped = Signal(list)
+    filesDroppedAt = Signal(list, int, int)
     dragHover = Signal(bool)
 
     def __init__(self, parent=None):
@@ -79,11 +80,21 @@ class DropAwareWebEngineView(QWebEngineView):
         elif t == QEvent.Type.Drop:
             self.dragHover.emit(False)
             if ev.mimeData().hasUrls():
-                paths = [u.toLocalFile() for u in ev.mimeData().urls()
-                         if u.isLocalFile() and Path(u.toLocalFile()).suffix.lower() in AUDIO_EXTS]
+                paths = []
+                for u in ev.mimeData().urls():
+                    if not u.isLocalFile():
+                        continue
+                    p = Path(u.toLocalFile())
+                    if p.is_dir() or p.suffix.lower() in AUDIO_EXTS:
+                        paths.append(str(p))
                 ev.acceptProposedAction()
                 if paths:
-                    self.filesDropped.emit(paths)
+                    pos = ev.position().toPoint()
+                    # 音频文件进队列；目录与音频一起走落点路由（输出/参考框）
+                    audio = [p for p in paths if Path(p).suffix.lower() in AUDIO_EXTS]
+                    if audio:
+                        self.filesDropped.emit(audio)
+                    self.filesDroppedAt.emit(paths, pos.x(), pos.y())
                 return True
         return super().eventFilter(obj, ev)
 
@@ -129,6 +140,7 @@ class Bridge(QObject):
     failed = Signal(str)                     # 错误消息
     filesDropped = Signal(list)              # OS 拖入的音频文件路径列表
     dragHover = Signal(bool)                 # 文件正在拖入悬停（前端高亮队列）
+    updateInfo = Signal(str)                 # 检查更新结果（JSON，后台线程回传）
 
     def __init__(self, window):
         super().__init__()
@@ -137,6 +149,50 @@ class Bridge(QObject):
         self._thread = None
 
     # ── JS 可调用的方法 ──
+    @Slot()
+    def checkUpdate(self):
+        """后台线程查询 GitHub Releases 最新版本，结果经 updateInfo 信号回传。"""
+        threading.Thread(target=self._check_update_worker, daemon=True).start()
+
+    def _check_update_worker(self):
+        import json as _json
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/AngleNaris/ShadowBuster/releases/latest",
+                headers={"User-Agent": "ShadowBuster",
+                         "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = _json.loads(r.read().decode("utf-8"))
+            tag = str(data.get("tag_name", "") or "").lstrip("v")
+            self.updateInfo.emit(_json.dumps({
+                "ok": True,
+                "current": backend.APP_VERSION,
+                "latest": tag,
+                "name": str(data.get("name", "") or ""),
+                "body": str(data.get("body", "") or "")[:500],
+                "url": str(data.get("html_url", "") or ""),
+            }, ensure_ascii=False))
+        except Exception as e:   # 网络不可用 / 仓库私有 / API 限流等
+            self.updateInfo.emit(_json.dumps({
+                "ok": False,
+                "error": str(e)[:160],
+            }, ensure_ascii=False))
+
+    @Slot(str)
+    def openExternal(self, url):
+        """用系统默认浏览器打开链接（如更新页面）。"""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl(url))
+    @Slot(list, int, int)
+    def routeDrop(self, paths, x, y):
+        """把拖入路径与页面坐标交给前端：由前端决定加入队列还是填入路径框。"""
+        import json
+        self._window.view.page().runJavaScript(
+            "window.__sbDropAt && window.__sbDropAt("
+            + json.dumps(list(paths)) + f", {int(x)}, {int(y)})")
+
     @Slot(result=str)
     def selectInput(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -233,7 +289,7 @@ class Bridge(QObject):
             trans = float(params.get("trans", 3)) / 10.0    # 0–1.0
             space_wet = float(params.get("space", 6)) / 10.0      # 0–1.0，默认 0.6
             space_denoise = float(params.get("denoise", 2)) / 10.0  # 0–1.0，默认 0.2
-            space_width_db = float(params.get("space_width", 6)) / 2.0  # 0–6 dB，默认 3.0
+            space_width_db = float(params.get("space_width", 12)) / 2.0  # 0–12 dB，默认 6.0
             vocal_gain_db = float(params.get("vocal", 0)) / 2.0   # -6~+6 dB，默认 0
             # bypass：面板开关关闭的阶段名集合
             bypass = [b for b in (params.get("bypass") or []) if b]
@@ -309,6 +365,7 @@ class StudioWindow(QMainWindow):
         self.view.page().setWebChannel(self.channel)
         # OS 拖入文件 → 桥接信号 → 前端队列
         self.view.filesDropped.connect(self.bridge.filesDropped)
+        self.view.filesDroppedAt.connect(self.bridge.routeDrop)
         self.view.dragHover.connect(self.bridge.dragHover)
         self.setCentralWidget(self.view)
 

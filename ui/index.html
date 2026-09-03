@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ShadowBuster</title>
-<link rel="icon" href="logo.png">
+<link rel="icon" href="shadowbuster.svg">
 <script>
 /* 主题引导：首帧渲染前应用持久化的深/浅色与主题色，避免启动闪烁。
    与 app.js 的主题模块共用 sb_param_ 前缀的 localStorage 存储。 */
@@ -13,11 +13,11 @@
     var g = function (k, d) { var v = localStorage.getItem("sb_param_" + k); return v === null ? d : v; };
     var root = document.documentElement;
     root.dataset.mode = g("ui_mode", "dark") === "light" ? "light" : "dark";
-    root.dataset.accent = g("ui_accent", "violet");
+    root.dataset.accent = g("ui_accent", "ember");
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=34">
+<link rel="stylesheet" href="style.css?v=43">
 </head>
 <body>
 
@@ -32,7 +32,7 @@
   <!-- ═══ 顶栏：品牌居中，点击 logo 打开设置 ═══ -->
   <header class="topbar">
     <button class="brand" id="btn-settings" type="button" title="设置" aria-label="设置" aria-haspopup="dialog">
-      <img class="brand-mark" src="logo.png" alt="" aria-hidden="true">
+      <img class="brand-mark" src="shadowbuster.svg" alt="" aria-hidden="true">
       <span class="brand-name">SHADOWBUSTER</span>
     </button>
   </header>
@@ -63,15 +63,13 @@
 
   <!-- ═══ 输出 / 参考音频 ═══ -->
   <section class="files hdw" aria-label="输出设置">
-    <div class="file-row">
+    <div class="file-card" id="output-card" tabindex="0" role="button" aria-label="输出目录">
       <span class="file-label">输出目录</span>
       <input class="path-input" id="output-path" type="text" readonly placeholder="选择输出目录…" aria-label="输出目录路径" data-need="请先选择输出目录">
-      <button class="btn btn-ghost file-btn" id="btn-output">浏览</button>
     </div>
-    <div class="file-row">
+    <div class="file-card" id="ref-card" tabindex="0" role="button" aria-label="参考音频">
       <span class="file-label">参考音频</span>
       <input class="path-input" id="ref-path" type="text" readonly placeholder="可选 · 自定义风格基准" aria-label="参考音频路径">
-      <button class="btn btn-ghost file-btn" id="btn-ref">选择</button>
     </div>
   </section>
 
@@ -86,7 +84,6 @@
         </button>
         <button class="rack-bypass" id="bp-lew" type="button" role="switch" aria-checked="true" title="启用/旁路 高频面板" aria-label="高频面板开关">
           <span class="bp-track"><span class="bp-dot"></span></span>
-          <span class="bp-label">开</span>
         </button>
       </div>
       <div class="rack-body">
@@ -123,7 +120,6 @@
         </button>
         <button class="rack-bypass" id="bp-bass-drums" type="button" role="switch" aria-checked="true" title="启用/旁路 低频与鼓增强面板" aria-label="低频与鼓增强面板开关">
           <span class="bp-track"><span class="bp-dot"></span></span>
-          <span class="bp-label">开</span>
         </button>
       </div>
       <div class="rack-body">
@@ -167,18 +163,14 @@
         </button>
         <button class="rack-bypass" id="bp-reshape" type="button" role="switch" aria-checked="true" title="启用/旁路 声场面板" aria-label="声场面板开关">
           <span class="bp-track"><span class="bp-dot"></span></span>
-          <span class="bp-label">开</span>
         </button>
       </div>
       <div class="rack-body fader-bank">
         <div class="width-col">
-          <div class="width-meter" id="width-meter" tabindex="0" role="slider" aria-labelledby="label-width" aria-valuemin="0" aria-valuemax="12" aria-valuenow="6" aria-valuetext="+3.0 dB" data-min="0" data-max="12" data-step="1" data-default="6">
-            <svg class="width-fan" aria-hidden="true">
-              <path class="width-fan-max" d=""></path>
-              <path class="width-fan-cur" d=""></path>
-            </svg>
-            <span class="width-value">+3.0</span>
-            <span class="width-name" id="label-width">宽度</span>
+          <span class="width-name" id="label-width">宽度</span>
+          <div class="width-meter" id="width-meter" tabindex="0" role="slider" aria-labelledby="label-width" aria-valuemin="0" aria-valuemax="24" aria-valuenow="12" aria-valuetext="+6.0 dB" data-min="0" data-max="24" data-step="1" data-default="12">
+            <canvas class="width-fan" aria-hidden="true"></canvas>
+            <span class="width-value">+6.0</span>
           </div>
         </div>
         <div class="fader-stack">
@@ -215,7 +207,6 @@
         </button>
         <button class="rack-bypass" id="bp-soren" type="button" role="switch" aria-checked="true" title="启用/旁路 母带面板" aria-label="母带面板开关">
           <span class="bp-track"><span class="bp-dot"></span></span>
-          <span class="bp-label">开</span>
         </button>
       </div>
       <div class="rack-body rack-fields">
@@ -324,11 +315,11 @@
         <div class="set-row">
           <div class="set-info">
             <span class="set-label">软件更新</span>
-            <span class="set-desc">通过 GitHub Releases 获取新版本</span>
+            <span class="set-desc" id="update-status">点击按钮检查 GitHub 上的新版本</span>
           </div>
           <div class="set-action">
-            <button class="btn btn-ghost set-btn" id="btn-check-update" disabled>检查更新</button>
-            <span class="set-status" id="update-status">即将上线</span>
+            <button class="btn btn-ghost set-btn" id="btn-check-update">检查更新</button>
+            <button class="btn btn-ghost set-btn" id="btn-open-update" hidden>打开页面</button>
           </div>
         </div>
         <div class="set-row set-row-col">
@@ -362,6 +353,6 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="app.js?v=26"></script>
+<script src="app.js?v=41"></script>
 </body>
 </html>

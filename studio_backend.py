@@ -12,7 +12,7 @@ from pathlib import Path
 
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 
 if getattr(sys, "frozen", False):
     # PyInstaller 冻结后 __file__ 在 _internal 里，exe 同级才是安装根目录
@@ -444,7 +444,7 @@ def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, progress=None, cancel=N
         progress(1.0, "人声调整完成")
 
 
-def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0, width_db=3.0,
+def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0, width_db=6.0,
                   progress=None, cancel=None):
     """声场重塑（broadband delta-add）：wet 缩放全部处理差值，可附带 ≥10kHz 噪声地板降噪。
 
@@ -497,7 +497,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
                  eq_profile="Neutral", reference=None, quality=1, guidance=1.5,
                  device="cuda", progress=None, cancel=None, work_dir=None,
                  lowpass_cutoff=None, space_wet=0.0, space_denoise=0.0,
-                 space_width_db=3.0, bypass=()):
+                 space_width_db=6.0, bypass=()):
     """执行单文件完整链路。progress(stage_idx, frac, label)。
 
     bypass: 可迭代的阶段名（lew/vocals/bass/drums/reshape/soren），命中的阶段位级跳过。
@@ -658,7 +658,7 @@ if __name__ == "__main__":
     ap.add_argument("--lowpass-cutoff", type=float, default=None)
     ap.add_argument("--space-wet", type=float, default=0.0)
     ap.add_argument("--space-denoise", type=float, default=0.0)
-    ap.add_argument("--space-width-db", type=float, default=3.0,
+    ap.add_argument("--space-width-db", type=float, default=6.0,
                     help="声场宽度上限 dB（other 轨 side 增益，drums 自动取一半）")
     ap.add_argument("--vocal-gain-db", type=float, default=0.0,
                     help="人声整体增益 dB（0 = 直通）")

@@ -74,7 +74,7 @@ class StageReshapeTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--stems-dir") + 1], str(stems))
         self.assertEqual(cmd[cmd.index("--mode") + 1], "broadband")
         self.assertEqual(cmd[cmd.index("--wet") + 1], "0.6")
-        self.assertEqual(cmd[cmd.index("--side-gain-db") + 1], "3.0")
+        self.assertEqual(cmd[cmd.index("--side-gain-db") + 1], "6.0")
         self.assertIn("--other-denoise-amount", cmd)
 
     def test_width_override_forwarded(self):

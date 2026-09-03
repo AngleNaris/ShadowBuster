@@ -79,6 +79,7 @@
         const q = document.querySelector(".queue");
         if (q) q.classList.toggle("drop-hover", !!on);
       });
+      api.updateInfo.connect((raw) => onUpdateInfo(raw));
       resolve();
     });
   });
@@ -139,8 +140,14 @@
     const root = document.documentElement;
     const rootStyle = root.style;
     let mode = root.dataset.mode === "light" ? "light" : "dark";
+    /* 主题默认色迁移：1.4.2 起默认强调色改为红色（ember）。
+       仅首次执行一次，把旧的 violet 默认覆盖为红色，之后保留用户选择。 */
+    if (loadValue("ui_accent_migrated", "") !== "1") {
+      saveValue("ui_accent", "ember");
+      saveValue("ui_accent_migrated", "1");
+    }
     let accent = (root.dataset.accent === "custom" || ACCENTS.some((a) => a.id === root.dataset.accent))
-      ? root.dataset.accent : "violet";
+      ? root.dataset.accent : "ember";
     const notify = () => document.dispatchEvent(new CustomEvent("sb-theme"));
     /* 自定义主题色：内联变量覆盖样式表。强调色直接取所选拾色值，中性色按
        色相派生（饱和度/亮度公式与内置主题的 CSS 生成规则完全一致），
@@ -403,26 +410,180 @@
     return () => value;
   }
 
-  /* ─── 声场宽度：扇形计量控件（向右滑扩大/向左滑缩小，到 0 不反向；满扇形 100°）─── */
-  // 扇形：apex 固定在底部中点（上方留出铭牌条），半角 = 50°×frac；射线穿出侧壁时填充区沿壁补到顶。
-  function fanPath(w, h, frac) {
-    const inset = 3, apexBottom = 20;
-    const ax = w / 2, ay = h - apexBottom;
-    const left = inset, right = w - inset, top = inset;
-    if (frac <= 0.002) {
-      return `M ${ax - 0.75} ${ay} L ${ax - 0.75} ${top} L ${ax + 0.75} ${top} L ${ax + 0.75} ${ay} Z`;
+  /* ─── 声场宽度：扇形计量控件（canvas 绘制：发光边 + 内向渐变 + 粒子 + 发射线）─── */
+  // 满扇形半角 50°（总张角 100°）；apex 固定在底部中点，上方留出铭牌条。
+  const WIDTH_FAN = { inset: 3, apexBottom: 0, maxHalfDeg: 50, rays: 25, seed: 20260901 };
+  let widthThemeObserver = null;
+  let widthMeterEl = null, widthSpread = 0, widthSpreadTarget = 0, widthSpreadRaf = 0, widthLastFrac = 0;
+  let widthDisplayFrac = 0, widthTargetFrac = 0, widthAnimRaf = 0;
+
+  function widthAccentRgb() {
+    const v = getComputedStyle(document.documentElement).getPropertyValue("--c-accent-rgb").trim();
+    return v || "138, 99, 255";
+  }
+
+  function rayLength(px, py, phi, w) {
+    const inset = WIDTH_FAN.inset;
+    const sin = Math.sin(phi), cos = Math.cos(phi);
+    let t = (py - inset) / cos;                          // 上边界
+    if (sin > 1e-6) t = Math.min(t, (w - inset - px) / sin);
+    if (sin < -1e-6) t = Math.min(t, (inset - px) / sin);
+    return t;
+  }
+
+  function sectorGeometry(px, py, half, w, h) {
+    const inset = WIDTH_FAN.inset;
+    const t = Math.tan(half);
+    const dxTop = (py - inset) * t;
+    if (dxTop >= px - inset) {
+      const yWall = py - (px - inset) / t;
+      return {
+        pts: [[px, py], [inset, yWall], [inset, inset], [w - inset, inset], [w - inset, yWall]],
+        edges: [[[px, py], [inset, yWall]], [[px, py], [w - inset, yWall]]],
+      };
     }
-    const t = Math.tan((Math.PI / 180) * 50 * frac);
-    const dxTop = (ay - top) * t;
-    if (dxTop >= ax - left) {
-      const yWall = (ay - (ax - left) / t).toFixed(2);
-      return `M ${ax} ${ay} L ${left} ${yWall} L ${left} ${top} L ${right} ${top} L ${right} ${yWall} Z`;
+    const xL = px - dxTop, xR = px + dxTop;
+    return {
+      pts: [[px, py], [xL, inset], [xR, inset]],
+      edges: [[[px, py], [xL, inset]], [[px, py], [xR, inset]]],
+    };
+  }
+
+  function widthSpreadFrame(now = performance.now()) {
+    widthSpread += (widthSpreadTarget - widthSpread) * 0.14;
+    if (Math.abs(widthSpreadTarget - widthSpread) < 0.004) widthSpread = widthSpreadTarget;
+    const canvas = widthMeterEl && widthMeterEl.querySelector(".width-fan");
+    if (canvas) drawWidthFan(canvas, widthDisplayFrac);
+    widthSpreadRaf = (widthSpread !== widthSpreadTarget || widthSpreadTarget > 0)
+      ? requestAnimationFrame(widthSpreadFrame) : 0;
+  }
+  function setWidthHover(on) {
+    widthSpreadTarget = on ? 1 : 0;
+    if (!widthSpreadRaf) widthSpreadRaf = requestAnimationFrame(widthSpreadFrame);
+  }
+  function widthAnimFrame() {
+    widthDisplayFrac += (widthTargetFrac - widthDisplayFrac) * 0.18;
+    if (Math.abs(widthTargetFrac - widthDisplayFrac) < 0.001) widthDisplayFrac = widthTargetFrac;
+    if (widthMeterEl) drawWidthFan(widthMeterEl.querySelector(".width-fan"), widthDisplayFrac);
+    widthAnimRaf = (widthDisplayFrac !== widthTargetFrac) ? requestAnimationFrame(widthAnimFrame) : 0;
+  }
+  function animateWidthTo(frac) {
+    widthTargetFrac = frac;
+    if (!widthAnimRaf) widthAnimRaf = requestAnimationFrame(widthAnimFrame);
+  }
+
+  function drawWidthFan(canvas, frac) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w < 20 || h < 20) return;
+    const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width = pw;
+      canvas.height = ph;
     }
-    const xL = (ax - dxTop).toFixed(2), xR = (ax + dxTop).toFixed(2);
-    return `M ${ax} ${ay} L ${xL} ${top} L ${xR} ${top} Z`;
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const inset = WIDTH_FAN.inset, apexBottom = WIDTH_FAN.apexBottom;
+    const px = w / 2, py = h - apexBottom;
+    const maxHalf = (Math.PI / 180) * WIDTH_FAN.maxHalfDeg;
+    const half = maxHalf * frac;
+    const rgb = widthAccentRgb();
+
+    // 空余区域的发射细线：铺满整个 100° 范围，扇形填充会覆盖其中已激活部分
+    ctx.strokeStyle = `rgba(${rgb}, 0.16)`;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < WIDTH_FAN.rays; i++) {
+      const phi = -maxHalf + (maxHalf * 2) * (i / (WIDTH_FAN.rays - 1));
+      const len = rayLength(px, py, phi, w);
+      if (len <= 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(px + Math.sin(phi) * 2.5, py - Math.cos(phi) * 2.5);
+      ctx.lineTo(px + Math.sin(phi) * len, py - Math.cos(phi) * len);
+      ctx.stroke();
+    }
+
+    if (frac > 0.002) {
+      const sector = sectorGeometry(px, py, half, w, h);
+      // 内向渐变：边缘略亮，向 apex 渐隐
+      ctx.beginPath();
+      sector.pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+      ctx.closePath();
+      const grad = ctx.createRadialGradient(px, py, 0, px, py, Math.max(1, py - inset));
+      grad.addColorStop(0, `rgba(${rgb}, 0.04)`);
+      grad.addColorStop(0.7, `rgba(${rgb}, 0.16)`);
+      grad.addColorStop(1, `rgba(${rgb}, 0.32)`);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // hover 雷达扫描：窄线束从左向右单向扫描，后方带明显渐隐拖尾
+      if (widthSpread > 0.01) {
+        const phase = (performance.now() % 3600) / 3600;
+        const sweep = -half + half * 2 * phase;
+        const edgeFade = Math.min(1, phase / 0.14, (1 - phase) / 0.14);
+        const tail = Math.min(half * 1.15, 0.92);
+        ctx.save();
+        ctx.beginPath();
+        sector.pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+        ctx.closePath(); ctx.clip();
+        for (let i = 34; i >= 1; i--) {
+          const a = sweep - tail * (i / 34);
+          if (a < -half || a > half) continue;
+          const trailFade = 1 - i / 26;
+          const len = rayLength(px, py, a, w);
+          const ex = px + Math.sin(a) * len, ey = py - Math.cos(a) * len;
+          // 单条尾巴：末端（外侧）最亮，向发射点（顶点）渐隐，
+          // 叠起来后呈现“末端拖尾最长、发射点最短”的雷达拖尾
+          const alpha = (0.05 + trailFade * 0.12) * widthSpread * edgeFade;
+          const grad = ctx.createLinearGradient(px, py, ex, ey);
+          grad.addColorStop(0, `rgba(${rgb}, ${(alpha * 0.04).toFixed(3)})`);
+          grad.addColorStop(0.55, `rgba(${rgb}, ${(alpha * 0.4).toFixed(3)})`);
+          grad.addColorStop(1, `rgba(${rgb}, ${alpha.toFixed(3)})`);
+          ctx.strokeStyle = grad;
+          ctx.lineWidth = 1.15 + trailFade * 1.6;
+          ctx.shadowColor = `rgba(${rgb}, ${((0.22 + trailFade * 0.68) * widthSpread * edgeFade).toFixed(3)})`;
+          ctx.shadowBlur = 3 + trailFade * 10;
+          ctx.beginPath(); ctx.moveTo(px, py);
+          ctx.lineTo(ex, ey);
+          ctx.stroke();
+        }
+        const scanLen = rayLength(px, py, sweep, w);
+        ctx.strokeStyle = `rgba(${rgb}, ${(0.95 * widthSpread * edgeFade).toFixed(3)})`;
+        ctx.lineWidth = 1.55;
+        ctx.shadowColor = `rgba(${rgb}, ${(0.95 * widthSpread * edgeFade).toFixed(3)})`;
+        ctx.shadowBlur = 9;
+        ctx.beginPath(); ctx.moveTo(px, py);
+        ctx.lineTo(px + Math.sin(sweep) * scanLen, py - Math.cos(sweep) * scanLen);
+        ctx.stroke(); ctx.restore();
+      }
+      ctx.save();
+      ctx.strokeStyle = `rgba(${rgb}, 0.95)`;
+      ctx.lineWidth = 1.6;
+      ctx.shadowColor = `rgba(${rgb}, 0.8)`;
+      ctx.shadowBlur = 9;
+      for (const e of sector.edges) {
+        ctx.beginPath();
+        ctx.moveTo(e[0][0], e[0][1]);
+        ctx.lineTo(e[1][0], e[1][1]);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else {
+      // 0 宽度：仅一条中线细光柱
+      ctx.save();
+      ctx.strokeStyle = `rgba(${rgb}, 0.4)`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(px, py - 2);
+      ctx.lineTo(px, inset);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   function bindWidthMeter(meterEl, fmt, storeKey) {
+    widthMeterEl = meterEl;
     const min = +meterEl.dataset.min, max = +meterEl.dataset.max;
     const step = +meterEl.dataset.step, def = +meterEl.dataset.default;
     let value = storeKey ? loadNumber(storeKey, def) : def;
@@ -439,16 +600,33 @@
       value = Math.round((min + ratio * (max - min)) / step) * step;
       render();
     }
+    // 与右侧滑轨对齐：正方形顶边 = 第一条滑轨顶边，底边 = 第二条滑轨底边，
+    // 高度正好覆盖两条滑轨的实际跨度（标签行不参与，避免视觉偏移）
+    function syncMeterSize() {
+      const stack = meterEl.closest(".fader-bank") &&
+                    meterEl.closest(".fader-bank").querySelector(".fader-stack");
+      if (!stack) return;
+      const tracks = stack.querySelectorAll(":scope > .fader-wrap .fader");
+      if (tracks.length < 2) return;
+      const stackRect = stack.getBoundingClientRect();
+      const top = tracks[0].getBoundingClientRect().top - stackRect.top;
+      const bottom = tracks[tracks.length - 1].getBoundingClientRect().bottom - stackRect.top;
+      // 宽度铭牌已位于正方形上方（与右侧标签行等高），
+      // 正方形自身的偏移需减去标签占用的高度，避免被整体下推
+      const label = meterEl.previousElementSibling;
+      const labelH = label ? label.getBoundingClientRect().height : 0;
+      let side = Math.round(bottom - top);
+      if (side > 40) {
+        meterEl.style.width = side + "px";
+        meterEl.style.height = side + "px";
+        meterEl.style.marginTop = Math.max(0, Math.round(top - labelH)) + "px";
+      }
+    }
     function render() {
       meterEl.style.setProperty("--wp", (value - min) / (max - min));
-      const rect = meterEl.getBoundingClientRect();
-      if (rect.width > 10 && rect.height > 10) {
-        const w = Math.round(rect.width), h = Math.round(rect.height);
-        const svg = meterEl.querySelector(".width-fan");
-        svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-        svg.querySelector(".width-fan-max").setAttribute("d", fanPath(w, h, 1));
-        svg.querySelector(".width-fan-cur").setAttribute("d", fanPath(w, h, (value - min) / (max - min)));
-      }
+      syncMeterSize();
+      widthLastFrac = (value - min) / (max - min);
+      animateWidthTo(widthLastFrac);
       const text = fmt(value);
       meterEl.setAttribute("aria-valuenow", value);
       meterEl.setAttribute("aria-valuetext", text + " dB");
@@ -477,6 +655,16 @@
               : e.key === "ArrowLeft" || e.key === "ArrowDown" ? -step : 0;
       if (d) { e.preventDefault(); value = Math.max(min, Math.min(max, value + d)); render(); }
     });
+    meterEl.addEventListener("pointerenter", () => setWidthHover(true));
+    meterEl.addEventListener("pointerleave", () => setWidthHover(false));
+    if (!widthThemeObserver) {
+      // 深/浅色或主题色切换时重绘（颜色取自 CSS 变量）
+      widthThemeObserver = new MutationObserver(() => render());
+      widthThemeObserver.observe(document.documentElement, {
+        attributes: true, attributeFilter: ["data-mode", "data-accent"],
+      });
+      window.addEventListener("resize", () => render());
+    }
     render();
     return () => value;
   }
@@ -510,7 +698,6 @@
 
     function render() {
       btn.setAttribute("aria-checked", enabledForPanel() ? "true" : "false");
-      btn.querySelector(".bp-label").textContent = enabledForPanel() ? "开" : "关";
       rack.dataset.bypassed = enabledForPanel() ? "0" : "1";
     }
 
@@ -573,6 +760,11 @@
       open = true;
       trigger.setAttribute("aria-expanded", "true");
       panel.classList.add("open");
+      // fixed 定位浮层：按触发按钮的视口坐标放置，不参与页面滚动高度
+      const r = trigger.getBoundingClientRect();
+      panel.style.left = `${Math.round(r.left)}px`;
+      panel.style.top = `${Math.round(r.bottom + 2)}px`;
+      panel.style.width = `${Math.round(r.width)}px`;
       // 初始焦点到选中项
       const sel = panel.querySelector('[aria-selected="true"]');
       if (sel) sel.focus();
@@ -584,6 +776,9 @@
       panel.classList.remove("open");
     }
     function toggle() { open ? close() : openPanel(); }
+    // 页面滚动 / 窗口尺寸变化时收起浮层（fixed 面板不会自己跟随视口）
+    document.addEventListener("scroll", () => { if (open) close(); }, true);
+    window.addEventListener("resize", () => { if (open) close(); });
 
     trigger.addEventListener("click", () => toggle());
     // 点击外部关闭
@@ -734,24 +929,49 @@
   state.reference = loadValue("reference", "");
   $("ref-path").value = state.reference;
 
-  $("btn-output").addEventListener("click", async () => {
+  async function chooseOutput() {
     if (state.processing) return;
     const path = await api.selectOutput();
     if (path) {
       state.output = path; $("output-path").value = path;
-      saveValue("output", path);
-      clearNeed($("output-path"));
+      saveValue("output", path); clearNeed($("output-path"));
     }
-  });
-  $("btn-ref").addEventListener("click", async () => {
+  }
+  async function chooseReference() {
     if (state.processing) return;
     const path = await api.selectReference();
     if (path) {
-      state.reference = path;
-      $("ref-path").value = path;
-      saveValue("reference", path);
+      state.reference = path; $("ref-path").value = path; saveValue("reference", path);
     }
+  }
+  $("output-card").addEventListener("click", chooseOutput);
+  $("ref-card").addEventListener("click", chooseReference);
+  $("output-card").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseOutput(); } });
+  $("ref-card").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseReference(); } });
+  [$("output-card"), $("ref-card")].forEach((card) => {
+    card.addEventListener("dragover", (e) => { e.preventDefault(); card.classList.add("drop-hover"); });
+    card.addEventListener("dragleave", () => card.classList.remove("drop-hover"));
+    card.addEventListener("drop", (e) => { e.preventDefault(); card.classList.remove("drop-hover"); });
   });
+  // Qt 层把拖入路径连同落点坐标推过来：按落点路由到输出目录 / 参考音频 / 队列
+  window.__sbDropAt = (paths, x, y) => {
+    if (!paths || !paths.length) return;
+    const isAudio = (p) => /\.(wav|mp3|flac|ogg|m4a|aiff?|ape|wma)$/i.test(p);
+    const hit = document.elementFromPoint(x, y);
+    const card = hit && (hit.closest("#output-card") || hit.closest("#ref-card"));
+    if (card === $("ref-card")) {
+      const audio = paths.find(isAudio);
+      if (audio) { state.reference = audio; $("ref-path").value = audio; saveValue("reference", audio); }
+      return;
+    }
+    if (card === $("output-card")) {
+      const dir = paths.find((p) => !/\.[^.\\/]+$/.test(p.split(/[\\/]/).pop()));
+      if (dir) { state.output = dir; $("output-path").value = dir; saveValue("output", dir); clearNeed($("output-path")); }
+      return;
+    }
+    addPaths(paths.filter(isAudio));
+  };
+
 
   /* ─── 主按钮：开始 / 停止（进度条）─── */
   const processBtn = $("btn-process");
@@ -964,7 +1184,7 @@
       html:
         "<h3>声场（0.00 – 1.00）</h3><p>声场重塑强度（干湿比）：向「宽度」目标混合的比例，把堆在中间的铺底/鼓元素向两侧摊开。" +
         "<b>0</b>＝完全保留原样，<b>1.00</b>＝全量重塑；默认 0.60。只动 side（左右差），单声道合并不受影响。</p>" +
-        "<h3>宽度（0 – +6.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。<b>向右拖动</b>扇形扩大、<b>向左拖动</b>缩小（到 0 后不再变化），扇形张角就是当前宽度范围，最大张角 100°；默认 <b>+3.0</b>。与「声场」推子配合决定最终有多宽。</p>" +
+        "<h3>宽度（0 – +12.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。<b>向右拖动</b>扇形扩大、<b>向左拖动</b>缩小（到 0 后不再变化），扇形张角就是当前宽度范围，最大张角 100°；默认 <b>+6.0</b>。与「声场」推子配合决定最终有多宽。</p>" +
         "<h3>高频降噪（0.00 – 1.00）</h3><p>对铺底乐器轨 ≥10 kHz 的稳态沙沙噪声做门控衰减（自动噪声地板估计，类降噪采样）：贴着噪声电平的成分按比例衰减，" +
         "突出的音乐瞬态（镲片敲击）原样保留。默认 0.20；AI 音乐的擦片毛刺感明显时可在 0.2–0.4 之间调。</p>" +
         "<h3>面板开关</h3><p>关闭后，声场重塑与高频降噪会一起旁路；推子值保留，重新开启即可继续使用。</p>" +
@@ -1073,9 +1293,32 @@
   $("settings-close").addEventListener("click", closeSettings);
   $("settings-ok").addEventListener("click", closeSettings);
   $("settings-backdrop").addEventListener("click", closeSettings);
-  // 占位：GitHub 更新入口，待接入 Releases 检查后启用按钮
-  $("btn-check-update").addEventListener("click", () => {
-    $("update-status").textContent = "占位：即将接入 GitHub Releases";
+  // 检查更新：GitHub Releases（后端线程查询，结果经 updateInfo 回传）
+  const updateStatus = $("update-status");
+  const updateBtn = $("btn-check-update");
+  const openUpdateBtn = $("btn-open-update");
+  function onUpdateInfo(raw) {
+    let r = null;
+    try { r = JSON.parse(raw); } catch (e) {}
+    if (!r) { updateStatus.textContent = "检查失败"; return; }
+    if (!r.ok) { updateStatus.textContent = "检查失败（网络或仓库不可访问）"; return; }
+    const cur = String(r.current || "0").split(".").map(Number);
+    const lat = String(r.latest || "0").split(".").map(Number);
+    const newer = lat[0] > cur[0] || (lat[0] === cur[0] && (lat[1] > cur[1] || (lat[1] === cur[1] && lat[2] > cur[2])));
+    if (newer && r.url) {
+      updateStatus.textContent = `发现新版本 v${r.latest}，当前 v${r.current}`;
+      openUpdateBtn.hidden = false;
+      openUpdateBtn.onclick = () => { if (api && api.openExternal) api.openExternal(r.url); };
+    } else {
+      updateStatus.textContent = `已是最新版本 v${r.current}`;
+      openUpdateBtn.hidden = true;
+    }
+  }
+  updateBtn.addEventListener("click", () => {
+    updateStatus.textContent = "正在检查…";
+    openUpdateBtn.hidden = true;
+    if (api && api.checkUpdate) api.checkUpdate();
+    else updateStatus.textContent = "后端未连接，无法检查";
   });
 
   // 主题色 swatches（预设插入到自定义选择器之前）
