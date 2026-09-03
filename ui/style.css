@@ -456,73 +456,96 @@ body {
 }
 .fader:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 2px; }
 
-/* ═══ 声场宽度：倒三角计量控件（剪影 + 自底部填充 + 数值铭牌）═══ */
-.space-duo {
-  display: flex;
-  align-items: center;
-  gap: var(--s-5);
-}
-.width-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+/* ═══ 声场宽度：横向展开控件（中心=单声道点，对称滑块张开的区间即宽度范围）═══ */
+.width-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 64px;
   gap: var(--s-2);
-  flex: 0 0 auto;
+  align-items: center;
 }
 .width-meter {
   --wp: 1;
   position: relative;
-  width: 64px; height: 64px;
+  height: 36px;
+  cursor: ew-resize;
+  touch-action: none;
+  overflow: hidden;
+  isolation: isolate;
   background: var(--c-panel-2);
   border: 1px solid var(--n-knob-b);
   box-shadow:
     inset 0 1px 3px rgba(0,0,0,0.58),
-    inset 0 1px 0 rgba(255,255,255,0.055);
-  cursor: ns-resize;
-  touch-action: none;
+    inset 0 1px 0 rgba(255,255,255,0.055),
+    0 1px 0 rgba(255,255,255,0.025);
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
+/* 轨道与刻度：与推子同一契约（行程两侧留 15px） */
+.width-meter::before {
+  content: "";
+  position: absolute; left: 15px; right: 15px; top: 50%; height: 8px;
+  transform: translateY(-50%);
+  background: var(--n-dot);
+  border: 1px solid rgba(0,0,0,0.78);
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.82),
+    0 1px 0 rgba(255,255,255,0.055);
+}
+.width-meter::after {
+  content: "";
+  position: absolute; left: 16px; right: 16px; top: 5px; bottom: 5px;
+  background:
+    repeating-linear-gradient(90deg, var(--c-text-faint) 0 1px, transparent 1px 9px) top / 100% 5px no-repeat,
+    repeating-linear-gradient(90deg, var(--c-text-faint) 0 1px, transparent 1px 9px) bottom / 100% 5px no-repeat;
+  opacity: 0.48;
+  pointer-events: none;
+}
+/* 中心单声道参考线 */
+.width-center {
+  position: absolute; left: 50%; top: 6px; bottom: 6px;
+  width: 1px; margin-left: -0.5px;
+  background: var(--c-text-faint);
+  opacity: 0.65;
+  pointer-events: none;
+  z-index: 2;
+}
+/* 宽度填充：自中心向两侧展开，两端自动挂对称滑块帽 */
+.width-fill {
+  position: absolute; top: 50%; height: 3px;
+  transform: translateY(-50%);
+  left: calc(50% - (50% - 15px) * var(--wp));
+  right: calc(50% - (50% - 15px) * var(--wp));
+  background: var(--c-accent-hi);
+  box-shadow: 0 0 8px rgba(var(--c-accent-rgb),0.78);
+  pointer-events: none;
+  z-index: 3;
+}
+.width-fill::before,
+.width-fill::after {
+  content: "";
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 12px; height: 22px;
+  background: var(--n-knob1);
+  border: 1px solid var(--n-knob-b);
+  box-shadow:
+    0 2px 4px rgba(0,0,0,0.58),
+    inset 0 1px 0 rgba(255,255,255,0.1),
+    inset 0 -1px 0 rgba(0,0,0,0.38);
+  z-index: 4;
+}
+.width-fill::before { left: -6px; }
+.width-fill::after { right: -6px; }
 .width-meter:hover { border-color: var(--c-accent-hi); }
+.width-meter:hover .width-fill::before,
+.width-meter:hover .width-fill::after {
+  box-shadow:
+    0 2px 5px rgba(0,0,0,0.62),
+    0 0 0 1px rgba(var(--c-accent-rgb),0.24),
+    inset 0 1px 0 rgba(255,255,255,0.1);
+}
 .width-meter:active {
   box-shadow: inset 0 3px 7px rgba(0,0,0,0.82), 0 0 0 3px rgba(var(--c-accent-rgb),0.14);
 }
 .width-meter:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 2px; }
-.width-silhouette {
-  position: absolute; inset: 4px;
-  clip-path: polygon(0 0, 100% 0, 50% 100%);
-  background: var(--n-dot);
-  pointer-events: none;
-}
-.width-fill {
-  position: absolute; inset: 4px;
-  clip-path: polygon(0 0, 100% 0, 50% 100%);
-  pointer-events: none;
-}
-.width-fill::after {
-  content: "";
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: calc(var(--wp) * 100%);
-  background: var(--c-accent-hi);
-  box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.55);
-}
-.width-fill::before {
-  /* 液面指示线：超出三角的部分被外层 clip-path 裁掉 */
-  content: "";
-  position: absolute; left: 0; right: 0;
-  bottom: calc(var(--wp) * 100%);
-  height: 1px;
-  background: rgba(255,255,255,0.32);
-}
-.width-value {
-  position: absolute; top: 7px; left: 50%; transform: translateX(-50%);
-  padding: 1px 5px;
-  background: var(--c-panel-2);
-  border: 1px solid var(--c-border);
-  font-size: 11px; line-height: 1.4; font-family: var(--mono);
-  color: var(--c-text);
-  white-space: nowrap;
-  pointer-events: none;
-}
 
 /* ═══ 表单字段 ═══ */
 .field { display: flex; flex-direction: column; gap: var(--s-1); }
