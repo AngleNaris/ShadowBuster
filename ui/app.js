@@ -404,10 +404,10 @@
   }
 
   /* ─── 声场宽度：扇形计量控件（向右滑扩大/向左滑缩小，到 0 不反向；满扇形 100°）─── */
-  // 扇形：apex 固定在底部中点，半角 = 50°×frac；射线穿出侧壁时填充区沿壁补到顶。
+  // 扇形：apex 固定在底部中点（上方留出铭牌条），半角 = 50°×frac；射线穿出侧壁时填充区沿壁补到顶。
   function fanPath(w, h, frac) {
-    const inset = 3;
-    const ax = w / 2, ay = h - inset;
+    const inset = 3, apexBottom = 20;
+    const ax = w / 2, ay = h - apexBottom;
     const left = inset, right = w - inset, top = inset;
     if (frac <= 0.002) {
       return `M ${ax - 0.75} ${ay} L ${ax - 0.75} ${top} L ${ax + 0.75} ${top} L ${ax + 0.75} ${ay} Z`;

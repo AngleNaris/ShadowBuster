@@ -460,8 +460,6 @@ body {
 .width-col {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: var(--s-2);
   flex: 0 0 auto;
   align-self: stretch;
 }
@@ -476,9 +474,8 @@ body {
 .width-meter {
   --wp: 1;
   position: relative;
-  width: 64px;
-  flex: 1 1 auto;
-  min-height: 96px;
+  height: 100%;
+  aspect-ratio: 1 / 1;   /* 正方形：边长 = 右侧推子列总高 */
   background: var(--c-panel-2);
   border: 1px solid var(--n-knob-b);
   box-shadow:
@@ -510,6 +507,16 @@ body {
   border: 1px solid var(--c-border);
   font-size: 11px; line-height: 1.4; font-family: var(--mono);
   color: var(--c-text);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.width-name {
+  position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%);
+  padding: 1px 4px;
+  background: var(--c-panel-2);
+  border: 1px solid var(--c-border);
+  font-size: 10.5px; line-height: 1.4;
+  color: var(--c-text-dim);
   white-space: nowrap;
   pointer-events: none;
 }
