@@ -403,18 +403,18 @@
     return () => value;
   }
 
-  /* ─── 声场宽度：横向展开控件（左右拖动张开/收拢范围，双击复位）─── */
-  function bindWidthMeter(meterEl, valueEl, fmt, storeKey) {
+  /* ─── 声场宽度：倒三角控件（左右拖动张合顶边，双击复位）─── */
+  function bindWidthMeter(meterEl, fmt, storeKey) {
     const min = +meterEl.dataset.min, max = +meterEl.dataset.max;
     const step = +meterEl.dataset.step, def = +meterEl.dataset.default;
     let value = storeKey ? loadNumber(storeKey, def) : def;
     value = Math.max(min, Math.min(max, Math.round(value / step) * step));
+    const valueEl = meterEl.querySelector(".width-value");
 
-    // 中心是单声道点：宽度 = 指针到中心的距离 / 半程
+    // 左右拖动：宽度 = 指针到方块中线的距离 / 半程，顶边随之张合
     function setFromClientX(clientX) {
       const rect = meterEl.getBoundingClientRect();
-      const half = Math.max(1, (rect.width - 30) / 2);
-      const ratio = Math.max(0, Math.min(1, Math.abs(clientX - rect.left - rect.width / 2) / half));
+      const ratio = Math.max(0, Math.min(1, Math.abs(clientX - rect.left - rect.width / 2) / (rect.width / 2)));
       value = Math.round((min + ratio * (max - min)) / step) * step;
       render();
     }
@@ -422,7 +422,7 @@
       meterEl.style.setProperty("--wp", (value - min) / (max - min));
       const text = fmt(value);
       meterEl.setAttribute("aria-valuenow", value);
-      meterEl.setAttribute("aria-valuetext", text);
+      meterEl.setAttribute("aria-valuetext", text + " dB");
       valueEl.textContent = text;
       if (storeKey) saveValue(storeKey, value);
     }
@@ -457,8 +457,7 @@
   const getGuidance = bindKnob($("knob-guidance"), $("val-guidance"), (v) => (v / 10).toFixed(1), "guidance");
   const getVocal = bindKnob($("knob-vocal"), $("val-vocal"),
     (v) => (v > 0 ? "+" : "") + (v / 2).toFixed(1) + " dB", "vocal");
-  const getWidth = bindWidthMeter($("width-meter"), $("val-width"),
-    (v) => "+" + (v / 2).toFixed(1) + " dB", "space_width");
+  const getWidth = bindWidthMeter($("width-meter"), (v) => "+" + (v / 2).toFixed(1), "space_width");
   const getSub = bindKnob($("knob-sub"), $("val-sub"), (v) => `+${v} dB`, "sub");
   const getSat = bindKnob($("knob-sat"), $("val-sat"), (v) => (v / 10).toFixed(2), "sat");
   const getPunch = bindKnob($("knob-punch"), $("val-punch"), (v) => `+${v} dB`, "punch");
@@ -936,7 +935,7 @@
       html:
         "<h3>声场（0.00 – 1.00）</h3><p>声场重塑强度（干湿比）：向「宽度」目标混合的比例，把堆在中间的铺底/鼓元素向两侧摊开。" +
         "<b>0</b>＝完全保留原样，<b>1.00</b>＝全量重塑；默认 0.60。只动 side（左右差），单声道合并不受影响。</p>" +
-        "<h3>宽度（0 – +6.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。轨道中心是单声道点，<b>左右拖动</b>可直接展开/收拢宽度范围；默认 <b>+3.0</b>。与「声场」推子配合决定最终有多宽。</p>" +
+        "<h3>宽度（0 – +6.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。<b>左右拖动</b>三角形即可展开/收拢，顶边宽度就是当前宽度范围；默认 <b>+3.0</b>。与「声场」推子配合决定最终有多宽。</p>" +
         "<h3>高频降噪（0.00 – 1.00）</h3><p>对铺底乐器轨 ≥10 kHz 的稳态沙沙噪声做门控衰减（自动噪声地板估计，类降噪采样）：贴着噪声电平的成分按比例衰减，" +
         "突出的音乐瞬态（镲片敲击）原样保留。默认 0.20；AI 音乐的擦片毛刺感明显时可在 0.2–0.4 之间调。</p>" +
         "<h3>面板开关</h3><p>关闭后，声场重塑与高频降噪会一起旁路；推子值保留，重新开启即可继续使用。</p>" +
