@@ -72,4 +72,6 @@ iscc packaging\installer.iss
 - PyInstaller onedir 外壳与 Inno Setup 1.4.0 安装包构建通过。最终安装器大小 `2747962406` bytes，SHA-256：`d2e4ff5510024e470b00ae11617298bb77c4cb89042f5743f22ddd59c7401116`。
 - `packaging/install_test.ps1` 静默安装返回 `EXIT=0`；安装目录内 `soundstage_reshape.py`、`bass_enhance.py`、`drum_enhance.py` 与源码及 stage 的 SHA-256 完全一致，便携 Python 可成功导入 torch 2.7.1+cu128 和 scipy 1.18.0。
 - 已从修正版测试安装目录启动应用并视觉验证：1100×950 界面完整加载；文件队列为 158px 高，列表下方“添加 / 清空”按钮均保持 30px 完整高度；四个效果面板、两个声场推子、六阶段条和处理按钮均可见且未受挤压。
-- v1.4.1 变更（窗口紧凑化：可调宽度下限 840、自适应默认 1000×860、高度不足时内容区滚动且底部 BUSTER 按钮固定、几何记忆；声场新增「宽度」上限横向展开控件（中心=单声道点、左右拖动张合范围）与 `--side-gain-db` 参数；高频面板新增「人声」增益旋钮，管线新增 `vocal_adjust.py` 阶段与 `vocals` bypass 名；修复盲听对比 FLOAT WAV 的 PEAK 时间戳确定性缺陷）已通过 132 项自动测试与三档几何截图验证；安装包待下一次构建。
+- v1.4.1 变更（窗口紧凑化：可调宽度下限 840、自适应默认 1000×860、高度不足时内容区滚动且底部 BUSTER 按钮固定、几何记忆；声场新增「宽度」上限正方形扇形控件——高度与推子列总高对齐、满扇形张角 100°、向右拖动扩大/向左缩小且到 0 不反向——及 `--side-gain-db` 参数；高频面板新增「人声」增益旋钮，管线新增 `vocal_adjust.py` 阶段与 `vocals` bypass 名；修复盲听对比 FLOAT WAV 的 PEAK 时间戳确定性缺陷）已通过 132 项自动测试与多档几何截图验证。
+- 1.4.1 最终构建：runtime 从空目录重建（`bass_enhance.py`/`drum_enhance.py`/`soundstage_reshape.py`/`vocal_adjust.py` 四份脚本源码与 stage 哈希一致，关键 manifest 已覆盖），PyInstaller 外壳 + Inno Setup 编译通过。安装器 `ShadowBuster-Setup-1.4.1.exe` 大小 `2747732575` bytes，SHA-256：`1dfb35a24ecca6c8be03c3820a0bd01bf69f6537d89004807a4c28ab81b8d2c9`。
+- `packaging/install_test.ps1` 静默安装 `EXIT=0`；安装目录内四份 DSP 脚本与源码 SHA-256 完全一致，便携 Python 导入 torch 2.7.1+cu128（CUDA 12.8）/ scipy 1.18.0；从安装目录启动应用视觉确认：正方形宽度扇形与推子列等高对齐、人声旋钮、六阶段条（声场·人声）与 BUSTER 按钮完整可见、默认 1000×860 无滚动。
