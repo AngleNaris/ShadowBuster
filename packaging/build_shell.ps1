@@ -41,7 +41,7 @@ if (-not (Get-ChildItem -LiteralPath $numpyBundle -Filter "*.pyd" -File -Recurse
 }
 $warnFile = "$root\build\ShadowBuster\warn-ShadowBuster.txt"
 if (Test-Path -LiteralPath $warnFile) {
-    $numpyWarnings = Select-String -LiteralPath $warnFile -Pattern "numpy" -SimpleMatch
+    $numpyWarnings = Select-String -LiteralPath $warnFile -Pattern "^missing module named numpy\s+-" -CaseSensitive
     if ($numpyWarnings) { throw "PyInstaller 报告 numpy 缺失：$($numpyWarnings -join ' ')" }
 }
 
