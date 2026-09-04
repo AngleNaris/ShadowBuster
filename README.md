@@ -1,91 +1,118 @@
-# ShadowBuster — AI 音乐修复与母带工坊
+<p align="center">
+  <img src="./docs/icon.svg" width="168" alt="ShadowBuster">
+</p>
 
-面向 AI 生成音乐（Suno 等）与有损音频的一键式修复 + 母带桌面应用。信号链六阶段：
+<h1 align="center">ShadowBuster</h1>
 
+<p align="center">把发闷、发糊的 AI 音乐送进来，经过修复、分轨增强和母带处理，再带着完整动态离开。</p>
+
+<p align="center">
+  <a href="https://github.com/AngleNaris/ShadowBuster/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/AngleNaris/ShadowBuster?style=for-the-badge&color=a83b58&labelColor=151315"></a>
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-desktop-d66886?style=for-the-badge&labelColor=151315">
+  <img alt="PySide6" src="https://img.shields.io/badge/PySide6-QtWebEngine-d66886?style=for-the-badge&labelColor=151315">
+  <img alt="Local AI" src="https://img.shields.io/badge/AI-local_runtime-a83b58?style=for-the-badge&labelColor=151315">
+</p>
+
+<p align="center">
+  <a href="https://github.com/AngleNaris/ShadowBuster/releases/tag/v1.5.0"><strong>查看 v1.5.0</strong></a>
+  &nbsp;·&nbsp;
+  <a href="#处理流程">处理流程</a>
+  &nbsp;·&nbsp;
+  <a href="#运行开发版">运行开发版</a>
+  &nbsp;·&nbsp;
+  <a href="#构建-windows-安装包">构建安装包</a>
+</p>
+
+<p align="center">
+  <img src="./docs/screenshot.jpg" width="900" alt="ShadowBuster 主界面">
+</p>
+
+---
+
+## 这是什么
+
+ShadowBuster 是面向 AI 生成音乐与有损音频的 Windows 修复、增强和母带工坊。它把高频重建、Demucs 四轨分离、贝斯与鼓增强、人声调整、声场重塑、高频降噪和最终母带串成一条可取消、可观察的桌面流程。
+
+应用使用 PySide6 与 QtWebEngine 构建桌面界面，支持文件拖放、参数持久化、深浅主题和自定义强调色。AI 推理运行时与应用外壳分离；未安装 CUDA 环境时仍可使用 CPU 完成同一套处理。
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><b>高频重建</b><br><sub>使用 Lew / Apollo 超分辨率模型重绘有损编码中丢失的高频，并通过强度控制混合原始信号。</sub></td>
+    <td width="33%" valign="top"><b>四轨分离</b><br><sub>由 Demucs 拆出 vocals、drums、bass 与 other，为分轨增强和残差保留提供基础。</sub></td>
+    <td width="33%" valign="top"><b>节奏增强</b><br><sub>分别处理贝斯低频与鼓组瞬态，保留门控与强度控制，避免把整首混音一起染色。</sub></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>人声与声场</b><br><sub>调整人声相对位置，控制 Mid / Side 宽度，并压低 other 轨中的稳态高频噪声。</sub></td>
+    <td valign="top"><b>Soren 母带</b><br><sub>执行响度与频谱匹配、Mid / Side 处理、lookahead limiter、真峰值保护和 24-bit dither。</sub></td>
+    <td valign="top"><b>桌面工作流</b><br><sub>拖放导入，查看阶段进度，随时取消任务，并保存常用参数与界面主题。</sub></td>
+  </tr>
+</table>
+
+## 处理流程
+
+```text
+Lew 高频重建
+→ Demucs 四轨分离
+→ 贝斯增强
+→ 鼓增强
+→ 人声调整
+→ 声场重塑 / 高频降噪
+→ Soren 母带
 ```
-Lew 高频重建 → Demucs 四轨分离 → 贝斯增强 → 鼓增强 → 人声调整 → 声场重塑/高频降噪 → Soren 母带
+
+各阶段保持清晰边界：Lew 负责恢复频带，Demucs 提供可独立处理的轨道，增强阶段只修改对应分轨，最后再由 Soren 完成整体响度、频谱和峰值定版。处理编排、进度和取消由 `studio_backend.py` 统一管理。
+
+## 发布与 GPU 环境
+
+[v1.5.0](https://github.com/AngleNaris/ShadowBuster/releases/tag/v1.5.0) 起采用 CPU 瘦身运行时，CUDA 环境改为在“设置 → GPU 环境”中按需下载。GPU 包支持断点续传、取消和 SHA-256 校验，安装到当前用户目录，不需要管理员权限。
+
+发布说明中的 Windows 安装包为 `ShadowBuster-Setup-1.5.0.exe`，SHA-256：
+
+```text
+76ea6a1b6fcf5a825a854230a9129c5af6303ef7bcb49dcb2082b3fb980af15c
 ```
 
-- **Lew 高频重建**：Apollo 架构超分辨率模型重绘丢失高频（质量档位控制分块/重叠，重建强度 0–2 为 wet/dry 混合）
-- **Demucs 四轨分离**：htdemucs 输出 vocals/drums/bass/other（求和≈原曲），为分轨处理提供基础
-- **贝斯增强**：30Hz sub 包裹感、<200Hz 谐波饱和（小音箱可闻低频）、RMS 门控
-- **鼓增强**：90Hz 鼓身 punch + 全频段瞬态强调，只作用于 drums 轨（实测 kick 起音 ~100% 落在该轨），快 attack 门控
-- **人声调整**：vocals 轨整体增益（-6 ~ +6 dB，delta-add 保留分离残差）——声场拓宽/母带频谱匹配会抬升伴奏相对能量让人声靠后，实测 300Hz 以上 side 比 mid 多涨 ~2dB，用该旋钮把人声拉回
-- **声场重塑/高频降噪**：以原混音为基底，对 drums/other 的 side 做宽带增益；「宽度」设定 side 增益上限（other=设定值、drums 自动取一半），独立干湿比控制向该宽度混合的比例，并在 other 轨 ≥10kHz 自动估计稳态噪声地板、按强度衰减沙沙伪影，保留高于噪声地板的音乐瞬态
-- **Soren 母带**：按曲风档案/参考曲做 RMS 匹配、频谱匹配 EQ、Mid/Side 处理、响度定版（lookahead limiter + 真峰值保护，24bit dither 输出）
+安装包尚未进行代码签名。请从官方 [GitHub Releases](https://github.com/AngleNaris/ShadowBuster/releases) 获取发布信息，并在运行前核对校验值。
 
-界面为 PySide6 + QtWebEngine（DAW 插件质感），支持深/浅色模式、五种预设 + 自定义主题色（整套中性色随色相派生）、文件拖放导入、参数持久化。
+## 运行开发版
 
-## 目录结构
+准备 Python 3.12+，创建虚拟环境并安装桌面外壳与测试依赖：
 
-```
-main.py               UI 外壳入口（窗口、桥接、拖放、原生标题栏主题）
-studio_backend.py     管线编排（子进程调度/进度/取消）+ APP_VERSION 单一来源
-ui/                   前端（index.html / app.js / style.css，CSS 变量主题系统）
-tests/                pytest 测试（管线路由、守恒门、版本同步等）
-experiments/          音频实验脚本（人声端点、残差对比等，不属于安装包）
-packaging/            打包：build_shell.ps1 / runtime_sync.ps1 / installer.iss / DEPLOY.md
-visual/               视觉规范材料
-```
-
-## 重建开发环境
-
-应用本体（本仓库）与 AI 推理环境是分离的。开发一台新机器需要：
-
-### 1. Python（UI 外壳）
-
-Python 3.12+，创建 venv 后安装：
-
-```
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install PySide6 PyInstaller pytest numpy scipy soundfile
+python main.py
 ```
 
-### 2. 外部工具链（AI 环境，不在本仓库）
+完整推理还需要 FFmpeg、Apollo 源码与 Lew 权重，以及自行持有的 Soren 组件。通过以下变量指定开发机上的运行时位置：
 
-推理子进程依赖三个外部目录（路径可用环境变量覆盖，见下）：
+| 变量 | 用途 |
+| --- | --- |
+| `SB_PYTHON` | 带 PyTorch 与音频推理依赖的 Python |
+| `SB_APOLLO` | Apollo 源码、模型和 Demucs 工具链 |
+| `SB_SOREN` | Soren 母带组件 |
+| `SB_FFMPEG` | `ffmpeg.exe` 路径 |
+| `SB_ASSETS` | 已装配完成的完整 runtime 根目录 |
 
-| 目录 | 内容 | 来源 |
-|---|---|---|
-| `Apollo/` | 上游 [JusperLee/Apollo](https://github.com/JusperLee/Apollo) 源码（`lew_upscale.py`、`look2hear/` 等）+ `ckpts/` Lew 权重 | 上游仓库 + 权重另行获取 |
-| `Soren_src/` | Soren 母带链：`core_decrypted.py`、`model/`、`profiles/`、`secured_genres/` | 闭源组件，自行持有 |
-| ffmpeg | `ffmpeg.exe` 加入 PATH | 官方构建 |
+## 构建 Windows 安装包
 
-本仓库的 `apollo_scripts/` 保存 ShadowBuster 自己维护的 `bass_enhance.py`（贝斯增强）、
-`drum_enhance.py`（鼓增强）、`soundstage_reshape.py`（宽带声场重塑与 ≥10kHz 自动噪声地板降噪）和
-`vocal_adjust.py`（人声整体增益）。
-构建时 `runtime_sync.ps1` 将这些应用源码与外部 Apollo AI 工具链组合进运行时；模型、AI 环境和上游 Apollo 源码不纳入本仓库。
-
-### 3. 环境变量（开发机布局探测）
-
-`studio_backend._resolve_runtime()` 的探测顺序：
-
-1. exe 同级 `runtime/`（安装后的布局）；
-2. `SB_ASSETS` 指向装配好的 runtime 根；
-3. 开发回退：`SB_PYTHON`（带 torch 的解释器）、`SB_APOLLO`、`SB_SOREN`、`SB_FFMPEG`；
-   未设置时使用开发机默认路径（`UniverSR/.venv`、`D:/_3.AI/audio_upscale/{Apollo,Soren_src}`），
-   新机器请务必设置这四个变量。
-
-推理运行时（torch cu128 + demucs + librosa/numba/statsmodels 等）的精确依赖清单见
-`packaging/runtime_sync.ps1`，开发venv 可按同一清单安装（或直接先跑一次 runtime_sync
-复用其产物）。
-
-### 4. 运行与测试
-
-```
-python main.py          # 或 start.bat
-python -m pytest tests/ -q
+```powershell
+powershell -File packaging\build_shell.ps1
+powershell -File packaging\runtime_sync.ps1
+iscc packaging\installer.iss
 ```
 
-## 打包构建（Windows）
+构建顺序是 PyInstaller 桌面外壳、AI runtime 装配和 Inno Setup 安装包。外部模型、闭源 Soren 组件与上游 Apollo 源码不属于本仓库；装配要求见远端仓库的 [`packaging/DEPLOY.md`](https://github.com/AngleNaris/ShadowBuster/blob/main/packaging/DEPLOY.md)。
 
+## 验证
+
+```powershell
+python -m pytest tests\ -q
 ```
-powershell -File packaging\build_shell.ps1     # 1) PyInstaller UI 外壳 + 体积裁剪
-powershell -File packaging\runtime_sync.ps1    # 2) 装配 AI runtime（含权重离线预置）
-iscc packaging\installer.iss                   # 3) Inno Setup 6 出安装包
-```
 
-产物：`packaging/out/ShadowBuster-Setup-<版本>.exe`（外壳 ~510MB + runtime ~6.3GB）。
-细节与决策记录见 [packaging/DEPLOY.md](packaging/DEPLOY.md)。
+## 许可
 
-版本号单一来源：`studio_backend.APP_VERSION`，需与 `packaging/installer.iss` 的
-`MyAppVersion` 保持一致（`tests/test_app_version.py` 校验）。
+当前仓库尚未声明项目级开源许可证。外部模型、Apollo、Soren、FFmpeg 与其他第三方组件继续服从各自条款。
+
+项目仓库：[AngleNaris/ShadowBuster](https://github.com/AngleNaris/ShadowBuster)
