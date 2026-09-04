@@ -9,6 +9,15 @@ if (-not (Test-Path $installer)) {
 }
 
 $dirArg = '/DIR="' + $InstallDir + '"'
+$installFull = [IO.Path]::GetFullPath($InstallDir).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+if ($env:LOCALAPPDATA) {
+    $userDataRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "ShadowBuster")).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $userDataPrefix = $userDataRoot + [IO.Path]::DirectorySeparatorChar
+    if ($installFull.Equals($userDataRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $installFull.StartsWith($userDataPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "InstallDir 不得指向用户 GPU 数据目录: $installFull"
+    }
+}
 if (Test-Path -LiteralPath $InstallDir) {
     Remove-Item -LiteralPath $InstallDir -Recurse -Force
 }

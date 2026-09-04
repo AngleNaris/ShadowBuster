@@ -198,18 +198,41 @@ class Bridge(QObject):
                 self._gpu_emit({"type": "state", "dev": True})
                 return
             import gpu_env as ge
-            payload = {"type": "state", "installed": ge.installed_info(),
-                       "manifest": None, "error": None}
-            try:
-                m = ge.load_manifest(backend.APP_VERSION)
-                payload["manifest"] = {
-                    "version": m["version"],
-                    "totalSize": m["totalSize"],
-                    "sha256": m["sha256"],
-                    "parts": [{"name": p["name"], "size": p["size"]} for p in m["parts"]],
-                }
-            except Exception as e:
-                payload["error"] = str(e)[:200]
+            current = ge.installed_info(expected_version=backend.APP_VERSION)
+            if current is not None:
+                self._gpu_emit({"type": "state", "installed": current,
+                                "manifest": None, "error": None})
+                return
+            m = ge.load_manifest(backend.APP_VERSION)
+            module_paths = (
+                backend.ROOT / "runtime" / "Apollo",
+                backend.ROOT / "runtime" / "Soren_src",
+            )
+            installed = ge.installed_info(
+                expected_version=m["version"], expected_sha256=m["sha256"]
+            )
+            if installed is None:
+                installed = ge.revalidate_existing(
+                    m["version"], m["sha256"],
+                    module_paths=module_paths,
+                    torch_version="2.7.1+cu128",
+                    torchaudio_version="2.7.1+cu128",
+                )
+            if installed is None:
+                installed = ge.migrate_legacy_runtime(
+                    backend.ROOT / "runtime" / "env",
+                    m["version"], m["sha256"],
+                    module_paths=module_paths,
+                    torch_version="2.7.1+cu128",
+                    torchaudio_version="2.7.1+cu128",
+                )
+            payload = {"type": "state", "installed": installed,
+                       "manifest": {
+                           "version": m["version"],
+                           "totalSize": m["totalSize"],
+                           "sha256": m["sha256"],
+                           "parts": [{"name": p["name"], "size": p["size"]} for p in m["parts"]],
+                       }, "error": None}
             self._gpu_emit(payload)
         except Exception as e:   # 兜底
             self._gpu_emit({"type": "error", "msg": f"内部错误: {e}"[:200]})
@@ -247,46 +270,83 @@ class Bridge(QObject):
         try:
             self._gpu_emit({"type": "progress", "phase": "info", "cur": 0, "total": 1})
             m = ge.load_manifest(backend.APP_VERSION)
+            expected_torch = "2.7.1+cu128"
+            expected_torchaudio = "2.7.1+cu128"
+            module_paths = (backend.ROOT / "runtime" / "Apollo",
+                            backend.ROOT / "runtime" / "Soren_src")
+            installed = ge.installed_info(
+                expected_version=m["version"], expected_sha256=m["sha256"]
+            )
+            if installed is None:
+                installed = ge.revalidate_existing(
+                    m["version"], m["sha256"], module_paths=module_paths,
+                    torch_version=expected_torch,
+                    torchaudio_version=expected_torchaudio,
+                )
+            if installed is None:
+                installed = ge.migrate_legacy_runtime(
+                    backend.ROOT / "runtime" / "env", m["version"], m["sha256"],
+                    module_paths=module_paths,
+                    torch_version=expected_torch,
+                    torchaudio_version=expected_torchaudio,
+                )
+            if installed is not None:
+                self._gpu_emit({"type": "done", "version": installed.get("version", m["version"]),
+                                "reused": True})
+                return
+
             total = m["totalSize"]
-            # 磁盘预检：下载期存在 分卷 + 组装 zip 的峰值（约 2 倍包体积）
+            ge.user_base_dir().mkdir(parents=True, exist_ok=True)
             free = _shutil.disk_usage(ge.user_base_dir()).free
             if free < total * 2 + (1 << 30):
                 raise RuntimeError(f"磁盘空间不足：需要约 {max(1, (total*2 + (1<<30)) >> 30)} GB，"
                                    f"当前可用 {free >> 30} GB")
             work = ge.dl_dir(m["version"])
             work.mkdir(parents=True, exist_ok=True)
-            base = 0
-            parts = []
-            n = len(m["parts"])
-            for i, p in enumerate(m["parts"], 1):
-                if cancel.is_set():
-                    raise ge.DownloadCancelled("下载已取消")
-                self._gpu_emit({"type": "progress", "phase": "download",
-                                "cur": base, "total": total,
-                                "part": f"{i}/{n}"})
-                dest = work / p["name"]
-                ge.download_part(p["url"], dest, p["size"],
-                                 cancel=lambda: cancel.is_set(),
-                                 progress=lambda off, b=base: prog("download", b + off, total))
-                prog("verify", base, total)   # 单卷校验（几秒）
-                sha = ge.sha256_of(dest, cancel=lambda: cancel.is_set())
-                if sha != p["sha256"]:
-                    raise RuntimeError(f"分卷 {p['name']} SHA-256 校验失败，请重新下载")
-                base += p["size"]
-                parts.append({**p, "local": str(dest)})
             zpath = work / f"gpu-env-{m['version']}.zip"
-            prog("assemble", 0, total)
-            ge.assemble_zip(parts, zpath, cancel=lambda: cancel.is_set(),
-                            progress=lambda c, t: prog("assemble", c, t))
-            zsize = zpath.stat().st_size
-            prog("verify", 0, zsize)
-            h = ge.sha256_of(zpath, cancel=lambda: cancel.is_set(),
-                             progress=lambda c, t: prog("verify", c, t))
-            if h != m["sha256"]:
-                raise RuntimeError("GPU 环境包 SHA-256 校验失败，请重新下载")
-            for p in parts:
-                _P(p["local"]).unlink(missing_ok=True)   # 校验通过才释放分卷
-            # 解压空间预检（此时能拿到真实解压体积）
+            zip_ready = ge.valid_cached_file(zpath, total, m["sha256"],
+                                             cancel=lambda: cancel.is_set())
+            if not zip_ready and zpath.exists():
+                zpath.unlink(missing_ok=True)
+
+            parts = []
+            if not zip_ready:
+                base = 0
+                n = len(m["parts"])
+                for i, p in enumerate(m["parts"], 1):
+                    if cancel.is_set():
+                        raise ge.DownloadCancelled("下载已取消")
+                    self._gpu_emit({"type": "progress", "phase": "download",
+                                    "cur": base, "total": total,
+                                    "part": f"{i}/{n}"})
+                    dest = work / p["name"]
+                    try:
+                        ge.download_part(p["url"], dest, p["size"],
+                                         cancel=lambda: cancel.is_set(),
+                                         progress=lambda off, b=base: prog("download", b + off, total))
+                        prog("verify", base, total)
+                        sha = ge.sha256_of(dest, cancel=lambda: cancel.is_set())
+                        if sha != p["sha256"]:
+                            dest.unlink(missing_ok=True)
+                            raise RuntimeError(f"分卷 {p['name']} SHA-256 校验失败，请重试")
+                    except ge.DownloadCancelled:
+                        raise
+                    except RuntimeError:
+                        raise
+                    except Exception:
+                        raise
+                    base += p["size"]
+                    parts.append({**p, "local": str(dest)})
+                prog("assemble", 0, total)
+                ge.assemble_zip(parts, zpath, cancel=lambda: cancel.is_set(),
+                                progress=lambda c, t: prog("assemble", c, t))
+                prog("verify", 0, total)
+                h = ge.sha256_of(zpath, cancel=lambda: cancel.is_set(),
+                                 progress=lambda c, t: prog("verify", c, t))
+                if h != m["sha256"]:
+                    zpath.unlink(missing_ok=True)
+                    raise RuntimeError("GPU 环境包 SHA-256 校验失败，请重试")
+
             with _zipfile.ZipFile(zpath) as zf:
                 extracted = sum(i.file_size for i in zf.infolist() if not i.is_dir())
             free = _shutil.disk_usage(ge.user_base_dir()).free
@@ -299,8 +359,16 @@ class Bridge(QObject):
             ge.extract_zip(zpath, staging, cancel=lambda: cancel.is_set(),
                            progress=lambda c, t: prog("extract", c, t))
             prog("verify", 0, 1)
-            ge.validate_runtime(staging / "python.exe")
+            ge.validate_runtime(
+                staging / "python.exe",
+                module_paths=(staging / "Apollo", staging / "Soren_src"),
+                torch_version=expected_torch,
+                torchaudio_version=expected_torchaudio,
+            )
+            ge.assert_runtime_files(staging / "python.exe")
             ge.swap_env(staging, m["version"], m["sha256"], runtime_validated=True)
+            for p in m["parts"]:
+                (work / p["name"]).unlink(missing_ok=True)
             zpath.unlink(missing_ok=True)
             self._gpu_emit({"type": "done", "version": m["version"]})
         except ge.DownloadCancelled:

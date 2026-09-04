@@ -82,6 +82,33 @@ class ManifestTests(GpuEnvTestCase):
         with self.assertRaises(ValueError):
             ge.validate_manifest(d)
 
+    def test_load_manifest_rejects_embedded_version_mismatch(self):
+        latest = {"tag_name": "v1.5.0", "assets_url": "https://api.github.com/assets"}
+        manifest = sample_manifest()
+        manifest["version"] = "1.4.0"
+        responses = {
+            "https://api.github.com/repos/AngleNaris/ShadowBuster/releases/latest": latest,
+            "https://api.github.com/assets": [
+                {"name": "gpu-env-1.5.0.json", "browser_download_url": "https://x/manifest"},
+                {"name": "gpu-env-1.5.0.part1of2", "browser_download_url": "https://x/p1"},
+                {"name": "gpu-env-1.5.0.part2of2", "browser_download_url": "https://x/p2"},
+            ],
+        }
+
+        class JsonResp(FakeResp):
+            def __init__(self, value):
+                super().__init__(json.dumps(value).encode())
+
+        def get(req, timeout=10):
+            url = req.full_url
+            if url == "https://x/manifest":
+                return JsonResp(manifest)
+            return JsonResp(responses[url])
+
+        with mock.patch("urllib.request.urlopen", side_effect=get):
+            with self.assertRaisesRegex(ValueError, "版本与请求不一致"):
+                ge.load_manifest("1.5.0")
+
     def test_bad_sha256(self):
         d = sample_manifest(); d["sha256"] = "xyz"
         with self.assertRaises(ValueError):
@@ -150,6 +177,64 @@ class PickReleaseTests(GpuEnvTestCase):
     def test_malformed_latest(self):
         self.assertIsNone(ge.pick_release({"tag_name": None}, "1.5.0"))
         self.assertIsNone(ge.pick_release("junk", "1.5.0"))
+
+
+class PathAndCacheTests(GpuEnvTestCase):
+    def test_local_appdata_fallback_is_absolute(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("gpu_env.Path.home", return_value=Path(self._tmp.name)):
+                self.assertEqual(
+                    ge.user_base_dir(),
+                    Path(self._tmp.name) / "AppData" / "Local" / "ShadowBuster",
+                )
+
+    def test_installed_info_checks_expected_release_identity(self):
+        ge.env_dir().mkdir(parents=True)
+        (ge.env_dir() / "python.exe").write_bytes(b"py")
+        numpy_dir = ge.env_dir() / "Lib" / "site-packages" / "numpy"
+        numpy_dir.mkdir(parents=True)
+        (numpy_dir / "__init__.py").write_bytes(b"numpy")
+        (numpy_dir / "core.pyd").write_bytes(b"pyd")
+        ge.marker_path().write_text(json.dumps({
+            "version": "1.5.0", "sha256": "a" * 64, "runtimeValidated": True,
+        }), encoding="utf-8")
+        self.assertIsNotNone(ge.installed_info(expected_version="1.5.0", expected_sha256="a" * 64))
+        self.assertIsNone(ge.installed_info(expected_version="1.6.0"))
+        self.assertIsNone(ge.installed_info(expected_version="1.5.0", expected_sha256="b" * 64))
+
+    def test_valid_cached_file_checks_hash(self):
+        p = Path(self._tmp.name) / "cache.zip"
+        p.write_bytes(b"cache")
+        digest = hashlib.sha256(b"cache").hexdigest()
+        self.assertTrue(ge.valid_cached_file(p, 5, digest))
+        self.assertFalse(ge.valid_cached_file(p, 5, "0" * 64))
+        self.assertFalse(ge.valid_cached_file(p, 6, digest))
+
+    def test_assert_runtime_files_requires_native_numpy(self):
+        py = Path(self._tmp.name) / "env" / "python.exe"
+        py.parent.mkdir(parents=True)
+        py.write_bytes(b"py")
+        numpy_dir = py.parent / "Lib" / "site-packages" / "numpy"
+        numpy_dir.mkdir(parents=True)
+        (numpy_dir / "__init__.py").write_bytes(b"numpy")
+        with self.assertRaisesRegex(ValueError, "原生扩展"):
+            ge.assert_runtime_files(py)
+        (numpy_dir / "core.pyd").write_bytes(b"pyd")
+        ge.assert_runtime_files(py)
+
+    def test_revalidate_old_marker_writes_current_identity(self):
+        ge.env_dir().mkdir(parents=True)
+        py = ge.env_dir() / "python.exe"
+        py.write_bytes(b"py")
+        numpy_dir = ge.env_dir() / "Lib" / "site-packages" / "numpy"
+        numpy_dir.mkdir(parents=True)
+        (numpy_dir / "__init__.py").write_bytes(b"numpy")
+        (numpy_dir / "core.pyd").write_bytes(b"pyd")
+        ge.marker_path().write_text(json.dumps({"version": "1.5.0"}), encoding="utf-8")
+        with mock.patch.object(ge, "validate_runtime", return_value="ok"):
+            info = ge.revalidate_existing("1.5.0", "c" * 64)
+        self.assertEqual(info["sha256"], "c" * 64)
+        self.assertTrue(info["runtimeValidated"])
 
 
 class ResumeOffsetTests(GpuEnvTestCase):
@@ -254,8 +339,50 @@ class SwapEnvTests(GpuEnvTestCase):
         ge.swap_env(staging2, "1.5.1", "b" * 64, runtime_validated=True)
         self.assertFalse((ge.runner_dir() / "env.old").exists())
 
-    def test_swap_rejects_bad_staging(self):
+    def test_swap_rename_failure_restores_previous_env_and_marker(self):
+        old_env = ge.env_dir()
+        old_env.mkdir(parents=True)
+        (old_env / "python.exe").write_bytes(b"old")
+        ge.marker_path().write_text(json.dumps({
+            "version": "1.4.0", "sha256": "a" * 64, "runtimeValidated": True,
+        }), encoding="utf-8")
         staging = Path(self._tmp.name) / "staging"
+        staging.mkdir()
+        (staging / "python.exe").write_bytes(b"new")
+        original_rename = ge.os.rename
+        calls = {"n": 0}
+
+        def fail_second_rename(src, dst):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("marker busy")
+            return original_rename(src, dst)
+
+        with mock.patch.object(ge.os, "rename", side_effect=fail_second_rename):
+            with self.assertRaises(OSError):
+                ge.swap_env(staging, "1.5.0", "b" * 64, runtime_validated=True)
+        self.assertEqual((ge.env_dir() / "python.exe").read_bytes(), b"old")
+        self.assertEqual(json.loads(ge.marker_path().read_text(encoding="utf-8"))["version"], "1.4.0")
+
+    def test_swap_marker_write_failure_restores_previous_env(self):
+        old_env = ge.env_dir()
+        old_env.mkdir(parents=True)
+        (old_env / "python.exe").write_bytes(b"old")
+        ge.marker_path().write_text(json.dumps({
+            "version": "1.4.0", "sha256": "a" * 64, "runtimeValidated": True,
+        }), encoding="utf-8")
+        staging = Path(self._tmp.name) / "marker-staging"
+        staging.mkdir()
+        (staging / "python.exe").write_bytes(b"new")
+        with mock.patch.object(ge, "_write_marker", side_effect=OSError("locked")):
+            with self.assertRaises(OSError):
+                ge.swap_env(staging, "1.5.0", "b" * 64, runtime_validated=True)
+        self.assertEqual((ge.env_dir() / "python.exe").read_bytes(), b"old")
+        marker = json.loads(ge.marker_path().read_text(encoding="utf-8"))
+        self.assertEqual(marker["version"], "1.4.0")
+
+    def test_swap_rejects_bad_staging(self):
+        staging = Path(self._tmp.name) / "bad-staging"
         staging.mkdir()
         with self.assertRaises(ValueError):
             ge.swap_env(staging, "1.5.0", "a" * 64, runtime_validated=True)
@@ -276,6 +403,7 @@ class InstalledInfoTests(GpuEnvTestCase):
         numpy_dir = ge.env_dir() / "Lib" / "site-packages" / "numpy"
         numpy_dir.mkdir(parents=True)
         (numpy_dir / "__init__.py").write_bytes(b"numpy")
+        (numpy_dir / "core.pyd").write_bytes(b"pyd")
         ge.marker_path().write_text(json.dumps({"version": "1.5.0", "sha256": "a" * 64, "runtimeValidated": True}), encoding="utf-8")
         info = ge.installed_info()
         self.assertEqual(info["version"], "1.5.0")

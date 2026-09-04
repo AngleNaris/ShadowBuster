@@ -31,7 +31,14 @@ RUNTIME_IMPORTS = (
 )
 
 
-def validate_runtime(python_path, required=RUNTIME_IMPORTS, module_paths=(), timeout=180):
+def validate_runtime(
+    python_path,
+    required=RUNTIME_IMPORTS,
+    module_paths=(),
+    timeout=180,
+    torch_version=None,
+    torchaudio_version=None,
+):
     """验证待安装的便携解释器能导入完整推理依赖。"""
     python_path = Path(python_path)
     if not python_path.is_file():
@@ -39,9 +46,14 @@ def validate_runtime(python_path, required=RUNTIME_IMPORTS, module_paths=(), tim
     imports = ",".join(required)
     code = (
         "import importlib; "
-        f"[importlib.import_module(n) for n in {imports!r}.split(',')]; "
-        "import numpy; print('runtime imports OK', numpy.__version__)"
+        f"mods={{n: importlib.import_module(n) for n in {imports!r}.split(',') if n}}; "
+        "import numpy; "
     )
+    if torch_version is not None:
+        code += f"assert mods.get('torch') and mods['torch'].__version__ == {str(torch_version)!r}, getattr(mods.get('torch'), '__version__', None); "
+    if torchaudio_version is not None:
+        code += f"assert mods.get('torchaudio') and mods['torchaudio'].__version__ == {str(torchaudio_version)!r}, getattr(mods.get('torchaudio'), '__version__', None); "
+    code += "print('runtime imports OK', numpy.__version__)"
     env = os.environ.copy()
     extra_paths = [str(Path(p)) for p in module_paths if p]
     if extra_paths:
@@ -61,14 +73,28 @@ def validate_runtime(python_path, required=RUNTIME_IMPORTS, module_paths=(), tim
     return proc.stdout.strip()
 
 
+def assert_runtime_files(python_path):
+    """检查导入探针之外仍需存在的 NumPy 原生文件。"""
+    site = Path(python_path).parent / "Lib" / "site-packages"
+    numpy_dir = site / "numpy"
+    if not (numpy_dir / "__init__.py").is_file():
+        raise ValueError(f"运行时缺少 numpy 文件: {numpy_dir / '__init__.py'}")
+    if not any(numpy_dir.rglob("*.pyd")):
+        raise ValueError(f"运行时缺少 numpy 原生扩展: {numpy_dir}")
+
+
 class DownloadCancelled(Exception):
     """用户取消下载/安装（进度保留，可续传）。"""
 
 
+def local_appdata_dir():
+    raw = os.environ.get("LOCALAPPDATA")
+    return Path(raw) if raw else Path.home() / "AppData" / "Local"
+
+
 def user_base_dir():
     """用户数据根目录（下载、GPU 环境都放这里）。"""
-    base = Path(os.environ.get("LOCALAPPDATA") or "") or (Path.home() / "AppData" / "Local")
-    return base / "ShadowBuster"
+    return local_appdata_dir() / "ShadowBuster"
 
 
 def runner_dir():
@@ -187,6 +213,8 @@ def load_manifest(version, repo=REPO, timeout=10):
     req = urllib.request.Request(murl, headers={"User-Agent": "ShadowBuster"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         manifest = validate_manifest(json.loads(r.read().decode("utf-8")))
+    if manifest["version"] != str(version):
+        raise ValueError(f"清单版本与请求不一致: {manifest['version']} != {version}")
     manifest["parts"] = match_part_assets(manifest["parts"], url_by_name)
     return manifest
 
@@ -216,17 +244,36 @@ def download_part(url, dest, expected_size, cancel=None, progress=None, timeout=
     if off > 0:
         headers["Range"] = f"bytes={off}-"
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "ab" if off > 0 else "wb") as f:
-        while True:
-            if cancel and cancel():
-                raise DownloadCancelled("下载已取消")
-            chunk = r.read(READ_CHUNK)
-            if not chunk:
-                break
-            f.write(chunk)
-            off += len(chunk)
-            if progress:
-                progress(off)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        status = getattr(r, "status", getattr(r, "code", None))
+        if status is not None and status != (206 if off > 0 else 200):
+            raise ValueError(
+                f"分卷下载响应状态异常（{status}，续传需要 206，首次下载需要 200）"
+            )
+        if off > 0:
+            content_range = r.headers.get("Content-Range", "")
+            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+            if match is not None:
+                start, end, total = (int(v) for v in match.groups())
+                if start != off or end < start or total != expected_size:
+                    raise ValueError(f"分卷 Content-Range 异常: {content_range}")
+            elif status is not None:
+                raise ValueError("分卷续传响应缺少 Content-Range")
+        with open(dest, "ab" if off > 0 else "wb") as f:
+            while True:
+                if cancel and cancel():
+                    raise DownloadCancelled("下载已取消")
+                chunk = r.read(READ_CHUNK)
+                if not chunk:
+                    break
+                off += len(chunk)
+                if off > expected_size:
+                    raise ValueError(
+                        f"分卷下载超出期望大小（{off} > {expected_size}）"
+                    )
+                f.write(chunk)
+                if progress:
+                    progress(off)
     actual = Path(dest).stat().st_size
     if actual != expected_size:
         raise ValueError(f"分卷 {Path(dest).name} 大小不符（{actual} != {expected_size}）")
@@ -301,8 +348,8 @@ def extract_zip(zip_path, dest_dir, cancel=None, progress=None):
     return dest_dir
 
 
-def installed_info():
-    """读本地 GPU 环境标记；env 缺失视为未安装。返回 dict 或 None。"""
+def installed_info(expected_version=None, expected_sha256=None):
+    """读本地 GPU 环境标记；可按发布版本和内容哈希严格匹配。"""
     try:
         data = json.loads(marker_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -313,34 +360,181 @@ def installed_info():
         return None
     if data.get("runtimeValidated") is not True:
         return None
-    if not (env_dir() / "Lib" / "site-packages" / "numpy" / "__init__.py").is_file():
+    numpy_dir = env_dir() / "Lib" / "site-packages" / "numpy"
+    if not (numpy_dir / "__init__.py").is_file():
+        return None
+    if not any(numpy_dir.rglob("*.pyd")):
+        return None
+    if expected_version is not None and data.get("version") != str(expected_version):
+        return None
+    if expected_sha256 is not None and str(data.get("sha256", "")).lower() != str(expected_sha256).lower():
         return None
     return data
 
 
+def _write_marker(data):
+    """原子写入 marker，避免进程中断留下半个 JSON。"""
+    marker = marker_path()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    tmp = marker.with_name(marker.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, marker)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def revalidate_existing(
+    version,
+    sha256,
+    *,
+    required=RUNTIME_IMPORTS,
+    module_paths=(),
+    torch_version=None,
+    torchaudio_version=None,
+    timeout=180,
+):
+    """为旧版完整 GPU 环境补写当前 marker；失败则返回 None，不改动环境。"""
+    current = installed_info(expected_version=version, expected_sha256=sha256)
+    if current is not None:
+        return current
+    python = env_dir() / "python.exe"
+    if not python.is_file():
+        return None
+    try:
+        validate_runtime(
+            python,
+            required=required,
+            module_paths=module_paths,
+            timeout=timeout,
+            torch_version=torch_version,
+            torchaudio_version=torchaudio_version,
+        )
+        assert_runtime_files(python)
+        _write_marker({
+            "version": str(version),
+            "sha256": str(sha256).lower(),
+            "runtimeValidated": True,
+        })
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return installed_info(expected_version=version, expected_sha256=sha256)
+
+
+def migrate_legacy_runtime(
+    source_env,
+    version,
+    sha256,
+    *,
+    required=RUNTIME_IMPORTS,
+    module_paths=(),
+    torch_version=None,
+    torchaudio_version=None,
+    timeout=180,
+):
+    """把旧安装目录中的完整 GPU env 迁移到用户目录，失败不改动源环境。"""
+    source = Path(source_env)
+    target = env_dir()
+    try:
+        if source.resolve() == target.resolve():
+            return revalidate_existing(
+                version, sha256, required=required, module_paths=module_paths,
+                torch_version=torch_version, torchaudio_version=torchaudio_version,
+                timeout=timeout,
+            )
+    except OSError:
+        pass
+    python = source / "python.exe"
+    if not python.is_file() or installed_info(expected_version=version, expected_sha256=sha256):
+        return installed_info(expected_version=version, expected_sha256=sha256)
+    try:
+        validate_runtime(
+            python,
+            required=required,
+            module_paths=module_paths,
+            timeout=timeout,
+            torch_version=torch_version,
+            torchaudio_version=torchaudio_version,
+        )
+        assert_runtime_files(python)
+        runner_dir().mkdir(parents=True, exist_ok=True)
+        staging = runner_dir() / ".legacy-staging"
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        shutil.copytree(source, staging)
+        return swap_env(staging, version, sha256, runtime_validated=True) and installed_info(
+            expected_version=version, expected_sha256=sha256
+        )
+    except (OSError, ValueError, shutil.Error, subprocess.SubprocessError):
+        try:
+            if (runner_dir() / ".legacy-staging").exists():
+                shutil.rmtree(runner_dir() / ".legacy-staging", ignore_errors=True)
+        except OSError:
+            pass
+        return None
+
+
+def valid_cached_file(path, expected_size, expected_sha256, cancel=None):
+    """按大小和 SHA-256 判断完整 ZIP 缓存是否可复用。"""
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size != expected_size:
+        return False
+    try:
+        return sha256_of(path, cancel=cancel) == str(expected_sha256).lower()
+    except DownloadCancelled:
+        raise
+    except OSError:
+        return False
+
+
 def swap_env(staging_dir, version, sha256, *, runtime_validated=False):
-    """校验 staging 完整后原子切换 env 并写标记文件。返回 env 目录。"""
+    """校验 staging 后切换 env，并原子提交 marker。"""
     staging = Path(staging_dir)
     env = env_dir()
     if not (staging / "python.exe").is_file():
         raise ValueError("解压产物缺少 env\\python.exe，安装中止")
     runner_dir().mkdir(parents=True, exist_ok=True)
     old = runner_dir() / "env.old"
+    old_marker = runner_dir() / "gpu-env.json.old"
+    marker = marker_path()
     if old.exists():
         shutil.rmtree(old, ignore_errors=True)
-    if env.exists():
-        os.rename(env, old)
+    if old_marker.exists():
+        old_marker.unlink(missing_ok=True)
+    had_env = env.exists()
+    had_marker = marker.exists()
+    env_moved = False
+    marker_moved = False
+    env_replaced = False
     try:
+        if had_env:
+            os.rename(env, old)
+            env_moved = True
+        if had_marker:
+            os.rename(marker, old_marker)
+            marker_moved = True
         os.rename(staging, env)
+        env_replaced = True
+        _write_marker({
+            "version": str(version),
+            "sha256": str(sha256).lower(),
+            "runtimeValidated": bool(runtime_validated),
+        })
     except Exception:
-        if old.exists() and not env.exists():
-            os.rename(old, env)  # 回滚旧环境
+        if env_replaced and env.exists():
+            shutil.rmtree(env, ignore_errors=True)
+        if env_replaced and marker.exists():
+            marker.unlink(missing_ok=True)
+        if env_moved and old.exists() and not env.exists():
+            os.rename(old, env)
+        if marker_moved and old_marker.exists() and not marker.exists():
+            os.rename(old_marker, marker)
         raise
     if old.exists():
         shutil.rmtree(old, ignore_errors=True)
-    marker_path().write_text(json.dumps({
-        "version": version,
-        "sha256": sha256,
-        "runtimeValidated": bool(runtime_validated),
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    if old_marker.exists():
+        old_marker.unlink(missing_ok=True)
     return env

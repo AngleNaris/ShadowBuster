@@ -23,6 +23,29 @@ MAX_PART = 2 * 1024 * 1024 * 1024     # GitHub Release 单资产硬上限
 ZIP_COMPRESS = zipfile.ZIP_DEFLATED
 ZIP_LEVEL = 1                        # 体积/速度平衡：模型权重本身不可压
 READ = 8 * 1024 * 1024
+EXPECTED_TORCH = "2.7.1+cu128"
+EXPECTED_TORCHAUDIO = "2.7.1+cu128"
+
+
+def required_zip_entries(zpath):
+    with zipfile.ZipFile(zpath) as zf:
+        names = set(zf.namelist())
+    required = {
+        "python.exe": "便携 Python",
+        "Lib/site-packages/numpy/__init__.py": "numpy",
+    }
+    for name, label in required.items():
+        if name not in names:
+            raise SystemExit(f"GPU ZIP 缺少 {label}: {name}")
+    if not any(name.startswith("Lib/site-packages/numpy/") and name.endswith(".pyd") for name in names):
+        raise SystemExit("GPU ZIP 缺少 numpy 原生扩展 (.pyd)")
+    if "Lib/site-packages/soundfile.py" not in names:
+        raise SystemExit("GPU ZIP 缺少 soundfile.py")
+    if not any(name.startswith(f"Lib/site-packages/torch-{EXPECTED_TORCH}.dist-info/") for name in names):
+        raise SystemExit(f"GPU ZIP 缺少 CUDA torch metadata: {EXPECTED_TORCH}")
+    if not any(name.startswith(f"Lib/site-packages/torchaudio-{EXPECTED_TORCHAUDIO}.dist-info/") for name in names):
+        raise SystemExit(f"GPU ZIP 缺少 CUDA torchaudio metadata: {EXPECTED_TORCHAUDIO}")
+    return len(names)
 
 
 def sha256_of(path):
@@ -34,9 +57,9 @@ def sha256_of(path):
 
 
 def make_zip(src: Path, zpath: Path):
-    if zpath.exists() and zpath.stat().st_size > 0:
-        print(f"zip 已存在，复用: {zpath.name}")
-        return zpath
+    if zpath.exists():
+        print(f"删除旧 zip，按当前 runtime 重建: {zpath.name}")
+        zpath.unlink()
     files = sorted(p for p in src.rglob("*") if p.is_file())
     if not files:
         raise SystemExit(f"源目录为空: {src}")
@@ -95,7 +118,11 @@ def main():
         raise SystemExit(f"env 缺少 python.exe: {src}")
     out.mkdir(parents=True, exist_ok=True)
     zpath = out / f"gpu-env-{args.version}.zip"
+    for old in out.glob(f"gpu-env-{args.version}.part*"):
+        old.unlink()
+    (out / f"gpu-env-{args.version}.json").unlink(missing_ok=True)
     make_zip(src, zpath)
+    print(f"检查 ZIP 内容: {required_zip_entries(zpath)} entries")
     parts, zip_sha, total = split_zip(zpath, out, args.version)
     manifest = {"version": args.version, "sha256": zip_sha,
                 "totalSize": total, "parts": parts}
