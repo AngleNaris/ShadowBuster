@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import traceback
+import uuid
 from pathlib import Path
 
 # 使用 QtWebEngine 默认的 GPU 加速与合成路径。
@@ -150,6 +151,7 @@ class Bridge(QObject):
         self._thread = None
         self._gpu_cancel = threading.Event()
         self._gpu_thread = None
+        self._gpu_lock = threading.Lock()
 
     # ── JS 可调用的方法 ──
     @Slot()
@@ -190,7 +192,15 @@ class Bridge(QObject):
     @Slot()
     def checkGpuEnv(self):
         """后台线程查询 GPU 环境发布状态，结果经 gpuStatus 回传。"""
-        threading.Thread(target=self._gpu_check_worker, daemon=True).start()
+        if not self._gpu_lock.acquire(blocking=False):
+            self._gpu_emit({"type": "busy", "op": "check"})
+            return
+        thread = threading.Thread(target=self._gpu_check_worker, daemon=True)
+        try:
+            thread.start()
+        except Exception as e:
+            self._gpu_lock.release()
+            self._gpu_emit({"type": "error", "msg": f"GPU 环境检查启动失败：{e}"[:200]})
 
     def _gpu_check_worker(self):
         try:
@@ -236,15 +246,27 @@ class Bridge(QObject):
             self._gpu_emit(payload)
         except Exception as e:   # 兜底
             self._gpu_emit({"type": "error", "msg": f"内部错误: {e}"[:200]})
+        finally:
+            self._gpu_lock.release()
 
     @Slot(result=bool)
     def startGpuInstall(self):
         """启动 GPU 环境下载安装（后台线程，防重入）。"""
+        if not self._gpu_lock.acquire(blocking=False):
+            self._gpu_emit({"type": "busy", "op": "install"})
+            return False
         if self._gpu_thread and self._gpu_thread.is_alive():
+            self._gpu_lock.release()
             return False
         self._gpu_cancel.clear()
-        self._gpu_thread = threading.Thread(target=self._gpu_install_worker, daemon=True)
-        self._gpu_thread.start()
+        thread = threading.Thread(target=self._gpu_install_worker, daemon=True)
+        self._gpu_thread = thread
+        try:
+            thread.start()
+        except Exception:
+            self._gpu_thread = None
+            self._gpu_lock.release()
+            raise
         return True
 
     @Slot()
@@ -259,6 +281,8 @@ class Bridge(QObject):
         import gpu_env as ge
         cancel = self._gpu_cancel
         state = {"last": [0.0]}
+        staging = None
+        swap_started = False
 
         def prog(phase, cur, total):
             t = _time.monotonic()
@@ -353,8 +377,7 @@ class Bridge(QObject):
             if free < extracted + (1 << 30):
                 raise RuntimeError(f"解压空间不足：需要约 {max(1, (extracted + (1<<30)) >> 30)} GB，"
                                    f"当前可用 {free >> 30} GB，请清理后重试")
-            staging = ge.runner_dir() / ".staging"
-            _shutil.rmtree(staging, ignore_errors=True)
+            staging = ge.runner_dir() / f".staging-{uuid.uuid4().hex}"
             prog("extract", 0, extracted)
             ge.extract_zip(zpath, staging, cancel=lambda: cancel.is_set(),
                            progress=lambda c, t: prog("extract", c, t))
@@ -366,15 +389,33 @@ class Bridge(QObject):
                 torchaudio_version=expected_torchaudio,
             )
             ge.assert_runtime_files(staging / "python.exe")
+            swap_started = True
             ge.swap_env(staging, m["version"], m["sha256"], runtime_validated=True)
+            staging = None
             for p in m["parts"]:
-                (work / p["name"]).unlink(missing_ok=True)
-            zpath.unlink(missing_ok=True)
+                try:
+                    (work / p["name"]).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                zpath.unlink(missing_ok=True)
+            except OSError:
+                pass
             self._gpu_emit({"type": "done", "version": m["version"]})
         except ge.DownloadCancelled:
             self._gpu_emit({"type": "cancelled"})
         except Exception as e:
-            self._gpu_emit({"type": "error", "msg": str(e)[:300]})
+            msg = str(e)
+            if getattr(e, "winerror", None) in {5, 32, 33}:
+                msg = f"GPU 环境切换被 Windows 文件占用或权限阻止；旧环境和已下载缓存已保留，请关闭正在处理的任务后重试。{msg}"
+            self._gpu_emit({"type": "error", "msg": msg[:300]})
+        finally:
+            if staging is not None and not swap_started and staging.exists():
+                try:
+                    _shutil.rmtree(staging, ignore_errors=True)
+                except OSError:
+                    pass
+            self._gpu_lock.release()
 
     @Slot()
     def probeDevice(self):
@@ -447,11 +488,20 @@ class Bridge(QObject):
         backend._tr(f"process: slot invoked params_keys={list((params or {}).keys())} type={type(params).__name__}")
         if self._thread and self._thread.is_alive():
             return False
+        if self._gpu_lock.locked():
+            self._gpu_emit({"type": "busy", "op": "process"})
+            return False
         self._cancel_flag.clear()
         p = dict(params or {})
+        self._gpu_lock.acquire()
         self._thread = threading.Thread(
             target=self._run_batch, args=(p,), daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except Exception:
+            self._thread = None
+            self._gpu_lock.release()
+            raise
         return True
 
     @Slot()
@@ -550,6 +600,9 @@ class Bridge(QObject):
             self.failed.emit(str(e))
         except Exception as e:
             self.failed.emit(f"内部错误: {e}\n{traceback.format_exc()[-400:]}")
+        finally:
+            if self._gpu_lock.locked():
+                self._gpu_lock.release()
 
 
 class StudioWindow(QMainWindow):

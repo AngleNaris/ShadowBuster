@@ -210,6 +210,21 @@ class PathAndCacheTests(GpuEnvTestCase):
         self.assertFalse(ge.valid_cached_file(p, 5, "0" * 64))
         self.assertFalse(ge.valid_cached_file(p, 6, digest))
 
+    def test_valid_cached_file_permission_error_is_cache_miss(self):
+        p = Path(self._tmp.name) / "locked-cache.zip"
+        p.write_bytes(b"cache")
+        real_stat = Path.stat
+
+        def locked_stat(path, *args, **kwargs):
+            if Path(path) == p:
+                err = PermissionError(5, "Access is denied")
+                err.winerror = 5
+                raise err
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", autospec=True, side_effect=locked_stat):
+            self.assertFalse(ge.valid_cached_file(p, 5, hashlib.sha256(b"cache").hexdigest()))
+
     def test_assert_runtime_files_requires_native_numpy(self):
         py = Path(self._tmp.name) / "env" / "python.exe"
         py.parent.mkdir(parents=True)
@@ -380,6 +395,123 @@ class SwapEnvTests(GpuEnvTestCase):
         self.assertEqual((ge.env_dir() / "python.exe").read_bytes(), b"old")
         marker = json.loads(ge.marker_path().read_text(encoding="utf-8"))
         self.assertEqual(marker["version"], "1.4.0")
+
+    def test_swap_retries_transient_winerror5(self):
+        old_env = ge.env_dir()
+        old_env.mkdir(parents=True)
+        (old_env / "python.exe").write_bytes(b"old")
+        ge.marker_path().write_text(json.dumps({
+            "version": "1.4.0", "sha256": "a" * 64, "runtimeValidated": True,
+        }), encoding="utf-8")
+        staging = Path(self._tmp.name) / "retry-staging"
+        staging.mkdir()
+        (staging / "python.exe").write_bytes(b"new")
+        original_rename = ge.os.rename
+        calls = {"n": 0}
+
+        def rename_with_transient_lock(src, dst):
+            if Path(src) == staging:
+                calls["n"] += 1
+                if calls["n"] <= 2:
+                    err = PermissionError(5, "Access is denied")
+                    err.winerror = 5
+                    raise err
+            return original_rename(src, dst)
+
+        with mock.patch.object(ge, "SWAP_RETRY_DELAY", 0):
+            with mock.patch.object(ge.os, "rename", side_effect=rename_with_transient_lock):
+                ge.swap_env(staging, "1.5.0", "b" * 64, runtime_validated=True)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual((ge.env_dir() / "python.exe").read_bytes(), b"new")
+        self.assertEqual(json.loads(ge.marker_path().read_text(encoding="utf-8"))["version"], "1.5.0")
+        self.assertFalse(staging.exists())
+
+    def test_swap_persistent_winerror5_preserves_staging_and_previous_state(self):
+        old_env = ge.env_dir()
+        old_env.mkdir(parents=True)
+        (old_env / "python.exe").write_bytes(b"old")
+        ge.marker_path().write_text(json.dumps({
+            "version": "1.4.0", "sha256": "a" * 64, "runtimeValidated": True,
+        }), encoding="utf-8")
+        staging = Path(self._tmp.name) / "locked-staging"
+        staging.mkdir()
+        (staging / "python.exe").write_bytes(b"new")
+        original_rename = ge.os.rename
+
+        def rename_with_persistent_lock(src, dst):
+            if Path(src) == staging:
+                err = PermissionError(5, "Access is denied")
+                err.winerror = 5
+                raise err
+            return original_rename(src, dst)
+
+        with mock.patch.object(ge, "SWAP_RETRY_DELAY", 0):
+            with mock.patch.object(ge.os, "rename", side_effect=rename_with_persistent_lock):
+                with self.assertRaises(PermissionError) as cm:
+                    ge.swap_env(staging, "1.5.0", "b" * 64, runtime_validated=True)
+        self.assertEqual(cm.exception.winerror, 5)
+        self.assertEqual((ge.env_dir() / "python.exe").read_bytes(), b"old")
+        self.assertEqual(json.loads(ge.marker_path().read_text(encoding="utf-8"))["version"], "1.4.0")
+        self.assertTrue(staging.exists())
+        self.assertFalse((ge.runner_dir() / "env.old").exists())
+
+    def test_swap_old_backup_lock_does_not_touch_current_state(self):
+        old_backup = ge.runner_dir() / "env.old"
+        old_backup.mkdir(parents=True)
+        (old_backup / "python.exe").write_bytes(b"stale")
+        old_env = ge.env_dir()
+        old_env.mkdir(parents=True)
+        (old_env / "python.exe").write_bytes(b"old")
+        ge.marker_path().write_text(json.dumps({
+            "version": "1.4.0", "sha256": "a" * 64, "runtimeValidated": True,
+        }), encoding="utf-8")
+        staging = Path(self._tmp.name) / "old-lock-staging"
+        staging.mkdir()
+        (staging / "python.exe").write_bytes(b"new")
+        original_rmtree = ge.shutil.rmtree
+
+        def refuse_old_backup(path, *args, **kwargs):
+            if Path(path) == old_backup:
+                err = PermissionError(5, "Access is denied")
+                err.winerror = 5
+                raise err
+            return original_rmtree(path, *args, **kwargs)
+
+        with mock.patch.object(ge, "SWAP_RETRY_DELAY", 0):
+            with mock.patch.object(ge.shutil, "rmtree", side_effect=refuse_old_backup):
+                with self.assertRaises(PermissionError) as cm:
+                    ge.swap_env(staging, "1.5.0", "b" * 64, runtime_validated=True)
+        self.assertEqual(cm.exception.winerror, 5)
+        self.assertEqual((ge.env_dir() / "python.exe").read_bytes(), b"old")
+        self.assertEqual(json.loads(ge.marker_path().read_text(encoding="utf-8"))["version"], "1.4.0")
+        self.assertTrue(staging.exists())
+
+    def test_swap_success_ignores_old_backup_cleanup_lock(self):
+        old_env = ge.env_dir()
+        old_env.mkdir(parents=True)
+        (old_env / "python.exe").write_bytes(b"old")
+        ge.marker_path().write_text(json.dumps({
+            "version": "1.4.0", "sha256": "a" * 64, "runtimeValidated": True,
+        }), encoding="utf-8")
+        staging = Path(self._tmp.name) / "cleanup-lock-staging"
+        staging.mkdir()
+        (staging / "python.exe").write_bytes(b"new")
+        old_backup = ge.runner_dir() / "env.old"
+        original_rmtree = ge.shutil.rmtree
+
+        def refuse_old_backup(path, *args, **kwargs):
+            if Path(path) == old_backup:
+                err = PermissionError(5, "Access is denied")
+                err.winerror = 5
+                raise err
+            return original_rmtree(path, *args, **kwargs)
+
+        with mock.patch.object(ge, "SWAP_RETRY_DELAY", 0):
+            with mock.patch.object(ge.shutil, "rmtree", side_effect=refuse_old_backup):
+                ge.swap_env(staging, "1.5.0", "b" * 64, runtime_validated=True)
+        self.assertEqual((ge.env_dir() / "python.exe").read_bytes(), b"new")
+        self.assertEqual(json.loads(ge.marker_path().read_text(encoding="utf-8"))["version"], "1.5.0")
+        self.assertTrue(old_backup.exists())
 
     def test_swap_rejects_bad_staging(self):
         staging = Path(self._tmp.name) / "bad-staging"

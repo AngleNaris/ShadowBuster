@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 REPO = "AngleNaris/ShadowBuster"
@@ -25,6 +26,8 @@ PART_NAME_RE = re.compile(r"^gpu-env-[\w.-]+\.part\d{1,2}of\d{1,2}$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 READ_CHUNK = 1 << 20  # 1 MiB
+SWAP_RETRIES = 6
+SWAP_RETRY_DELAY = 0.5
 RUNTIME_IMPORTS = (
     "torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy", "librosa",
     "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography",
@@ -480,7 +483,10 @@ def migrate_legacy_runtime(
 def valid_cached_file(path, expected_size, expected_sha256, cancel=None):
     """按大小和 SHA-256 判断完整 ZIP 缓存是否可复用。"""
     path = Path(path)
-    if not path.is_file() or path.stat().st_size != expected_size:
+    try:
+        if not path.is_file() or path.stat().st_size != expected_size:
+            return False
+    except OSError:
         return False
     try:
         return sha256_of(path, cancel=cancel) == str(expected_sha256).lower()
@@ -488,6 +494,37 @@ def valid_cached_file(path, expected_size, expected_sha256, cancel=None):
         raise
     except OSError:
         return False
+
+
+def _is_transient_swap_error(exc):
+    """Windows 文件暂时被其他进程占用时允许短暂重试。"""
+    winerror = getattr(exc, "winerror", None)
+    return winerror in {5, 32, 33} or getattr(exc, "errno", None) in {13, 16, 26}
+
+
+def _retry_swap_fs(operation, label, *, missing_ok=False):
+    """执行一次切换文件操作；只对可恢复的 Windows 锁错误退避重试。"""
+    for attempt in range(SWAP_RETRIES):
+        try:
+            return operation()
+        except FileNotFoundError:
+            if missing_ok:
+                return None
+            raise
+        except OSError as exc:
+            if not _is_transient_swap_error(exc) or attempt + 1 >= SWAP_RETRIES:
+                raise
+            time.sleep(SWAP_RETRY_DELAY)
+
+
+def _remove_swap_tree(path):
+    path = Path(path)
+    if path.exists():
+        _retry_swap_fs(lambda: shutil.rmtree(path), f"删除 {path}")
+
+
+def _remove_swap_file(path):
+    _retry_swap_fs(lambda: Path(path).unlink(), f"删除 {path}", missing_ok=True)
 
 
 def swap_env(staging_dir, version, sha256, *, runtime_validated=False):
@@ -500,10 +537,14 @@ def swap_env(staging_dir, version, sha256, *, runtime_validated=False):
     old = runner_dir() / "env.old"
     old_marker = runner_dir() / "gpu-env.json.old"
     marker = marker_path()
-    if old.exists():
-        shutil.rmtree(old, ignore_errors=True)
-    if old_marker.exists():
-        old_marker.unlink(missing_ok=True)
+    # 旧备份必须先清完；失败时不移动当前环境，staging 可安全重试。
+    try:
+        _remove_swap_tree(old)
+        _remove_swap_file(old_marker)
+    except OSError as exc:
+        exc.add_note("清理 GPU 环境旧备份失败，当前环境已保留，可重试")
+        raise
+
     had_env = env.exists()
     had_marker = marker.exists()
     env_moved = False
@@ -511,30 +552,42 @@ def swap_env(staging_dir, version, sha256, *, runtime_validated=False):
     env_replaced = False
     try:
         if had_env:
-            os.rename(env, old)
+            _retry_swap_fs(lambda: os.rename(env, old), f"env -> {old}")
             env_moved = True
         if had_marker:
-            os.rename(marker, old_marker)
+            _retry_swap_fs(lambda: os.rename(marker, old_marker), f"marker -> {old_marker}")
             marker_moved = True
-        os.rename(staging, env)
+        _retry_swap_fs(lambda: os.rename(staging, env), f"staging -> {env}")
         env_replaced = True
-        _write_marker({
+        _retry_swap_fs(lambda: _write_marker({
             "version": str(version),
             "sha256": str(sha256).lower(),
             "runtimeValidated": bool(runtime_validated),
-        })
+        }), f"写入 {marker}")
     except Exception:
         if env_replaced and env.exists():
-            shutil.rmtree(env, ignore_errors=True)
+            try:
+                _remove_swap_tree(env)
+            except OSError:
+                pass
         if env_replaced and marker.exists():
-            marker.unlink(missing_ok=True)
+            try:
+                _remove_swap_file(marker)
+            except OSError:
+                pass
         if env_moved and old.exists() and not env.exists():
-            os.rename(old, env)
+            _retry_swap_fs(lambda: os.rename(old, env), f"恢复 {old} -> {env}")
         if marker_moved and old_marker.exists() and not marker.exists():
-            os.rename(old_marker, marker)
+            _retry_swap_fs(lambda: os.rename(old_marker, marker), f"恢复 {old_marker} -> {marker}")
         raise
-    if old.exists():
-        shutil.rmtree(old, ignore_errors=True)
-    if old_marker.exists():
-        old_marker.unlink(missing_ok=True)
+
+    # 新 marker 已提交后，旧备份只是垃圾清理；被扫描器暂时占用不应伪报安装失败。
+    try:
+        _remove_swap_tree(old)
+    except OSError:
+        pass
+    try:
+        _remove_swap_file(old_marker)
+    except OSError:
+        pass
     return env

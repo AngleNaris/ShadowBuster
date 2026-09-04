@@ -1376,6 +1376,13 @@
     } else if (r.type === "device") {
       GpuState.dev = r.device;
       if (GpuState.installed) gpuRow();
+    } else if (r.type === "busy") {
+      GpuState.downloading = false;
+      gpuProg.hidden = true;
+      gpuCancelBtn.hidden = true;
+      gpuDlBtn.hidden = false;
+      gpuDlBtn.disabled = false;
+      gpuStatusEl.textContent = "GPU 环境正在检查或安装，请稍后重试";
     } else if (r.type === "progress") {
       GpuState.downloading = true;
       const pct = r.total ? Math.round((r.cur / r.total) * 100) : 0;
@@ -1408,7 +1415,11 @@
     if (!api || !api.startGpuInstall) return;
     gpuDlBtn.disabled = true;
     gpuStatusEl.textContent = "正在准备下载…";
-    api.startGpuInstall();
+    const started = api.startGpuInstall();
+    if (started === false) {
+      gpuDlBtn.disabled = false;
+      gpuStatusEl.textContent = "GPU 环境正在检查或安装，请稍后重试";
+    }
   });
   gpuCancelBtn.addEventListener("click", () => {
     if (api && api.cancelGpuInstall) {
