@@ -1,4 +1,11 @@
-﻿# ══════════════════════════════════════════════════════════════════
+﻿param(
+    # cpu：装配安装包内置运行时（stage\runtime，torch CPU 轮子，约 1GB）；
+    # gpu：装配 GPU 环境包源（stage\runtime_gpu，torch 2.7.1+cu128，供分卷发布）
+    [ValidateSet("cpu", "gpu")]
+    [string]$Flavor = "cpu"
+)
+
+# ══════════════════════════════════════════════════════════════════
 # ShadowBuster — 装配 AI 运行时目录（供 Inno 打包进安装包）
 #
 # 目标结构（安装后位于程序目录，默认 C:\Program Files\ShadowBuster）：
@@ -27,7 +34,17 @@ $ErrorActionPreference = "Stop"
 
 $root     = Split-Path $PSScriptRoot -Parent
 $workspace= Split-Path $root -Parent
-$stage    = "$root\packaging\stage\runtime"
+if ($Flavor -eq "cpu") {
+    $stage = "$root\packaging\stage\runtime"          # 安装包内置运行时（CPU）
+    $torchIndex = "https://download.pytorch.org/whl/cpu"
+    $expectTorch = "2.7.1+cpu"
+    $flavorLabel = "CPU"
+} else {
+    $stage = "$root\packaging\stage\runtime_gpu"      # GPU 环境包源（CUDA）
+    $torchIndex = "https://download.pytorch.org/whl/cu128"
+    $expectTorch = "2.7.1+cu128"
+    $flavorLabel = "CUDA"
+}
 $srcApollo= if ($env:SB_APOLLO) { $env:SB_APOLLO } else { Join-Path $workspace "Apollo" }
 $appApollo= Join-Path $root "apollo_scripts"
 $srcSoren = if ($env:SB_SOREN) { $env:SB_SOREN } else { Join-Path $workspace "Soren_src" }
@@ -121,12 +138,12 @@ Copy-Item "$srcSoren\model", "$srcSoren\profiles", "$srcSoren\secured_genres" "$
 Write-Host "[3/5] 拷贝 ffmpeg ..."
 if ($ffmpeg) { Copy-Item $ffmpeg "$stage\ffmpeg\bin\" -ErrorAction SilentlyContinue }
 
-Write-Host "[4/5] 装配便携 Python + CUDA torch（下载约 3GB，耐心等）..."
+Write-Host "[4/5] 装配便携 Python + $flavorLabel torch（下载约 3GB，耐心等）..."
 Copy-Item $srcPy "$stage\env" -Recurse
 $site = "$stage\env\Lib\site-packages"
 & $venvPy -m pip install --quiet --target $site `
-    torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
-if ($LASTEXITCODE -ne 0) { throw "torch cu128 安装失败(exit=$LASTEXITCODE)" }
+    torch==2.7.1 torchaudio==2.7.1 --index-url $torchIndex
+if ($LASTEXITCODE -ne 0) { throw "torch $expectTorch 安装失败(exit=$LASTEXITCODE)" }
 # Use the staged interpreter for the remaining installs so pip sees the CUDA
 # Torch already present in its own site-packages instead of resolving another
 # incompatible Torch build from PyPI.
@@ -226,7 +243,7 @@ $requiredImports = @(
     "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography", "look2hear"
 )
 $importNames = $requiredImports -join ","
-$importProbe = "import importlib,torch,torchaudio; [importlib.import_module(n) for n in '$importNames'.split(',')]; assert torch.__version__ == '2.7.1+cu128', torch.__version__; assert torchaudio.__version__ == '2.7.1+cu128', torchaudio.__version__; print('runtime imports OK', torch.__version__)"
+$importProbe = "import importlib,torch,torchaudio; [importlib.import_module(n) for n in '$importNames'.split(',')]; assert torch.__version__ == '$expectTorch', torch.__version__; assert torchaudio.__version__ == '$expectTorch', torchaudio.__version__; print('runtime imports OK', torch.__version__)"
 $previousPythonPath = $env:PYTHONPATH
 $env:PYTHONPATH = "$stage\Apollo;$stage\Soren_src"
 & "$stage\env\python.exe" -c $importProbe

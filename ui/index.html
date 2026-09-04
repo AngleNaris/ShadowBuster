@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=43">
+<link rel="stylesheet" href="style.css?v=44">
 </head>
 <body>
 
@@ -294,7 +294,7 @@
     </div>
     <div class="help-body" id="help-body"></div>
   </div>
-  <!-- ═══ 设置弹窗：版本 / 更新（占位）/ 主题色 / 深浅色 ═══ -->
+  <!-- ═══ 设置弹窗：版本 / 更新 / GPU 环境 / 主题色 / 深浅色 ═══ -->
   <div class="settings-modal" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="settings-backdrop" id="settings-backdrop"></div>
     <div class="settings-box" role="document">
@@ -320,6 +320,18 @@
           <div class="set-action">
             <button class="btn btn-ghost set-btn" id="btn-check-update">检查更新</button>
             <button class="btn btn-ghost set-btn" id="btn-open-update" hidden>打开页面</button>
+          </div>
+        </div>
+        <div class="set-row set-row-col">
+          <div class="set-info">
+            <span class="set-label">GPU 环境</span>
+            <span class="set-status" id="gpu-status">正在检测…</span>
+          </div>
+          <div class="gpu-progress" id="gpu-progress" hidden><div class="gpu-progress-fill" id="gpu-progress-fill"></div></div>
+          <div class="set-action">
+            <button class="btn btn-ghost set-btn" id="btn-gpu-download" hidden>下载并安装</button>
+            <button class="btn btn-ghost set-btn" id="btn-gpu-cancel" hidden>取消</button>
+            <button class="btn btn-ghost set-btn" id="btn-gpu-restart" hidden>立即重启</button>
           </div>
         </div>
         <div class="set-row set-row-col">
@@ -353,6 +365,6 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="app.js?v=41"></script>
+<script src="app.js?v=42"></script>
 </body>
 </html>

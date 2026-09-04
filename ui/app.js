@@ -80,6 +80,7 @@
         if (q) q.classList.toggle("drop-hover", !!on);
       });
       api.updateInfo.connect((raw) => onUpdateInfo(raw));
+      api.gpuStatus.connect((raw) => onGpuStatus(raw));
       resolve();
     });
   });
@@ -1279,6 +1280,11 @@
     settingsTrigger = trigger || null;
     fillVersion();
     settingsModal.classList.add("open");
+    if (api && api.checkGpuEnv) {
+      gpuDlBtn.disabled = false;
+      api.checkGpuEnv();
+      api.probeDevice();
+    }
     if (settingsTrigger) settingsTrigger.focus({ preventScroll: true });
   }
   function closeSettings() {
@@ -1319,6 +1325,104 @@
     openUpdateBtn.hidden = true;
     if (api && api.checkUpdate) api.checkUpdate();
     else updateStatus.textContent = "后端未连接，无法检查";
+  });
+
+  /* ─── GPU 环境：下载安装 CUDA 运行时（v1.5）─── */
+  const gpuStatusEl = $("gpu-status");
+  const gpuProg = $("gpu-progress"), gpuProgFill = $("gpu-progress-fill");
+  const gpuDlBtn = $("btn-gpu-download"), gpuCancelBtn = $("btn-gpu-cancel"), gpuRestartBtn = $("btn-gpu-restart");
+  const GpuState = { installed: null, dev: null, downloading: false };
+  const fmtSize = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1) + " GB" : Math.ceil(b / 1048576) + " MB");
+  function setGpuBar(pct) {
+    gpuProg.hidden = false;
+    gpuProgFill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+  }
+  function gpuRow() {
+    // 按当前状态刷新按钮可见性与状态文案（不含进度事件）
+    const inst = GpuState.installed;
+    gpuDlBtn.hidden = GpuState.downloading || !!inst;
+    gpuCancelBtn.hidden = !GpuState.downloading;
+    gpuRestartBtn.hidden = true;
+    if (inst) {
+      if (GpuState.dev === "cuda") gpuStatusEl.textContent = "GPU 加速已启用（CUDA）";
+      else if (GpuState.dev === "cpu") gpuStatusEl.textContent = `GPU 环境已安装（v${inst.version || "?"}），但未检测到可用 NVIDIA GPU`;
+      else gpuStatusEl.textContent = `GPU 环境已安装（v${inst.version || "?"}）`;
+    }
+  }
+  function onGpuStatus(raw) {
+    let r = null;
+    try { r = JSON.parse(raw); } catch (e) {}
+    if (!r) return;
+    if (r.type === "state") {
+      if (r.dev) {
+        gpuStatusEl.textContent = "开发模式使用本地环境，无需下载 GPU 包";
+        gpuDlBtn.hidden = true; gpuCancelBtn.hidden = true; gpuRestartBtn.hidden = true;
+        GpuState.installed = null; GpuState.downloading = false;
+        gpuProg.hidden = true;
+        return;
+      }
+      GpuState.installed = r.installed || null;
+      GpuState.downloading = false;
+      gpuProg.hidden = true;
+      if (GpuState.installed) {
+        gpuRow();
+      } else if (r.manifest) {
+        gpuStatusEl.textContent = `GPU 加速未启用，可下载 CUDA 运行时（约 ${fmtSize(r.manifest.totalSize)}）`;
+        gpuDlBtn.hidden = false; gpuCancelBtn.hidden = true;
+      } else {
+        gpuStatusEl.textContent = r.error ? `GPU 环境信息获取失败：${r.error}` : "未检测到 GPU 环境发布信息";
+        gpuDlBtn.hidden = true; gpuCancelBtn.hidden = true;
+      }
+    } else if (r.type === "device") {
+      GpuState.dev = r.device;
+      if (GpuState.installed) gpuRow();
+    } else if (r.type === "progress") {
+      GpuState.downloading = true;
+      const pct = r.total ? Math.round((r.cur / r.total) * 100) : 0;
+      const phaseTxt = { info: "获取清单", download: `下载分卷 ${r.part || ""}`.trim(),
+        assemble: "组装安装包", verify: "校验完整性", extract: "解压安装" }[r.phase] || r.phase;
+      gpuStatusEl.textContent = `${phaseTxt} ${pct}%（约 ${fmtSize(r.total)}）`;
+      setGpuBar(pct);
+      gpuDlBtn.hidden = true; gpuRestartBtn.hidden = true;
+      gpuCancelBtn.hidden = false; gpuCancelBtn.disabled = false;
+    } else if (r.type === "done") {
+      GpuState.installed = { version: r.version || "" };
+      GpuState.downloading = false;
+      gpuStatusEl.textContent = `GPU 环境安装完成（v${r.version}），重启应用后生效`;
+      gpuProg.hidden = true;
+      gpuDlBtn.hidden = true; gpuCancelBtn.hidden = true;
+      gpuRestartBtn.hidden = false; gpuRestartBtn.disabled = false;
+    } else if (r.type === "cancelled") {
+      GpuState.downloading = false;
+      gpuStatusEl.textContent = "下载已取消，进度已保留，可再次下载续传";
+      gpuCancelBtn.hidden = true;
+      if (!GpuState.installed) gpuDlBtn.hidden = false;
+    } else if (r.type === "error") {
+      GpuState.downloading = false;
+      gpuStatusEl.textContent = r.msg ? `失败：${r.msg}` : "失败：未知错误";
+      gpuProg.hidden = true; gpuCancelBtn.hidden = true;
+      if (!GpuState.installed) { gpuDlBtn.hidden = false; gpuDlBtn.disabled = false; }
+    }
+  }
+  gpuDlBtn.addEventListener("click", () => {
+    if (!api || !api.startGpuInstall) return;
+    gpuDlBtn.disabled = true;
+    gpuStatusEl.textContent = "正在准备下载…";
+    api.startGpuInstall();
+  });
+  gpuCancelBtn.addEventListener("click", () => {
+    if (api && api.cancelGpuInstall) {
+      api.cancelGpuInstall();
+      gpuCancelBtn.disabled = true;
+      gpuStatusEl.textContent = "正在取消…";
+    }
+  });
+  gpuRestartBtn.addEventListener("click", () => {
+    if (api && api.restartApp) {
+      gpuRestartBtn.disabled = true;
+      gpuStatusEl.textContent = "正在重启应用…";
+      api.restartApp();
+    }
   });
 
   // 主题色 swatches（预设插入到自定义选择器之前）

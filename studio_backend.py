@@ -12,7 +12,7 @@ from pathlib import Path
 
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.5.0"
 
 if getattr(sys, "frozen", False):
     # PyInstaller 冻结后 __file__ 在 _internal 里，exe 同级才是安装根目录
@@ -29,13 +29,37 @@ DEV_SOREN = Path(r"D:/_3.AI/audio_upscale/Soren_src")
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
+def _user_gpu_py():
+    """用户级 GPU 环境（设置内下载的 CUDA 运行时，v1.5）。
+
+    装在 LOCALAPPDATA\\ShadowBuster\\runtime-gpu\\env（应用非提权运行也能写），
+    仅替换解释器；Apollo/Soren/权重仍读安装目录。返回解释器路径或 None。
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    base = Path(os.environ.get("LOCALAPPDATA") or "") or (Path.home() / "AppData" / "Local")
+    env_dir = base / "ShadowBuster" / "runtime-gpu" / "env"
+    marker = env_dir.parent / "gpu-env.json"
+    if marker.is_file() and (env_dir / "python.exe").is_file():
+        return env_dir / "python.exe"
+    return None
+
+
 def _resolve_runtime():
     """解析工具链根目录。
 
     部署包：优先取 exe 同级 runtime/（安装器就地放下，无需环境变量）；
     其次 SB_ASSETS 环境变量；都未设置时回退到开发机布局。
+    用户级 GPU 环境（LOCALAPPDATA\\ShadowBuster\\runtime-gpu）仅覆盖解释器。
     """
-    for root in (ROOT / "runtime", Path(os.environ.get("SB_ASSETS", ".")) if os.environ.get("SB_ASSETS") else None):
+    upy = _user_gpu_py()
+    if upy is not None:
+        root = ROOT / "runtime"
+        apollo, soren = root / "Apollo", root / "Soren_src"
+        if apollo.is_dir() and soren.is_dir():
+            return upy, apollo, soren, root
+    for root in (ROOT / "runtime",
+                 Path(os.environ.get("SB_ASSETS", ".")) if os.environ.get("SB_ASSETS") else None):
         if root is None:
             continue
         apollo, soren = root / "Apollo", root / "Soren_src"

@@ -141,12 +141,15 @@ class Bridge(QObject):
     filesDropped = Signal(list)              # OS 拖入的音频文件路径列表
     dragHover = Signal(bool)                 # 文件正在拖入悬停（前端高亮队列）
     updateInfo = Signal(str)                 # 检查更新结果（JSON，后台线程回传）
+    gpuStatus = Signal(str)                  # GPU 环境状态/进度（JSON，后台线程回传）
 
     def __init__(self, window):
         super().__init__()
         self._window = window
         self._cancel_flag = threading.Event()
         self._thread = None
+        self._gpu_cancel = threading.Event()
+        self._gpu_thread = None
 
     # ── JS 可调用的方法 ──
     @Slot()
@@ -178,6 +181,149 @@ class Bridge(QObject):
                 "ok": False,
                 "error": str(e)[:160],
             }, ensure_ascii=False))
+
+    # ── GPU 环境：清单查询 / 下载安装 / 设备探测 / 重启（v1.5）──
+    def _gpu_emit(self, d):
+        import json as _json
+        self.gpuStatus.emit(_json.dumps(d, ensure_ascii=False))
+
+    @Slot()
+    def checkGpuEnv(self):
+        """后台线程查询 GPU 环境发布状态，结果经 gpuStatus 回传。"""
+        threading.Thread(target=self._gpu_check_worker, daemon=True).start()
+
+    def _gpu_check_worker(self):
+        try:
+            if not getattr(sys, "frozen", False):
+                self._gpu_emit({"type": "state", "dev": True})
+                return
+            import gpu_env as ge
+            payload = {"type": "state", "installed": ge.installed_info(),
+                       "manifest": None, "error": None}
+            try:
+                m = ge.load_manifest(backend.APP_VERSION)
+                payload["manifest"] = {
+                    "version": m["version"],
+                    "totalSize": m["totalSize"],
+                    "sha256": m["sha256"],
+                    "parts": [{"name": p["name"], "size": p["size"]} for p in m["parts"]],
+                }
+            except Exception as e:
+                payload["error"] = str(e)[:200]
+            self._gpu_emit(payload)
+        except Exception as e:   # 兜底
+            self._gpu_emit({"type": "error", "msg": f"内部错误: {e}"[:200]})
+
+    @Slot(result=bool)
+    def startGpuInstall(self):
+        """启动 GPU 环境下载安装（后台线程，防重入）。"""
+        if self._gpu_thread and self._gpu_thread.is_alive():
+            return False
+        self._gpu_cancel.clear()
+        self._gpu_thread = threading.Thread(target=self._gpu_install_worker, daemon=True)
+        self._gpu_thread.start()
+        return True
+
+    @Slot()
+    def cancelGpuInstall(self):
+        self._gpu_cancel.set()
+
+    def _gpu_install_worker(self):
+        import shutil as _shutil
+        import time as _time
+        import zipfile as _zipfile
+        from pathlib import Path as _P
+        import gpu_env as ge
+        cancel = self._gpu_cancel
+        state = {"last": [0.0]}
+
+        def prog(phase, cur, total):
+            t = _time.monotonic()
+            if t - state["last"][0] >= 0.2:
+                state["last"][0] = t
+                self._gpu_emit({"type": "progress", "phase": phase,
+                                "cur": int(cur), "total": int(total)})
+
+        try:
+            self._gpu_emit({"type": "progress", "phase": "info", "cur": 0, "total": 1})
+            m = ge.load_manifest(backend.APP_VERSION)
+            total = m["totalSize"]
+            # 磁盘预检：下载期存在 分卷 + 组装 zip 的峰值（约 2 倍包体积）
+            free = _shutil.disk_usage(ge.user_base_dir()).free
+            if free < total * 2 + (1 << 30):
+                raise RuntimeError(f"磁盘空间不足：需要约 {max(1, (total*2 + (1<<30)) >> 30)} GB，"
+                                   f"当前可用 {free >> 30} GB")
+            work = ge.dl_dir(m["version"])
+            work.mkdir(parents=True, exist_ok=True)
+            base = 0
+            parts = []
+            n = len(m["parts"])
+            for i, p in enumerate(m["parts"], 1):
+                if cancel.is_set():
+                    raise ge.DownloadCancelled("下载已取消")
+                self._gpu_emit({"type": "progress", "phase": "download",
+                                "cur": base, "total": total,
+                                "part": f"{i}/{n}"})
+                dest = work / p["name"]
+                ge.download_part(p["url"], dest, p["size"],
+                                 cancel=lambda: cancel.is_set(),
+                                 progress=lambda off, b=base: prog("download", b + off, total))
+                prog("verify", base, total)   # 单卷校验（几秒）
+                sha = ge.sha256_of(dest, cancel=lambda: cancel.is_set())
+                if sha != p["sha256"]:
+                    raise RuntimeError(f"分卷 {p['name']} SHA-256 校验失败，请重新下载")
+                base += p["size"]
+                parts.append({**p, "local": str(dest)})
+            zpath = work / f"gpu-env-{m['version']}.zip"
+            prog("assemble", 0, total)
+            ge.assemble_zip(parts, zpath, cancel=lambda: cancel.is_set(),
+                            progress=lambda c, t: prog("assemble", c, t))
+            zsize = zpath.stat().st_size
+            prog("verify", 0, zsize)
+            h = ge.sha256_of(zpath, cancel=lambda: cancel.is_set(),
+                             progress=lambda c, t: prog("verify", c, t))
+            if h != m["sha256"]:
+                raise RuntimeError("GPU 环境包 SHA-256 校验失败，请重新下载")
+            for p in parts:
+                _P(p["local"]).unlink(missing_ok=True)   # 校验通过才释放分卷
+            # 解压空间预检（此时能拿到真实解压体积）
+            with _zipfile.ZipFile(zpath) as zf:
+                extracted = sum(i.file_size for i in zf.infolist() if not i.is_dir())
+            free = _shutil.disk_usage(ge.user_base_dir()).free
+            if free < extracted + (1 << 30):
+                raise RuntimeError(f"解压空间不足：需要约 {max(1, (extracted + (1<<30)) >> 30)} GB，"
+                                   f"当前可用 {free >> 30} GB，请清理后重试")
+            staging = ge.runner_dir() / ".staging"
+            _shutil.rmtree(staging, ignore_errors=True)
+            prog("extract", 0, extracted)
+            ge.extract_zip(zpath, staging, cancel=lambda: cancel.is_set(),
+                           progress=lambda c, t: prog("extract", c, t))
+            ge.swap_env(staging, m["version"], m["sha256"])
+            zpath.unlink(missing_ok=True)
+            self._gpu_emit({"type": "done", "version": m["version"]})
+        except ge.DownloadCancelled:
+            self._gpu_emit({"type": "cancelled"})
+        except Exception as e:
+            self._gpu_emit({"type": "error", "msg": str(e)[:300]})
+
+    @Slot()
+    def probeDevice(self):
+        """探测推理设备（子进程），结果经 gpuStatus 回传。"""
+        threading.Thread(target=self._probe_worker, daemon=True).start()
+
+    def _probe_worker(self):
+        try:
+            dev = backend.auto_device()
+        except Exception:
+            dev = "cpu"
+        self._gpu_emit({"type": "device", "device": dev})
+
+    @Slot()
+    def restartApp(self):
+        """重启应用（GPU 环境安装完成后生效）。"""
+        from PySide6.QtCore import QProcess, QCoreApplication
+        QProcess.startDetached(str(Path(sys.executable).resolve()))
+        QTimer.singleShot(400, QCoreApplication.instance().quit)
 
     @Slot(str)
     def openExternal(self, url):

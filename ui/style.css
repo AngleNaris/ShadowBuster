@@ -1065,6 +1065,13 @@ html[data-mode="light"] .stage-dot {
 .set-action { display: flex; align-items: center; gap: var(--s-3); flex: none; }
 .set-btn { height: 26px; padding: 0 var(--s-3); }
 .set-status { font-size: 11.5px; color: var(--c-text-faint); }
+.gpu-progress { height: 5px; border-radius: 3px; background: var(--c-key); overflow: hidden; }
+.gpu-progress-fill {
+  display: block; height: 100%; width: 0%;
+  background: var(--c-ok); border-radius: 3px;
+  transition: width .18s linear;
+}
+.settings-body { padding: var(--s-2) var(--s-4); max-height: calc(100vh - 210px); overflow-y: auto; }
 .swatches { display: flex; gap: var(--s-3); padding-top: var(--s-2); }
 .swatch {
   width: 26px; height: 26px; padding: 0;
