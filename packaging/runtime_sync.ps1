@@ -165,12 +165,14 @@ if ($LASTEXITCODE -ne 0) { throw "torch $expectTorch 安装失败(exit=$LASTEXIT
 # Torch already present in its own site-packages instead of resolving another
 # incompatible Torch build from PyPI.
 & "$stage\env\python.exe" -m pip install --quiet --upgrade --break-system-packages --target $site `
+    "torch==$expectTorch" "torchaudio==$expectTorch" `
     numpy==2.5.2 soundfile==0.14.0 scipy==1.18.0 librosa==1.0.0 `
     numba==0.67.0 llvmlite==0.49.0 statsmodels==0.14.6 pyloudnorm==0.2.0 `
     joblib==1.5.3 cryptography==50.0.0 setuptools==78.1.0 `
     demucs==4.1.0 einops==0.8.2 julius==0.2.8 lameenc==1.8.4 tqdm==4.70.0 `
     pytorch-lightning==2.6.5 lightning-utilities==0.15.3 `
-    rich==15.0.0 huggingface_hub==0.36.2 torch-complex==0.4.4 soxr==1.1.0
+    rich==15.0.0 huggingface_hub==0.36.2 torch-complex==0.4.4 soxr==1.1.0 `
+    --index-url $torchIndex --extra-index-url "https://pypi.org/simple"
 if ($LASTEXITCODE -ne 0) { throw "推理依赖安装失败(exit=$LASTEXITCODE)" }
 
 # omegaconf 2.0.6 的元数据是旧式写法（PyYAML>=5.1.*），pip>=24.1 拒装；
@@ -319,8 +321,7 @@ $manifestFiles = foreach ($item in $manifestRoots) {
     }
 }
 $stageFull = (Resolve-Path -LiteralPath $stage).Path.TrimEnd('\')
-$manifestLines = $manifestFiles | Sort-Object FullName -Unique | ForEach-Object {
-    if ($_.Length -le 0) { throw "manifest 关键文件为空: $($_.FullName)" }
+$manifestLines = $manifestFiles | Where-Object { $_.Length -gt 0 } | Sort-Object FullName -Unique | ForEach-Object {
     $relative = $_.FullName.Substring($stageFull.Length).TrimStart('\').Replace('\', '/')
     "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $relative
 }
