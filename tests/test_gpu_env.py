@@ -114,6 +114,20 @@ class MatchAssetsTests(GpuEnvTestCase):
                 "gpu-env-1.5.0.part1of2": "https://x/p1"})
 
 
+class PickReleaseTests(GpuEnvTestCase):
+    def test_matching_latest(self):
+        latest = {"tag_name": "v1.5.0", "assets_url": "https://api.github.com/.../382454766/assets"}
+        self.assertIsNotNone(ge.pick_release(latest, "1.5.0"))
+
+    def test_latest_mismatch(self):
+        latest = {"tag_name": "v1.6.0", "assets_url": "https://x"}
+        self.assertIsNone(ge.pick_release(latest, "1.5.0"))
+
+    def test_malformed_latest(self):
+        self.assertIsNone(ge.pick_release({"tag_name": None}, "1.5.0"))
+        self.assertIsNone(ge.pick_release("junk", "1.5.0"))
+
+
 class ResumeOffsetTests(GpuEnvTestCase):
     def test_missing(self):
         self.assertEqual(ge.resume_offset(Path(self._tmp.name) / "nope", 100), 0)

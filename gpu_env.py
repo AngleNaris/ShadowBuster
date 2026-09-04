@@ -108,15 +108,35 @@ def match_part_assets(parts, url_by_name):
     return out
 
 
+def pick_release(latest, version):
+    """latest release 对象是否就是目标版本（tag 匹配即用）。
+
+    新发布 release 的 tags/v{ver}/assets 匿名索引可能滞后（404），而
+    releases/latest 返回的 id 型 assets_url 最稳定，故命中即用。"""
+    if isinstance(latest, dict) and str(latest.get("tag_name", "")).lstrip("v") == str(version):
+        return latest
+    return None
+
+
 def load_manifest(version, repo=REPO, timeout=10):
-    """从 GitHub API 拉取 v{version} 的资产列表，找到 gpu-env-{version}.json
-    清单，校验后附上每个分卷的浏览器下载地址。网络错误/未发布抛异常。"""
+    """从 GitHub 拉取 v{version} 的资产列表，找到 gpu-env-{version}.json
+    清单，校验后附上每个分卷的浏览器下载地址。网络错误/未发布抛异常。
+
+    优先走 releases/latest 的 id 型 assets_url（匿名缓存最稳，新发布
+    release 的 tags 路径索引可能滞后 404）；仅当最新 release 不是目标
+    版本时才回退 tags/v{version} 路径。"""
     import urllib.request
-    api = f"https://api.github.com/repos/{repo}/releases/tags/v{version}/assets"
-    req = urllib.request.Request(api, headers={
-        "User-Agent": "ShadowBuster", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        assets = json.loads(r.read().decode("utf-8"))
+
+    def _get(url):
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ShadowBuster", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    rel = pick_release(_get(f"https://api.github.com/repos/{repo}/releases/latest"), version)
+    if rel is None:
+        rel = _get(f"https://api.github.com/repos/{repo}/releases/tags/v{version}")
+    assets = _get(rel["assets_url"])
     url_by_name = {}
     for a in assets:
         name = str(a.get("name", ""))
