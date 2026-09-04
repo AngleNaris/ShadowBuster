@@ -135,6 +135,8 @@ def load_manifest(version, repo=REPO, timeout=10):
 
     rel = pick_release(_get(f"https://api.github.com/repos/{repo}/releases/latest"), version)
     if rel is None:
+        # 注意：releases/tags/{tag}/assets 不是合法路由（404）；
+        # 先按 tag 取 release 对象，再取其 id 型 assets_url。
         rel = _get(f"https://api.github.com/repos/{repo}/releases/tags/v{version}")
     assets = _get(rel["assets_url"])
     url_by_name = {}
