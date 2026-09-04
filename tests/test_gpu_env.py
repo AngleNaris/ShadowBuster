@@ -34,6 +34,30 @@ class GpuEnvTestCase(unittest.TestCase):
         os.environ.pop("LOCALAPPDATA", None)
 
 
+class RuntimeValidationTests(GpuEnvTestCase):
+    def test_missing_python_rejected(self):
+        with self.assertRaises(ValueError):
+            ge.validate_runtime(Path(self._tmp.name) / "missing.exe")
+
+    def test_probe_failure_includes_child_output(self):
+        py = Path(self._tmp.name) / "python.exe"
+        py.write_bytes(b"py")
+        failed = mock.Mock(returncode=1, stdout="", stderr="No module named numpy")
+        with mock.patch("gpu_env.subprocess.run", return_value=failed) as run:
+            with self.assertRaisesRegex(ValueError, "No module named numpy"):
+                ge.validate_runtime(py, required=("numpy",))
+        run.assert_called_once()
+
+    def test_probe_adds_module_paths_to_child_environment(self):
+        py = Path(self._tmp.name) / "python.exe"
+        py.write_bytes(b"py")
+        passed = mock.Mock(returncode=0, stdout="runtime imports OK 2.5.2\n", stderr="")
+        module_path = Path(self._tmp.name) / "Apollo"
+        with mock.patch("gpu_env.subprocess.run", return_value=passed) as run:
+            ge.validate_runtime(py, required=("numpy",), module_paths=(module_path,))
+        self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"], str(module_path))
+
+
 class ManifestTests(GpuEnvTestCase):
     def test_valid_manifest_normalizes(self):
         m = ge.validate_manifest(sample_manifest())
@@ -217,23 +241,24 @@ class SwapEnvTests(GpuEnvTestCase):
         (staging / "sub").mkdir(parents=True)
         (staging / "python.exe").write_bytes(b"py")
         (staging / "sub" / "x").write_bytes(b"x")
-        ge.swap_env(staging, "1.5.0", "a" * 64)
+        ge.swap_env(staging, "1.5.0", "a" * 64, runtime_validated=True)
         env = ge.env_dir()
         self.assertTrue((env / "python.exe").is_file())
         marker = json.loads(ge.marker_path().read_text(encoding="utf-8"))
         self.assertEqual(marker["version"], "1.5.0")
+        self.assertTrue(marker["runtimeValidated"])
         # 再次切换应清掉 env.old
         staging2 = Path(self._tmp.name) / "staging2"
         staging2.mkdir()
         (staging2 / "python.exe").write_bytes(b"py2")
-        ge.swap_env(staging2, "1.5.1", "b" * 64)
+        ge.swap_env(staging2, "1.5.1", "b" * 64, runtime_validated=True)
         self.assertFalse((ge.runner_dir() / "env.old").exists())
 
     def test_swap_rejects_bad_staging(self):
         staging = Path(self._tmp.name) / "staging"
         staging.mkdir()
         with self.assertRaises(ValueError):
-            ge.swap_env(staging, "1.5.0", "a" * 64)
+            ge.swap_env(staging, "1.5.0", "a" * 64, runtime_validated=True)
 
 
 class InstalledInfoTests(GpuEnvTestCase):
@@ -248,9 +273,27 @@ class InstalledInfoTests(GpuEnvTestCase):
     def test_ok(self):
         ge.env_dir().mkdir(parents=True)
         (ge.env_dir() / "python.exe").write_bytes(b"py")
-        ge.marker_path().write_text(json.dumps({"version": "1.5.0", "sha256": "a" * 64}), encoding="utf-8")
+        numpy_dir = ge.env_dir() / "Lib" / "site-packages" / "numpy"
+        numpy_dir.mkdir(parents=True)
+        (numpy_dir / "__init__.py").write_bytes(b"numpy")
+        ge.marker_path().write_text(json.dumps({"version": "1.5.0", "sha256": "a" * 64, "runtimeValidated": True}), encoding="utf-8")
         info = ge.installed_info()
         self.assertEqual(info["version"], "1.5.0")
+
+    def test_none_without_validation_marker(self):
+        ge.env_dir().mkdir(parents=True)
+        (ge.env_dir() / "python.exe").write_bytes(b"py")
+        numpy_dir = ge.env_dir() / "Lib" / "site-packages" / "numpy"
+        numpy_dir.mkdir(parents=True)
+        (numpy_dir / "__init__.py").write_bytes(b"numpy")
+        ge.marker_path().write_text(json.dumps({"version": "1.5.0", "sha256": "a" * 64}), encoding="utf-8")
+        self.assertIsNone(ge.installed_info())
+
+    def test_none_for_non_object_marker(self):
+        ge.env_dir().mkdir(parents=True)
+        (ge.env_dir() / "python.exe").write_bytes(b"py")
+        ge.marker_path().write_text("null", encoding="utf-8")
+        self.assertIsNone(ge.installed_info())
 
 
 class FakeResp:

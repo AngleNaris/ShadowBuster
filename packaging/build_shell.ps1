@@ -10,31 +10,40 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path $PSScriptRoot -Parent
-$py   = "$env:USERPROFILE\.local\share\uv\python\cpython-3.12.11-windows-x86_64-none\python.exe"
-if (-not (Test-Path $py)) {
-    $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+$workspace = Split-Path $root -Parent
+$shellCandidates = @(
+    $env:SB_SHELL_PYTHON,
+    "$root\.venv\Scripts\python.exe",
+    "$workspace\UniverSR\.venv\Scripts\python.exe",
+    (Get-Command python -ErrorAction SilentlyContinue).Source
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+$venvPy = $shellCandidates | Select-Object -First 1
+if (-not $venvPy) {
+    throw "找不到外壳构建 Python，请设置 SB_SHELL_PYTHON 或在项目 .venv 中安装 PySide6、PyInstaller、numpy"
 }
-if (-not $py) { throw "找不到 python" }
-$venvPy = "D:\_3.AI\audio_upscale\UniverSR\.venv\Scripts\python.exe"
+
+& $venvPy -c "import numpy, PyInstaller; print('shell build dependencies OK', numpy.__version__)"
+if ($LASTEXITCODE -ne 0) { throw "外壳构建 Python 缺少 PyInstaller 或 numpy: $venvPy" }
 
 Set-Location $root
 Write-Host "[1/3] PyInstaller 构建外壳 ..."
 & $venvPy -m PyInstaller --noconfirm --clean `
-    --onedir `
-    --windowed `
-    --name ShadowBuster `
-    --icon "$root\ui\logo.ico" `
-    --add-data "$root\ui;ui" `
-    --exclude-module torch `
-    --exclude-module torchaudio `
-    --exclude-module torchvision `
-    --exclude-module demucs `
-    --exclude-module scipy `
-    --exclude-module soundfile `
-    --exclude-module audioread `
-    --exclude-module librosa `
-    "$root\main.py"
+    "$root\ShadowBuster.spec"
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败(exit=$LASTEXITCODE)" }
+
+$bundleRoot = "$root\dist\ShadowBuster\_internal"
+$numpyBundle = Join-Path $bundleRoot "numpy"
+if (-not (Test-Path -LiteralPath $numpyBundle -PathType Container)) {
+    throw "PyInstaller 产物缺少 numpy 目录：$numpyBundle"
+}
+if (-not (Get-ChildItem -LiteralPath $numpyBundle -Filter "*.pyd" -File -Recurse -ErrorAction SilentlyContinue)) {
+    throw "PyInstaller 产物缺少 numpy 二进制扩展：$numpyBundle"
+}
+$warnFile = "$root\build\ShadowBuster\warn-ShadowBuster.txt"
+if (Test-Path -LiteralPath $warnFile) {
+    $numpyWarnings = Select-String -LiteralPath $warnFile -Pattern "numpy" -SimpleMatch
+    if ($numpyWarnings) { throw "PyInstaller 报告 numpy 缺失：$($numpyWarnings -join ' ')" }
+}
 
 # [2/3] 体积裁剪：外壳是 QtWidgets + QtWebEngine 应用，运行期不需要
 #   QML 模块目录（qml/）与 Qt 自身模块的翻译文件；WebEngine 自己的 locale

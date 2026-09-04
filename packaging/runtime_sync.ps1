@@ -51,10 +51,26 @@ $srcSoren = if ($env:SB_SOREN) { $env:SB_SOREN } else { Join-Path $workspace "So
 $srcPy    = if ($env:SB_PORTABLE_PYTHON) {
     $env:SB_PORTABLE_PYTHON
 } else {
-    Join-Path $env:APPDATA "uv\python\cpython-3.12.11-windows-x86_64-none"
+    $portableRoots = @(
+        "$env:USERPROFILE\.local\share\uv\python",
+        "$env:APPDATA\uv\python",
+        "$env:LOCALAPPDATA\uv\python"
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+    $portableCandidates = foreach ($portableRoot in $portableRoots) {
+        Get-ChildItem -LiteralPath $portableRoot -Directory -Filter "cpython-3.12*" -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "python.exe") -PathType Leaf } |
+            Sort-Object Name -Descending |
+            ForEach-Object FullName
+    }
+    $portableCandidates | Select-Object -First 1
+}
+if (-not $srcPy) {
+    throw "找不到便携 Python，请设置 SB_PORTABLE_PYTHON"
 }
 $venvPy   = if ($env:SB_PYTHON) {
     $env:SB_PYTHON
+} elseif (Test-Path -LiteralPath "$root\.venv\Scripts\python.exe" -PathType Leaf) {
+    Join-Path $root ".venv\Scripts\python.exe"
 } else {
     Join-Path $workspace "UniverSR\.venv\Scripts\python.exe"
 }
@@ -108,6 +124,7 @@ function Assert-SameTree([string]$SourceRoot, [string]$StagedRoot, [string]$Labe
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 
 Assert-NonEmptyFile $venvPy "依赖安装 Python"
+Assert-NonEmptyFile "$srcPy\python.exe" "便携 Python"
 Assert-NonEmptyFile "$srcApollo\lew_upscale.py" "Lew 入口"
 Assert-NonEmptyFile "$appApollo\bass_enhance.py" "BASS 入口"
 Assert-NonEmptyFile "$appApollo\drum_enhance.py" "Drum 入口"
@@ -141,13 +158,13 @@ if ($ffmpeg) { Copy-Item $ffmpeg "$stage\ffmpeg\bin\" -ErrorAction SilentlyConti
 Write-Host "[4/5] 装配便携 Python + $flavorLabel torch（下载约 3GB，耐心等）..."
 Copy-Item $srcPy "$stage\env" -Recurse
 $site = "$stage\env\Lib\site-packages"
-& $venvPy -m pip install --quiet --target $site `
+& $venvPy -m pip install --quiet --upgrade --target $site `
     torch==2.7.1 torchaudio==2.7.1 --index-url $torchIndex
 if ($LASTEXITCODE -ne 0) { throw "torch $expectTorch 安装失败(exit=$LASTEXITCODE)" }
 # Use the staged interpreter for the remaining installs so pip sees the CUDA
 # Torch already present in its own site-packages instead of resolving another
 # incompatible Torch build from PyPI.
-& "$stage\env\python.exe" -m pip install --quiet --break-system-packages `
+& "$stage\env\python.exe" -m pip install --quiet --upgrade --break-system-packages --target $site `
     numpy==2.5.2 soundfile==0.14.0 scipy==1.18.0 librosa==1.0.0 `
     numba==0.67.0 llvmlite==0.49.0 statsmodels==0.14.6 pyloudnorm==0.2.0 `
     joblib==1.5.3 cryptography==50.0.0 setuptools==78.1.0 `
@@ -159,11 +176,16 @@ if ($LASTEXITCODE -ne 0) { throw "推理依赖安装失败(exit=$LASTEXITCODE)" 
 # omegaconf 2.0.6 的元数据是旧式写法（PyYAML>=5.1.*），pip>=24.1 拒装；
 # 用临时 pip 24.0 安装后删掉，保证与开发环境完全同版本。
 $pip240 = "$stage\_pip240"
-& "$stage\env\python.exe" -m pip install --quiet --break-system-packages --target $pip240 "pip==24.0"
+& "$stage\env\python.exe" -m pip install --quiet --upgrade --break-system-packages --target $pip240 "pip==24.0"
+$previousPythonPath = $env:PYTHONPATH
 $env:PYTHONPATH = $pip240
-& "$stage\env\python.exe" -m pip install --quiet --break-system-packages omegaconf==2.0.6
+& "$stage\env\python.exe" -m pip install --quiet --upgrade --break-system-packages --target $site omegaconf==2.0.6
 $rc = $LASTEXITCODE
-Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue
+if ($null -eq $previousPythonPath) {
+    Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue
+} else {
+    $env:PYTHONPATH = $previousPythonPath
+}
 Remove-Item $pip240 -Recurse -Force -ErrorAction SilentlyContinue
 if ($rc -ne 0) { throw "omegaconf 安装失败(exit=$rc)" }
 
@@ -255,6 +277,11 @@ if ($null -eq $previousPythonPath) {
 }
 if ($importRc -ne 0) { throw "关键依赖 import 验证失败(exit=$importRc)" }
 
+Assert-NonEmptyFile "$site\numpy\__init__.py" "numpy 文件"
+if (-not (Get-ChildItem -LiteralPath "$site\numpy" -Filter "*.pyd" -File -Recurse -ErrorAction SilentlyContinue)) {
+    throw "numpy 原生扩展缺失: $site\numpy"
+}
+
 Assert-SameFile "$srcApollo\lew_upscale.py" "$stage\Apollo\lew_upscale.py" "Lew 入口"
 Assert-SameFile "$appApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BASS 入口"
 Assert-SameFile "$appApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
@@ -273,6 +300,7 @@ Assert-SameFile $ffmpeg "$stage\ffmpeg\bin\ffmpeg.exe" "ffmpeg"
 # 关键 manifest 使用相对路径 + SHA-256，供安装包内容审计和复验。
 $manifestPath = "$stage\critical-manifest.sha256"
 $manifestRoots = @(
+    "$stage\env\python.exe", "$site\numpy", "$site\numpy.libs",
     "$stage\Apollo\lew_upscale.py", "$stage\Apollo\bass_enhance.py",
     "$stage\Apollo\drum_enhance.py", "$stage\Apollo\soundstage_reshape.py",
     "$stage\Apollo\vocal_adjust.py",
@@ -283,6 +311,7 @@ $manifestRoots = @(
     "$stage\ffmpeg\bin\ffmpeg.exe", "$stage\torch_home", "$stage\hf_home"
 )
 $manifestFiles = foreach ($item in $manifestRoots) {
+    if (-not (Test-Path -LiteralPath $item)) { continue }
     if (Test-Path -LiteralPath $item -PathType Container) {
         Get-ChildItem -LiteralPath $item -File -Recurse -ErrorAction Stop
     } else {

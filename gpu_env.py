@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 REPO = "AngleNaris/ShadowBuster"
@@ -24,6 +25,40 @@ PART_NAME_RE = re.compile(r"^gpu-env-[\w.-]+\.part\d{1,2}of\d{1,2}$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 READ_CHUNK = 1 << 20  # 1 MiB
+RUNTIME_IMPORTS = (
+    "torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy", "librosa",
+    "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography",
+)
+
+
+def validate_runtime(python_path, required=RUNTIME_IMPORTS, module_paths=(), timeout=180):
+    """验证待安装的便携解释器能导入完整推理依赖。"""
+    python_path = Path(python_path)
+    if not python_path.is_file():
+        raise ValueError(f"运行时缺少 python.exe: {python_path}")
+    imports = ",".join(required)
+    code = (
+        "import importlib; "
+        f"[importlib.import_module(n) for n in {imports!r}.split(',')]; "
+        "import numpy; print('runtime imports OK', numpy.__version__)"
+    )
+    env = os.environ.copy()
+    extra_paths = [str(Path(p)) for p in module_paths if p]
+    if extra_paths:
+        env["PYTHONPATH"] = os.pathsep.join(extra_paths)
+    else:
+        env.pop("PYTHONPATH", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    proc = subprocess.run(
+        [str(python_path), "-c", code],
+        capture_output=True, text=True, timeout=timeout,
+        creationflags=creationflags, env=env,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[-800:]
+        raise ValueError(f"运行时依赖验证失败(exit={proc.returncode}): {detail}")
+    return proc.stdout.strip()
 
 
 class DownloadCancelled(Exception):
@@ -272,12 +307,18 @@ def installed_info():
         data = json.loads(marker_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
     if not (env_dir() / "python.exe").is_file():
+        return None
+    if data.get("runtimeValidated") is not True:
+        return None
+    if not (env_dir() / "Lib" / "site-packages" / "numpy" / "__init__.py").is_file():
         return None
     return data
 
 
-def swap_env(staging_dir, version, sha256):
+def swap_env(staging_dir, version, sha256, *, runtime_validated=False):
     """校验 staging 完整后原子切换 env 并写标记文件。返回 env 目录。"""
     staging = Path(staging_dir)
     env = env_dir()
@@ -300,5 +341,6 @@ def swap_env(staging_dir, version, sha256):
     marker_path().write_text(json.dumps({
         "version": version,
         "sha256": sha256,
+        "runtimeValidated": bool(runtime_validated),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     return env

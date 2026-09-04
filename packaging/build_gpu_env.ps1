@@ -8,7 +8,15 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path $PSScriptRoot -Parent
-$venvPy = "D:\_3.AI\audio_upscale\UniverSR\.venv\Scripts\python.exe"
+$workspace = Split-Path $root -Parent
+$venvCandidates = @(
+    $env:SB_PYTHON,
+    "$root\.venv\Scripts\python.exe",
+    "$workspace\UniverSR\.venv\Scripts\python.exe",
+    (Get-Command python -ErrorAction SilentlyContinue).Source
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+$venvPy = $venvCandidates | Select-Object -First 1
+if (-not $venvPy) { throw "找不到制作 GPU 环境包的 Python" }
 
 # 版本单一来源：studio_backend.APP_VERSION
 $backend = Get-Content -LiteralPath "$root\studio_backend.py" -Raw

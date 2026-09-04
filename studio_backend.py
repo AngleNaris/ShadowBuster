@@ -40,7 +40,19 @@ def _user_gpu_py():
     base = Path(os.environ.get("LOCALAPPDATA") or "") or (Path.home() / "AppData" / "Local")
     env_dir = base / "ShadowBuster" / "runtime-gpu" / "env"
     marker = env_dir.parent / "gpu-env.json"
-    if marker.is_file() and (env_dir / "python.exe").is_file():
+    # 旧版 GPU 包可能只有解释器，没有 numpy 或完整性标记；忽略它并继续使用
+    # 安装包内 runtime，避免残缺的用户环境遮蔽可用的 CPU 环境。
+    try:
+        import json
+        marker_data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(marker_data, dict):
+        return None
+    numpy_init = env_dir / "Lib" / "site-packages" / "numpy" / "__init__.py"
+    if (marker_data.get("runtimeValidated") is True
+            and (env_dir / "python.exe").is_file()
+            and numpy_init.is_file()):
         return env_dir / "python.exe"
     return None
 

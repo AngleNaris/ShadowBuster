@@ -298,7 +298,9 @@ class Bridge(QObject):
             prog("extract", 0, extracted)
             ge.extract_zip(zpath, staging, cancel=lambda: cancel.is_set(),
                            progress=lambda c, t: prog("extract", c, t))
-            ge.swap_env(staging, m["version"], m["sha256"])
+            prog("verify", 0, 1)
+            ge.validate_runtime(staging / "python.exe")
+            ge.swap_env(staging, m["version"], m["sha256"], runtime_validated=True)
             zpath.unlink(missing_ok=True)
             self._gpu_emit({"type": "done", "version": m["version"]})
         except ge.DownloadCancelled:

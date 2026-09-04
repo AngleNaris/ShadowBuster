@@ -1,16 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+root = Path(SPECPATH).resolve()
+
 
 a = Analysis(
-    ['D:/_3.AI/audio_upscale/SorenStudio/main.py'],
-    pathex=[],
+    [str(root / "main.py")],
+    pathex=[str(root)],
     binaries=[],
-    datas=[('D:/_3.AI/audio_upscale/SorenStudio/ui', 'ui')],
-    hiddenimports=[],
+    datas=[(str(root / "ui"), "ui")],
+    hiddenimports=["numpy"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'torchaudio', 'torchvision', 'demucs', 'scipy', 'soundfile', 'audioread', 'librosa'],
+    excludes=["torch", "torchaudio", "torchvision", "demucs", "scipy", "soundfile", "audioread", "librosa"],
     noarchive=False,
     optimize=0,
 )
@@ -21,7 +25,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='ShadowBuster',
+    name="ShadowBuster",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -32,7 +36,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['D:/_3.AI/audio_upscale/SorenStudio/ui/logo.ico'],
+    icon=[str(root / "ui" / "logo.ico")],
 )
 coll = COLLECT(
     exe,
@@ -41,5 +45,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='ShadowBuster',
+    name="ShadowBuster",
 )

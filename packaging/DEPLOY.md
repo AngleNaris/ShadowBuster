@@ -54,8 +54,16 @@ powershell -File packaging\runtime_sync.ps1
 
 # 3) 生成安装包（需先装 Inno Setup 6；winget install JRSoftware.InnoSetup）
 iscc packaging\installer.iss
-# → packaging\out\ShadowBuster-Setup-1.4.0.exe
+# → packaging\out\ShadowBuster-Setup-1.5.0.exe
 ```
+
+发布前必须完成三层校验：
+
+- `build_shell.ps1` 会在构建前检查外壳 Python 可导入 `PyInstaller` 与 `numpy`，并在构建后确认 onedir 产物内存在 numpy 目录、原生 `.pyd` 扩展，且 PyInstaller warning 文件没有报告 numpy 缺失。
+- `runtime_sync.ps1` 会把所有第三方依赖统一安装到 `runtime\env\Lib\site-packages`，验证 `numpy`、torch、Demucs、音频与母带依赖，并把便携解释器与 numpy 文件写入 `critical-manifest.sha256`。Apollo 的 `look2hear` 通过 `PYTHONPATH` 单独验证。
+- `install_test.ps1` 默认使用 v1.5.0，静默安装后会直接调用安装目录的 `runtime\env\python.exe` 重跑导入探针；安装器退出码为 0 但探针失败时，测试仍然失败。
+
+截图中出现 `Apollo\\New_upscale.py` 的安装包属于旧版入口，当前 v1.5.0 装配流程使用 `Apollo\\lew_upscale.py`。修复依赖后必须重新执行上述三步并重新编译安装器，不能只替换 UI 外壳或复用旧的 `stage` 目录。
 
 ## 安装器（installer.iss）
 
