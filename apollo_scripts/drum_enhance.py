@@ -13,6 +13,9 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from audio_validation import validate_audio_pair, finite_range
+from stage_metadata import write_report
+
 from bass_enhance import _bell, _transient
 
 
@@ -55,11 +58,22 @@ def main():
     ap.add_argument("--punch-db", type=float, default=2.0, help="90Hz 鼓 body 提升 dB")
     ap.add_argument("--trans", type=float, default=0.3, help="瞬态强调强度 0-1")
     ap.add_argument("--drums-gain-db", type=float, default=0.0, help="drums 整体增益 dB")
+    ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
     drums, sr = sf.read(args.drums, always_2d=True)
     in_mix, sr2 = sf.read(args.in_mix, always_2d=True)
-    assert sr2 == sr, f"采样率不一致: {args.in_mix}"
+    if sr2 != sr:
+        ap.error(f"sample rate mismatch: {args.in_mix} is {sr2}, expected {sr}")
+    try:
+        validate_audio_pair(drums, in_mix, sr, primary_name="drums", secondary_name="in-mix")
+        finite_range(args.drums_gain_db, "drums-gain-db", -12.0, 12.0)
+    except ValueError as exc:
+        ap.error(str(exc))
+
+    for value, name, lo, hi in ((args.punch_db, "punch-db", -12, 12), (args.trans, "trans", 0, 1)):
+        try: finite_range(value, name, lo, hi)
+        except ValueError as exc: ap.error(str(exc))
 
     original_drums = drums.copy()
     if args.drums_gain_db:
@@ -68,8 +82,7 @@ def main():
     out = np.zeros_like(drums)
     for c in range(drums.shape[1]):
         out[:, c] = enhance_drum_stem(drums[:, c], sr, punch_db=args.punch_db, trans=args.trans)
-    n = min(len(out), len(in_mix), len(original_drums))
-    out = in_mix[:n] + (out[:n] - original_drums[:n])
+    out = in_mix + (out - original_drums)
 
     # 与 bass_enhance 相同的约定：混合后统一留 -0.5dB 母带余量（真峰值由下游 Soren 负责）
     neutral = (args.punch_db == 0 and args.trans == 0 and args.drums_gain_db == 0)
@@ -79,6 +92,9 @@ def main():
         out *= ceiling / peak
 
     sf.write(args.out, out.astype(np.float32), sr, subtype="FLOAT")
+    if args.report_json:
+        write_report(args.report_json, stage="drums", scale=float(ceiling / peak) if (not neutral and peak > ceiling) else 1.0,
+                     input_path=args.in_mix, output_path=args.out)
     print(f"Drum-enhanced mix done: {args.out} | punch={args.punch_db}dB trans={args.trans} | {sr}Hz {drums.shape[1]}ch")
 
 

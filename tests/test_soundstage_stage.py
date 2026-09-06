@@ -135,6 +135,7 @@ class PipelineBypassTests(unittest.TestCase):
 
         def fake_reshape(in_wav, stems_dir, out_wav, **kwargs):
             Path(out_wav).write_bytes(Path(in_wav).read_bytes())
+            return 1.0
 
         def fake_soren(in_wav, out_wav, **kwargs):
             Path(out_wav).write_bytes(Path(in_wav).read_bytes())
@@ -149,7 +150,7 @@ class PipelineBypassTests(unittest.TestCase):
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             studio_backend.run_pipeline(
-                src, out_dir, bypass=("bass", "drums"), work_dir=out_dir / "work")
+                src, out_dir, bypass=("bass", "drums", "vocals"), work_dir=out_dir / "work")
 
         self.assertEqual(seen, {})
         output = out_dir / f"{src.stem}_shadowbuster.wav"

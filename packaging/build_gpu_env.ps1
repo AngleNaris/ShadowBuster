@@ -18,12 +18,12 @@ $venvCandidates = @(
 $venvPy = $venvCandidates | Select-Object -First 1
 if (-not $venvPy) { throw "找不到制作 GPU 环境包的 Python" }
 
-# 版本单一来源：studio_backend.APP_VERSION
+# 版本单一来源：studio_backend.GPU_ENV_VERSION
 $backend = Get-Content -LiteralPath "$root\studio_backend.py" -Raw
-if ($backend -match 'APP_VERSION\s*=\s*"(\d+\.\d+\.\d+)"') {
+if ($backend -match 'GPU_ENV_VERSION\s*=\s*"(\d+\.\d+\.\d+)"') {
     $version = $Matches[1]
 } else {
-    throw "无法从 studio_backend.py 读取 APP_VERSION"
+    throw "无法从 studio_backend.py 读取 GPU_ENV_VERSION"
 }
 
 $src = "$root\packaging\stage\runtime_gpu\env"

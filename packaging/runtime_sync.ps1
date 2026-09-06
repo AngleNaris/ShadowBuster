@@ -144,12 +144,13 @@ New-Item -ItemType Directory -Force -Path "$stage\Apollo", "$stage\Soren_src", "
 
 Write-Host "[1/5] 拷贝 Apollo 工具链 ..."
 Copy-Item "$srcApollo\lew_upscale.py", "$srcApollo\low_punch.py" "$stage\Apollo\" -ErrorAction SilentlyContinue
-Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApollo\soundstage_reshape.py", "$appApollo\vocal_adjust.py" "$stage\Apollo\" -ErrorAction Stop
+Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApollo\soundstage_reshape.py", "$appApollo\vocal_adjust.py", "$appApollo\audio_validation.py", "$appApollo\stage_metadata.py", "$appApollo\vocal_config.py" "$stage\Apollo\" -ErrorAction Stop
 Copy-Item "$srcApollo\look2hear" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 
 Write-Host "[2/5] 拷贝 Soren 母带链 ..."
-Copy-Item "$srcSoren\core_decrypted.py", "$srcSoren\test_model.py" "$stage\Soren_src\" -ErrorAction Stop
+Copy-Item "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" -ErrorAction Stop
+Copy-Item "$srcSoren\test_model.py" "$stage\Soren_src\" -ErrorAction Stop
 Copy-Item "$srcSoren\model", "$srcSoren\profiles", "$srcSoren\secured_genres" "$stage\Soren_src\" -Recurse -ErrorAction SilentlyContinue
 
 Write-Host "[3/5] 拷贝 ffmpeg ..."
@@ -289,9 +290,11 @@ Assert-SameFile "$appApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BA
 Assert-SameFile "$appApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
 Assert-SameFile "$appApollo\soundstage_reshape.py" "$stage\Apollo\soundstage_reshape.py" "声场重塑入口"
 Assert-SameFile "$appApollo\vocal_adjust.py" "$stage\Apollo\vocal_adjust.py" "人声入口"
+Assert-SameFile "$appApolloudio_validation.py" "$stage\Apolloudio_validation.py" "音频校验"
+Assert-SameFile "$appApollo\stage_metadata.py" "$stage\Apollo\stage_metadata.py" "阶段 metadata"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"
-Assert-SameFile "$srcSoren\core_decrypted.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
+Assert-SameFile "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
 Assert-SameFile "$srcSoren\test_model.py" "$stage\Soren_src\test_model.py" "Soren 模型入口"
 Assert-SameTree "$srcSoren\model" "$stage\Soren_src\model" "Soren 模型"
 Assert-SameTree "$srcSoren\profiles" "$stage\Soren_src\profiles" "Soren profiles"

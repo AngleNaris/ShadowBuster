@@ -208,12 +208,12 @@ class Bridge(QObject):
                 self._gpu_emit({"type": "state", "dev": True})
                 return
             import gpu_env as ge
-            current = ge.installed_info(expected_version=backend.APP_VERSION)
+            current = ge.installed_info(expected_version=backend.GPU_ENV_VERSION)
             if current is not None:
                 self._gpu_emit({"type": "state", "installed": current,
                                 "manifest": None, "error": None})
                 return
-            m = ge.load_manifest(backend.APP_VERSION)
+            m = ge.load_manifest(backend.GPU_ENV_VERSION)
             module_paths = (
                 backend.ROOT / "runtime" / "Apollo",
                 backend.ROOT / "runtime" / "Soren_src",
@@ -293,7 +293,7 @@ class Bridge(QObject):
 
         try:
             self._gpu_emit({"type": "progress", "phase": "info", "cur": 0, "total": 1})
-            m = ge.load_manifest(backend.APP_VERSION)
+            m = ge.load_manifest(backend.GPU_ENV_VERSION)
             expected_torch = "2.7.1+cu128"
             expected_torchaudio = "2.7.1+cu128"
             module_paths = (backend.ROOT / "runtime" / "Apollo",
@@ -545,18 +545,15 @@ class Bridge(QObject):
             def file_finished(fi, ftotal, fname, succeeded, error):
                 self.fileFinished.emit(fi, ftotal, fname, succeeded, error)
 
-            # 旋钮映射：Sub 直接等位传递（前端 0–12 即 0–12 dB，刻度不被放大）；
-            # sat / trans / denoise 是 0–10 的比例档，折算到 0–1；punch 直接等位传递 0–10 dB；
-            # space（声场干湿比）同样 0–10 折算 0–1；space_width 为宽度上限 0–12 档折算 0–6 dB；
-            # vocal 为人声增益 -12~12 档折算 -6~+6 dB（0 = 直通）。
-            sub_db = float(params.get("sub", 6))            # 0–12 dB（数值 = 显示）
-            sat = float(params.get("sat", 3)) / 10.0        # 0–1.0
-            punch_db = float(params.get("punch", 2))        # 0–10 dB（数值 = 显示）
-            trans = float(params.get("trans", 3)) / 10.0    # 0–1.0
-            space_wet = float(params.get("space", 6)) / 10.0      # 0–1.0，默认 0.6
-            space_denoise = float(params.get("denoise", 2)) / 10.0  # 0–1.0，默认 0.2
-            space_width_db = float(params.get("space_width", 12)) / 2.0  # 0–12 dB，默认 6.0
-            vocal_gain_db = float(params.get("vocal", 0)) / 2.0   # -6~+6 dB，默认 0
+            # 旋钮值直接使用界面显示的真实单位；比例参数由前端以 0–1 传入。
+            sub_db = float(params.get("sub", 6))
+            sat = float(params.get("sat", 0.3))
+            punch_db = float(params.get("punch", 2))
+            trans = float(params.get("trans", 0.3))
+            space_wet = float(params.get("space", 0.6))
+            space_denoise = float(params.get("denoise", 0.2))
+            space_width_db = float(params.get("space_width", 6))
+            vocal_gain_db = float(params.get("vocal", 0))
             # bypass：面板开关关闭的阶段名集合
             bypass = [b for b in (params.get("bypass") or []) if b]
             bypass = [b for b in bypass
@@ -576,6 +573,7 @@ class Bridge(QObject):
                 quality=int(params.get("quality", 1)),
                 guidance=float(params.get("guidance", 1.5)),
                 genre=params.get("genre", "Pop"),
+                style_mode=params.get("style_mode", "styled"),
                 loudness=params.get("loudness", "normal"),
                 eq_profile=params.get("eq", "Neutral"),
                 reference=params.get("reference") or None,

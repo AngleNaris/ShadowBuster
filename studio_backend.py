@@ -10,9 +10,12 @@ import threading
 import subprocess
 from pathlib import Path
 
+from apollo_scripts.stage_metadata import read_report
+from apollo_scripts.vocal_config import REFERENCE_MODE
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
+GPU_ENV_VERSION = "1.5.0"
 
 if getattr(sys, "frozen", False):
     # PyInstaller 冻结后 __file__ 在 _internal 里，exe 同级才是安装根目录
@@ -22,6 +25,7 @@ else:
 
 DEV_PYTHON = r"D:/_3.AI/audio_upscale/UniverSR/.venv/Scripts/python.exe"
 DEV_APOLLO = Path(r"D:/_3.AI/audio_upscale/Apollo")
+DEV_DSP = Path(__file__).parent / "apollo_scripts"
 DEV_SOREN = Path(r"D:/_3.AI/audio_upscale/Soren_src")
 
 # 无控制台的 GUI 进程里，子进程默认会新建可见控制台（安装版弹 python 黑框）；
@@ -39,7 +43,7 @@ def _user_gpu_py():
         return None
     try:
         import gpu_env as ge
-        info = ge.installed_info(expected_version=APP_VERSION)
+        info = ge.installed_info(expected_version=GPU_ENV_VERSION)
     except (ImportError, OSError, ValueError):
         return None
     if info is None:
@@ -80,6 +84,11 @@ def _resolve_runtime():
 
 
 PYTHON, APOLLO_DIR, SOREN_DIR, ASSETS = _resolve_runtime()
+# APOLLO_DIR remains the model/tool root (Lew script and weights). DSP_DIR is
+# independent so development uses repository DSP sources while packaged runtime
+# uses the synchronized runtime Apollo scripts.
+DSP_DIR = (APOLLO_DIR if ASSETS is not None or getattr(sys, "frozen", False)
+           else Path(os.environ.get("SB_DSP", DEV_DSP)))
 
 
 def auto_device():
@@ -265,9 +274,9 @@ def ffmpeg_convert(src, dst, sr=44100):
     _run(cmd, cwd=ROOT)
 
 
-# 质量档 → (chunk 秒数, overlap 秒数)：精细档用更短的块 + 更多重叠，
-# 拼接接缝更平滑、质量更高，耗时更长；快速档反之。
-QUALITY_CHUNKS = {0: (20.0, 1.0), 1: (15.0, 2.0), 2: (10.0, 3.0)}
+# 快速档限制单块长度以降低峰值显存；少量重叠控制重复计算。
+# 标准与精细档保留原分块策略，档位不改变模型精度。
+QUALITY_CHUNKS = {0: (6.0, 0.5), 1: (15.0, 2.0), 2: (10.0, 3.0)}
 
 
 def mix_wet_dry(dry, wet, out, wet_ratio):
@@ -417,61 +426,92 @@ def _rest_files(stem_dir):
     raise PipelineError(f"分离产物缺失（需要 vocals/other 或 no_bass）: {stem_dir}")
 
 
+def _run_reported(cmd, in_mix, out_wav, report_json, stage, cancel):
+    if report_json is None:
+        _run_stream(cmd, DSP_DIR, cancel=cancel)
+        return 1.0
+    if Path(in_mix).resolve() == Path(out_wav).resolve():
+        raise PipelineError("Reported stages require distinct input/output files")
+    Path(report_json).unlink(missing_ok=True)
+    Path(out_wav).unlink(missing_ok=True)
+    cmd += ["--report-json", str(report_json)]
+    _run_stream(cmd, DSP_DIR, cancel=cancel)
+    try:
+        return read_report(report_json, stage=stage, input_path=in_mix, output_path=out_wav)
+    except (ValueError, OSError, RuntimeError, TypeError, AttributeError) as exc:
+        raise PipelineError(f"{stage} metadata validation failed: {exc}") from exc
+
+
 def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
-               bass_gain_db=0.0, progress=None, cancel=None):
+               bass_gain_db=0.0, progress=None, cancel=None, report_json=None):
     if progress:
         progress(0.0, "贝斯增强")
     bass = stem_dir / "bass.wav"
     if not bass.exists():
         raise PipelineError(f"分离产物缺失: {stem_dir}")
-    cmd = [PYTHON, str(APOLLO_DIR / "bass_enhance.py"),
+    cmd = [PYTHON, str(DSP_DIR / "bass_enhance.py"),
            "--bass", str(bass), "--in-mix", str(in_mix), "--out", str(out_wav),
            "--sub-db", str(sub_db), "--sat", str(sat), "--punch-db", str(punch_db),
            "--trans", str(trans), "--bass-gain-db", str(bass_gain_db)]
-    _run_stream(cmd, APOLLO_DIR, cancel=cancel)
+    scale = _run_reported(cmd, in_mix, out_wav, report_json, "bass", cancel)
     if progress:
         progress(1.0, "贝斯增强完成")
+    return scale
 
 
 def stage_drums(stem_dir, rest_wav, out_wav, punch_db=2.0, trans=0.3,
-                drums_gain_db=0.0, progress=None, cancel=None):
+                drums_gain_db=0.0, progress=None, cancel=None, report_json=None):
     """鼓增强：punch/瞬态处理施加到鼓所在的轨上（4-stem 的 drums 轨）。"""
     if progress:
         progress(0.0, "鼓增强")
     stem_dir = Path(stem_dir)
+    scale = 1.0
     drums = stem_dir / "drums.wav"
     if not drums.exists():
         # 旧 two-stems 产物没有 drums 轨：跳过增强，透传贝斯阶段结果
         shutil.copyfile(rest_wav, out_wav)
     else:
-        cmd = [PYTHON, str(APOLLO_DIR / "drum_enhance.py"),
+        cmd = [PYTHON, str(DSP_DIR / "drum_enhance.py"),
                "--drums", str(drums), "--in-mix", str(rest_wav), "--out", str(out_wav),
                "--punch-db", str(punch_db), "--trans", str(trans),
                "--drums-gain-db", str(drums_gain_db)]
-        _run_stream(cmd, APOLLO_DIR, cancel=cancel)
+        scale = _run_reported(cmd, rest_wav, out_wav, report_json, "drums", cancel)
     if progress:
         progress(1.0, "鼓增强完成")
+    return scale
 
 
-def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, progress=None, cancel=None):
-    """人声整体增益（delta-add 保留分离残差）：0 dB 位级透传，不启动子进程。"""
+def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
+                 reference_vocals=None, vocal_scale=1.0, progress=None, cancel=None,
+                 balance_target_db=None, balance_mode=None):
+    """人声平衡；显式固定目标下 0 dB 仍执行自动平衡。"""
     if progress:
         progress(0.0, "人声调整")
     stem_dir = Path(stem_dir)
     vocals = stem_dir / "vocals.wav"
-    if gain_db == 0 or not vocals.exists():
+    if balance_mode is None and balance_target_db is None and (gain_db == 0 or not vocals.exists()):
+        shutil.copyfile(in_mix, out_wav)
+    elif not vocals.exists():
         shutil.copyfile(in_mix, out_wav)
     else:
-        cmd = [PYTHON, str(APOLLO_DIR / "vocal_adjust.py"),
+        cmd = [PYTHON, str(DSP_DIR / "vocal_adjust.py"),
                "--vocals", str(vocals), "--in-mix", str(in_mix), "--out", str(out_wav),
                "--vocal-gain-db", str(gain_db)]
-        _run_stream(cmd, APOLLO_DIR, cancel=cancel)
+        cmd += ["--vocal-scale", str(vocal_scale)]
+        if balance_mode is not None:
+            cmd += ["--balance-mode", balance_mode]
+        if balance_target_db is not None:
+            cmd += ["--balance-target-db", str(balance_target_db)]
+        if reference_mix is not None:
+            cmd += ["--reference-mix", str(reference_mix),
+                    "--reference-vocals", str(reference_vocals or vocals)]
+        _run_stream(cmd, DSP_DIR, cancel=cancel)
     if progress:
         progress(1.0, "人声调整完成")
 
 
 def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0, width_db=6.0,
-                  progress=None, cancel=None):
+                  progress=None, cancel=None, report_json=None):
     """声场重塑（broadband delta-add）：wet 缩放全部处理差值，可附带 ≥10kHz 噪声地板降噪。
 
     width_db 为宽度上限（other 轨 side 增益 dB，drums 自动取一半），wet 决定向该
@@ -480,25 +520,29 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0, width_db=6.0
     """
     if progress:
         progress(0.0, "声场重塑")
+    scale = 1.0
     stems_dir = Path(stems_dir)
     if (wet <= 0 and denoise <= 0) or not (stems_dir / "drums.wav").exists() or not (stems_dir / "other.wav").exists():
         shutil.copyfile(in_mix, out_wav)
     else:
-        cmd = [PYTHON, str(APOLLO_DIR / "soundstage_reshape.py"),
+        cmd = [PYTHON, str(DSP_DIR / "soundstage_reshape.py"),
                "--in-mix", str(in_mix), "--out-wav", str(out_wav),
                "--stems-dir", str(stems_dir),
                "--mode", "broadband", "--wet", str(wet),
                "--side-gain-db", str(width_db)]
         if denoise > 0:
             cmd += ["--other-denoise-amount", str(denoise)]
-        _run_stream(cmd, APOLLO_DIR, cancel=cancel)
+        scale = _run_reported(cmd, in_mix, out_wav, report_json, "reshape", cancel)
     if progress:
         progress(1.0, "声场重塑完成")
+    return scale
 
 
 def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
                 eq_profile="Neutral", reference=None, lowpass_cutoff=None,
-                progress=None, cancel=None):
+                progress=None, cancel=None, style_mode="styled"):
+    if style_mode not in ("styled", "off", "eq_only"):
+        raise ValueError(f"Unknown Soren style mode: {style_mode}")
     if progress:
         progress(0.0, f"Soren 母带（{genre or '自定义参考'} / {loudness} / {eq_profile}）")
     env = os.environ.copy()
@@ -506,6 +550,8 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
     cmd = [PYTHON, str(SOREN_DIR / "core_decrypted.py"),
            str(input_wav), str(out_wav),
            "--loudness", loudness, "--eq-profile", eq_profile]
+    if style_mode != "styled":
+        cmd += ["--style-mode", style_mode]
     if reference:
         cmd += ["--reference", str(reference)]
     else:
@@ -523,12 +569,15 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
                  eq_profile="Neutral", reference=None, quality=1, guidance=1.5,
                  device="cuda", progress=None, cancel=None, work_dir=None,
                  lowpass_cutoff=None, space_wet=0.0, space_denoise=0.0,
-                 space_width_db=6.0, bypass=()):
+                 space_width_db=6.0, balance_target_db=None, bypass=(),
+                 balance_mode=REFERENCE_MODE, style_mode="styled"):
     """执行单文件完整链路。progress(stage_idx, frac, label)。
 
     bypass: 可迭代的阶段名（lew/vocals/bass/drums/reshape/soren），命中的阶段位级跳过。
     分离阶段不可 bypass（后续阶段依赖 stems 产物）。
     """
+    if style_mode not in ("styled", "off", "eq_only"):
+        raise ValueError(f"Unknown Soren style mode: {style_mode}")
     input_wav = Path(input_wav)
     if not input_wav.exists():
         raise PipelineError(f"输入文件不存在: {input_wav}")
@@ -552,13 +601,16 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     drum_out = work / f"{stem}_drummix.wav"
     vocal_out = work / f"{stem}_vocalmix.wav"
     shape_out = work / f"{stem}_shapemix.wav"
+    bass_report = work / "bass.json"
+    drums_report = work / "drums.json"
+    reshape_report = work / "reshape.json"
 
-    def cb(i):
+    def cb(i, offset=0.0, span=1.0):
         def inner(frac, label):
             if cancel and cancel():
                 raise PipelineError("用户取消")
             if progress:
-                progress(i, frac, label)
+                progress(i, offset + span * frac, label)
         return inner
 
     try:
@@ -575,45 +627,60 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
         stem_dir = stems_out / "htdemucs" / lew_src.stem
         if "bass" in bypass:
             shutil.copyfile(lew_src, bass_out)
+            bass_scale = 1.0
             if progress:
                 cb(2)(1.0, "贝斯旁路")
         else:
-            stage_bass(stem_dir, lew_src, bass_out, sub_db=sub_db, sat=sat,
+            bass_scale = stage_bass(stem_dir, lew_src, bass_out, sub_db=sub_db, sat=sat,
                        punch_db=0.0, trans=0.0, bass_gain_db=bass_gain_db,
-                       progress=cb(2), cancel=cancel)
+                       progress=cb(2), cancel=cancel, report_json=bass_report)
         if "drums" in bypass:
             shutil.copyfile(bass_out, drum_out)
+            drums_scale = 1.0
             if progress:
                 cb(3)(1.0, "鼓旁路")
         else:
-            stage_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
-                        progress=cb(3), cancel=cancel)
-        vocal_src = drum_out
-        if "vocals" in bypass or vocal_gain_db == 0:
-            # 人声 0dB 或面板旁路：位级透传，不启动子进程
-            shutil.copyfile(drum_out, vocal_out)
-            if progress:
-                cb(4)(1.0, "人声旁路" if "vocals" in bypass else "人声 0dB")
-        else:
-            stage_vocals(stem_dir, drum_out, vocal_out, gain_db=vocal_gain_db,
-                         progress=cb(4), cancel=cancel)
+            drums_scale = stage_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
+                        progress=cb(3), cancel=cancel, report_json=drums_report)
         if "reshape" in bypass:
-            shutil.copyfile(vocal_src, shape_out)
+            shutil.copyfile(drum_out, shape_out)
+            reshape_scale = 1.0
             if progress:
-                cb(4)(1.0, "声场旁路")
+                cb(4, 0.0, 0.5)(1.0, "声场旁路")
         else:
-            stage_reshape(vocal_src, stem_dir, shape_out, wet=space_wet,
+            reshape_scale = stage_reshape(drum_out, stem_dir, shape_out, wet=space_wet,
                           denoise=space_denoise, width_db=space_width_db,
-                          progress=cb(4), cancel=cancel)
+                          progress=cb(4, 0.0, 0.5), cancel=cancel, report_json=reshape_report)
+        # Only original vocals base scaling; unscaled original-stem delta additions remain residual.
+        vocal_scale = bass_scale * drums_scale * reshape_scale
+        if "vocals" in bypass:
+            shutil.copyfile(shape_out, vocal_out)
+            cb(4, 0.5, 0.5)(1.0, "人声旁路")
+        else:
+            original_mix, original_vocals = lew_src, stem_dir / "vocals.wav"
+            if balance_mode == REFERENCE_MODE and balance_target_db is None:
+                original_mix = work / "original_reference.wav"
+                original_stems = work / "original_reference_stems"
+                # HTDemucs preserves sample origin; DSP rejects frame/rate mismatch.
+                ffmpeg_convert(input_wav, original_mix, sr=44100)
+                stage_demucs(original_mix, original_stems, cancel=cancel)
+                original_vocals = original_stems / "htdemucs" / original_mix.stem / "vocals.wav"
+            stage_vocals(stem_dir, shape_out, vocal_out, gain_db=vocal_gain_db,
+                         balance_target_db=balance_target_db,
+                         balance_mode=balance_mode if balance_target_db is None else None,
+                         reference_mix=original_mix,
+                         reference_vocals=original_vocals,
+                         vocal_scale=vocal_scale,
+                         progress=cb(4, 0.5, 0.5), cancel=cancel)
         if "soren" in bypass:
-            shutil.copyfile(shape_out, out_final)
+            shutil.copyfile(vocal_out, out_final)
             if progress:
                 cb(5)(1.0, "母带旁路")
         else:
-            stage_soren(shape_out, out_final, genre=genre, loudness=loudness,
+            stage_soren(vocal_out, out_final, genre=genre, loudness=loudness,
                         eq_profile=eq_profile, reference=reference,
                         lowpass_cutoff=lowpass_cutoff, progress=cb(5),
-                        cancel=cancel)
+                        cancel=cancel, style_mode=style_mode)
     except PipelineError:
         raise
     finally:
@@ -680,6 +747,7 @@ if __name__ == "__main__":
     ap.add_argument("--genre", default="Pop")
     ap.add_argument("--loudness", default="normal")
     ap.add_argument("--eq-profile", default="Neutral")
+    ap.add_argument("--style-mode", choices=["styled", "off", "eq_only"], default="styled")
     ap.add_argument("--reference", default=None)
     ap.add_argument("--lowpass-cutoff", type=float, default=None)
     ap.add_argument("--space-wet", type=float, default=0.0)
@@ -699,6 +767,7 @@ if __name__ == "__main__":
     out = run_pipeline(args.input, args.output, sub_db=args.sub_db, sat=args.sat,
                        genre=args.genre, loudness=args.loudness,
                        eq_profile=args.eq_profile, reference=args.reference,
+                       style_mode=args.style_mode,
                        lowpass_cutoff=args.lowpass_cutoff,
                        space_wet=args.space_wet, space_denoise=args.space_denoise,
                        space_width_db=args.space_width_db,

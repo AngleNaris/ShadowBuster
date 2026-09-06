@@ -18,6 +18,9 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
+from audio_validation import validate_audio, validate_audio_pair, finite_range
+from stage_metadata import write_report
+
 SR = 44_100
 
 
@@ -196,9 +199,10 @@ def width_report(mix, out, sr):
     for lo, hi, name in [(20, 120, "low "), (120, 2000, "mid "), (2000, 8000, "high"), (8000, 16000, "air ")]:
         print(f"    {name}: mix {band_width(mix, lo, hi):.3f} -> out {band_width(out, lo, hi):.3f}")
     mo, mo2 = mix.mean(axis=1), out.mean(axis=1)
-    n = min(len(mo), len(mo2))
-    dr = 10 * np.log10(((mo2[:n] ** 2).mean() + 1e-12) / ((mo[:n] ** 2).mean() + 1e-12))
-    corr = np.corrcoef(mo[:n], mo2[:n])[0, 1]
+    if len(mo) != len(mo2):
+        raise ValueError("width report length mismatch")
+    dr = 10 * np.log10(((mo2 ** 2).mean() + 1e-12) / ((mo ** 2).mean() + 1e-12))
+    corr = np.corrcoef(mo, mo2)[0, 1]
     print(f"  mono fold-down 能量变化 {dr:+.2f}dB（相位抵消检查），与原 mono 相关 {corr:.4f}")
 
 
@@ -232,6 +236,7 @@ def main():
     ap.add_argument("--other-denoise-amount", type=float, default=0.0,
                     help="other 轨 ≥fc 噪声地板降噪量 0-1（Audition 降噪量语义，贴地板 -amount*100%%）")
     ap.add_argument("--other-denoise-fc", type=float, default=10000.0)
+    ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
     if not np.isfinite(args.wet) or not 0.0 <= args.wet <= 1.0:
@@ -251,27 +256,34 @@ def main():
         raise SystemExit(f"stems 缺失: {missing} (stems-dir={stem_dir})")
 
     mix, sr = sf.read(in_mix, always_2d=True, dtype="float64")
-    assert sr == SR, f"需要 {SR}Hz 输入（先用 ffmpeg 转采样率）"
+    try:
+        validate_audio(mix, name="in-mix", sr=sr, require_sr=SR, channels=2)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     params = resolve_side_gains(args.mode, args.side_gain_db)
     out = mix.copy()
     wet = args.wet
     for name, (db, fc, gain) in params.items():
         stem, s_sr = sf.read(stem_dir / f"{name}.wav", always_2d=True, dtype="float64")
-        n = min(len(stem), len(out))
         if s_sr != sr:
-            raise SystemExit(f"{name} 采样率 {s_sr} != {sr}")
+            raise SystemExit(f"{name} sample rate {s_sr} != {sr}")
+        try:
+            validate_audio_pair(stem, out, s_sr, primary_name=name, secondary_name="in-mix")
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        n = len(stem)
         if args.mode == "dynamic" and db > 0:
-            reshaped = _dynamic_side_shelf(stem[:n], sr, fc, db)
+            reshaped = _dynamic_side_shelf(stem, sr, fc, db)
         else:
-            reshaped = _reshape_stem(stem[:n], sr, db, fc, gain)
-        processed = stem[:n] + (reshaped - stem[:n]) * wet
+            reshaped = _reshape_stem(stem, sr, db, fc, gain)
+        processed = stem + (reshaped - stem) * wet
         if name == "other" and args.other_denoise_amount > 0:
             # 降噪是独立旋钮：作用于当前 wet 混合结果，wet=0 时仍可单独使用。
             processed = _spectral_denoise(processed, sr, args.other_denoise_fc,
                                           args.other_denoise_amount)
             print(f"  other: ≥{args.other_denoise_fc:.0f}Hz 噪声地板降噪 {args.other_denoise_amount*100:.0f}%")
-        out[:n] += processed - stem[:n]        # delta-add：只加处理差值
+        out += processed - stem        # delta-add：只加处理差值
         print(f"  {name}: shelf +{db}dB@{fc:.0f}Hz, side gain +{gain}dB"
               + ("  [动态门]" if args.mode == "dynamic" and db > 0 else ""))
     if wet != 1.0:
@@ -283,9 +295,13 @@ def main():
     # 峰值保护：与 bass/drum_enhance 同约定，-0.5dB 给母带留余量
     peak = np.abs(out).max() if out.size else 0.0
     if peak > 0.999:
-        out *= 0.999 / peak
-        print(f"  峰值保护: {-20*np.log10(peak):.2f}dB")
+        scale = 0.999 / peak
+        out *= scale
+        print(f"  全局峰值缩放: {20*np.log10(scale):+.2f}dB（静态缩放，不改变同一 mix 的相对比例；不是自动 limiter）")
     sf.write(args.out_wav, out.astype(np.float32), sr, subtype="FLOAT")
+    if args.report_json:
+        write_report(args.report_json, stage="reshape", scale=float(scale) if peak > 0.999 else 1.0,
+                     input_path=args.in_mix, output_path=args.out_wav)
     print(f"  输出: {args.out_wav}")
 
     print("宽度报告:")

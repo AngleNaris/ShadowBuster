@@ -12,6 +12,9 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+
+from audio_validation import validate_audio_pair, finite_range
+from stage_metadata import write_report
 from scipy import signal
 
 
@@ -123,11 +126,22 @@ def main():
     ap.add_argument("--sat", type=float, default=0.3, help="谐波饱和混入比例 0-1")
     ap.add_argument("--trans", type=float, default=0.3, help="瞬态强调强度 0-1")
     ap.add_argument("--bass-gain-db", type=float, default=0.0, help="bass 整体增益 dB")
+    ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
     bass, sr = sf.read(args.bass, always_2d=True)
     in_mix, sr2 = sf.read(args.in_mix, always_2d=True)
-    assert sr2 == sr, f"采样率不一致: {args.in_mix}"
+    if sr2 != sr:
+        ap.error(f"sample rate mismatch: {args.in_mix} is {sr2}, expected {sr}")
+    try:
+        validate_audio_pair(bass, in_mix, sr, primary_name="bass", secondary_name="in-mix")
+        finite_range(args.bass_gain_db, "bass-gain-db", -12.0, 12.0)
+    except ValueError as exc:
+        ap.error(str(exc))
+
+    for value, name, lo, hi in ((args.sub_db, "sub-db", -12, 12), (args.punch_db, "punch-db", -12, 12), (args.sat, "sat", 0, 1), (args.trans, "trans", 0, 1)):
+        try: finite_range(value, name, lo, hi)
+        except ValueError as exc: ap.error(str(exc))
 
     original_bass = bass.copy()
     if args.bass_gain_db:
@@ -140,8 +154,7 @@ def main():
             sub_db=args.sub_db, punch_db=args.punch_db,
             sat=args.sat, trans=args.trans,
         )
-    n = min(len(out), len(in_mix), len(original_bass))
-    out = in_mix[:n] + (out[:n] - original_bass[:n])
+    out = in_mix + (out - original_bass)
 
     # 混合后样本峰值保护：增强 delta 与完整输入混音相加后统一留出母带余量。
     # 这里不是 true-peak limiter；真正的 4× true peak 检测由下游 Soren 完成。
@@ -153,6 +166,9 @@ def main():
         out *= ceiling / peak
 
     sf.write(args.out, out.astype(np.float32), sr, subtype="FLOAT")
+    if args.report_json:
+        write_report(args.report_json, stage="bass", scale=float(ceiling / peak) if (not neutral and peak > ceiling) else 1.0,
+                     input_path=args.in_mix, output_path=args.out)
     print(f"Bass-enhanced mix done: {args.out} | sub={args.sub_db}dB punch={args.punch_db}dB "
           f"sat={args.sat} trans={args.trans} | {sr}Hz {bass.shape[1]}ch")
 

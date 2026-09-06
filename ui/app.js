@@ -87,13 +87,22 @@
 
   /* ─── 参数持久化：像真实效果器一样记住上次参数 ─── */
   const STORAGE_PREFIX = "sb_param_";
+  const UNIT_DIVISORS = { vocal: 2, guidance: 10, space_width: 2, sat: 10, trans: 10, space: 10, denoise: 10 };
+  let actualUnits = null;
   function loadValue(key, fallback) {
+    if (actualUnits && Object.hasOwn(UNIT_DIVISORS, key)) return actualUnits[key] ?? fallback;
     try {
       const raw = localStorage.getItem(STORAGE_PREFIX + key);
       return raw === null ? fallback : raw;
     } catch (e) { return fallback; }
   }
   function saveValue(key, value) {
+    if (actualUnits && Object.hasOwn(UNIT_DIVISORS, key)) {
+      actualUnits[key] = String(value);
+      // 数值与单位标记保存在同一个快照中；写入失败不留下半迁移状态。
+      key = "actual_units";
+      value = JSON.stringify({ version: 1, values: actualUnits });
+    }
     try { localStorage.setItem(STORAGE_PREFIX + key, String(value)); } catch (e) {}
   }
   function loadNumber(key, fallback) {
@@ -101,6 +110,25 @@
     if (raw === null) return fallback;
     const n = parseFloat(raw);
     return Number.isFinite(n) ? n : fallback;
+  }
+
+  // 一次性读取旧档位，不覆盖旧键；存储不可用时仍在内存中使用真实值。
+  try {
+    const snapshot = JSON.parse(loadValue("actual_units", "null"));
+    if (snapshot && snapshot.version === 1 && snapshot.values &&
+        typeof snapshot.values === "object" && !Array.isArray(snapshot.values)) {
+      actualUnits = snapshot.values;
+    }
+  } catch (e) {}
+  if (!actualUnits) {
+    const values = {};
+    const alreadyActual = loadValue("param_units_version", "") === "1";
+    Object.entries(UNIT_DIVISORS).forEach(([key, divisor]) => {
+      const value = Number.parseFloat(loadValue(key, ""));
+      if (Number.isFinite(value)) values[key] = String(value / (alreadyActual ? 1 : divisor));
+    });
+    actualUnits = values;
+    saveValue("actual_units", JSON.stringify({ version: 1, values }));
   }
 
   /* ─── 主题：深/浅色 + 强调色（localStorage 持久化，首帧由 index.html 引导脚本应用）─── */
@@ -307,13 +335,18 @@
 
   /* ─── 旋钮：慢速 + 指针/高亮同原点（-135° 起，270° 行程）─── */
   const KNOB_RANGE = 270;
+  function snapToStep(value, min, max, step) {
+    const places = Math.max(0, (String(step).split(".")[1] || "").length);
+    const snapped = Number((Math.round((value - min) / step) * step + min).toFixed(places));
+    return Math.max(min, Math.min(max, snapped));
+  }
+
   function bindKnob(knobEl, valueEl, fmt, storeKey) {
     const min = +knobEl.dataset.min, max = +knobEl.dataset.max;
     const step = +knobEl.dataset.step, def = +knobEl.dataset.default;
     let value = def;
     if (storeKey) {
-      value = loadNumber(storeKey, def);
-      value = Math.max(min, Math.min(max, Math.round(value / step) * step));
+      value = snapToStep(loadNumber(storeKey, def), min, max, step);
     }
     function angleOf(v) { return -135 + (v - min) / (max - min) * KNOB_RANGE; }
     function render() {
@@ -338,7 +371,7 @@
       if (Math.abs(dragAccum) >= 8) {
         const delta = Math.sign(dragAccum) * Math.max(1, Math.round(Math.abs(dragAccum) / 8));
         dragAccum = 0;
-        value = Math.max(min, Math.min(max, value + delta * step));
+        value = snapToStep(value + delta * step, min, max, step);
         render();
       }
     });
@@ -348,13 +381,13 @@
     knobEl.addEventListener("dblclick", () => { value = def; render(); });
     knobEl.addEventListener("wheel", (e) => {
       e.preventDefault();
-      value = Math.max(min, Math.min(max, value + (e.deltaY < 0 ? step : -step)));
+      value = snapToStep(value + (e.deltaY < 0 ? step : -step), min, max, step);
       render();
     }, { passive: false });
     knobEl.addEventListener("keydown", (e) => {
       const d = e.key === "ArrowUp" || e.key === "ArrowRight" ? step
               : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -step : 0;
-      if (d) { e.preventDefault(); value = Math.max(min, Math.min(max, value + d)); render(); }
+      if (d) { e.preventDefault(); value = snapToStep(value + d, min, max, step); render(); }
     });
     render();
     return () => value;
@@ -363,13 +396,12 @@
   function bindFader(faderEl, valueEl, fmt, storeKey) {
     const min = +faderEl.dataset.min, max = +faderEl.dataset.max;
     const step = +faderEl.dataset.step, def = +faderEl.dataset.default;
-    let value = storeKey ? loadNumber(storeKey, def) : def;
-    value = Math.max(min, Math.min(max, Math.round(value / step) * step));
+    let value = storeKey ? snapToStep(loadNumber(storeKey, def), min, max, step) : def;
 
     function setFromClientX(clientX) {
       const rect = faderEl.getBoundingClientRect();
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      value = Math.round((min + ratio * (max - min)) / step) * step;
+      value = snapToStep(min + ratio * (max - min), min, max, step);
       render();
     }
     function render() {
@@ -395,7 +427,7 @@
     faderEl.addEventListener("dblclick", () => { value = def; render(); });
     faderEl.addEventListener("wheel", (e) => {
       e.preventDefault();
-      value = Math.max(min, Math.min(max, value + (e.deltaY < 0 ? step : -step)));
+      value = snapToStep(value + (e.deltaY < 0 ? step : -step), min, max, step);
       render();
     }, { passive: false });
     faderEl.addEventListener("keydown", (e) => {
@@ -587,8 +619,7 @@
     widthMeterEl = meterEl;
     const min = +meterEl.dataset.min, max = +meterEl.dataset.max;
     const step = +meterEl.dataset.step, def = +meterEl.dataset.default;
-    let value = storeKey ? loadNumber(storeKey, def) : def;
-    value = Math.max(min, Math.min(max, Math.round(value / step) * step));
+    let value = storeKey ? snapToStep(loadNumber(storeKey, def), min, max, step) : def;
     const valueEl = meterEl.querySelector(".width-value");
 
     // 拖动映射：中线 = 0，右缘 = 最大；向右滑扩大、向左滑缩小，
@@ -598,7 +629,7 @@
       const x0 = rect.left + rect.width / 2;
       const xMax = rect.left + rect.width - 3;
       const ratio = Math.max(0, Math.min(1, (clientX - x0) / Math.max(1, xMax - x0)));
-      value = Math.round((min + ratio * (max - min)) / step) * step;
+      value = snapToStep(min + ratio * (max - min), min, max, step);
       render();
     }
     // 与右侧滑轨对齐：正方形顶边 = 第一条滑轨顶边，底边 = 第二条滑轨底边，
@@ -630,7 +661,7 @@
       animateWidthTo(widthLastFrac);
       const text = fmt(value);
       meterEl.setAttribute("aria-valuenow", value);
-      meterEl.setAttribute("aria-valuetext", text + " dB");
+      meterEl.setAttribute("aria-valuetext", text);
       valueEl.textContent = text;
       if (storeKey) saveValue(storeKey, value);
     }
@@ -648,13 +679,13 @@
     meterEl.addEventListener("dblclick", () => { value = def; render(); });
     meterEl.addEventListener("wheel", (e) => {
       e.preventDefault();
-      value = Math.max(min, Math.min(max, value + (e.deltaY < 0 ? step : -step)));
+      value = snapToStep(value + (e.deltaY < 0 ? step : -step), min, max, step);
       render();
     }, { passive: false });
     meterEl.addEventListener("keydown", (e) => {
       const d = e.key === "ArrowRight" || e.key === "ArrowUp" ? step
               : e.key === "ArrowLeft" || e.key === "ArrowDown" ? -step : 0;
-      if (d) { e.preventDefault(); value = Math.max(min, Math.min(max, value + d)); render(); }
+      if (d) { e.preventDefault(); value = snapToStep(value + d, min, max, step); render(); }
     });
     meterEl.addEventListener("pointerenter", () => setWidthHover(true));
     meterEl.addEventListener("pointerleave", () => setWidthHover(false));
@@ -672,16 +703,16 @@
 
   const getQuality = bindKnob($("knob-quality"), $("val-quality"),
     (v) => (["快速", "标准", "精细"])[v] || "标准", "quality");
-  const getGuidance = bindKnob($("knob-guidance"), $("val-guidance"), (v) => (v / 10).toFixed(1), "guidance");
+  const getGuidance = bindKnob($("knob-guidance"), $("val-guidance"), (v) => v.toFixed(1), "guidance");
   const getVocal = bindKnob($("knob-vocal"), $("val-vocal"),
-    (v) => (v > 0 ? "+" : "") + (v / 2).toFixed(1) + " dB", "vocal");
-  const getWidth = bindWidthMeter($("width-meter"), (v) => "+" + (v / 2).toFixed(1), "space_width");
+    (v) => (v > 0 ? "+" : "") + v.toFixed(1) + " dB", "vocal");
+  const getWidth = bindWidthMeter($("width-meter"), (v) => "+" + v.toFixed(1) + " dB", "space_width");
   const getSub = bindKnob($("knob-sub"), $("val-sub"), (v) => `+${v} dB`, "sub");
-  const getSat = bindKnob($("knob-sat"), $("val-sat"), (v) => (v / 10).toFixed(2), "sat");
+  const getSat = bindKnob($("knob-sat"), $("val-sat"), (v) => Math.round(v * 100) + "%", "sat");
   const getPunch = bindKnob($("knob-punch"), $("val-punch"), (v) => `+${v} dB`, "punch");
-  const getTrans = bindKnob($("knob-trans"), $("val-trans"), (v) => (v / 10).toFixed(2), "trans");
-  const getSpace = bindFader($("fader-space"), $("val-space"), (v) => (v / 10).toFixed(2), "space");
-  const getDenoise = bindFader($("fader-denoise"), $("val-denoise"), (v) => (v / 10).toFixed(2), "denoise");
+  const getTrans = bindKnob($("knob-trans"), $("val-trans"), (v) => Math.round(v * 100) + "%", "trans");
+  const getSpace = bindFader($("fader-space"), $("val-space"), (v) => Math.round(v * 100) + "%", "space");
+  const getDenoise = bindFader($("fader-denoise"), $("val-denoise"), (v) => Math.round(v * 100) + "%", "denoise");
 
   /* ─── 面板 bypass 开关：关闭 = 该面板对应阶段全部跳过，状态持久化 ─── */
   const BYPASS_CONTROLS = {
@@ -809,17 +840,19 @@
       }
     });
 
+    label.textContent = options.find((opt) => opt.v === value)?.label || value;
     renderOptions();
     return () => value;
   }
 
   const getGenre = buildDropdown("dd-genre", [
+    { v: "none", label: "无风格" },
     { v: "Pop", label: "流行 Pop" }, { v: "EDM", label: "电子 EDM" },
     { v: "Rock", label: "摇滚 Rock" }, { v: "Dance", label: "舞曲 Dance" },
     { v: "Hiphop", label: "嘻哈 Hiphop" }, { v: "Ambient", label: "氛围 Ambient" },
     { v: "Chillout", label: "弛放 Chillout" }, { v: "Orchestral", label: "管弦 Orchestral" },
     { v: "Speech", label: "人声 Speech" }, { v: "Piano", label: "钢琴 Piano" },
-  ], "Pop", (v) => { if (state.reference) { state.reference = ""; $("ref-path").value = ""; saveValue("reference", ""); } }, "genre");
+  ], "none", (v) => { if (state.reference) { state.reference = ""; $("ref-path").value = ""; saveValue("reference", ""); } }, "genre");
 
   const getLoudness = buildDropdown("dd-loudness", [
     { v: "soft", label: "轻柔" }, { v: "dynamic", label: "动态" },
@@ -1152,7 +1185,9 @@
         space: getSpace(), denoise: getDenoise(),
         space_width: getWidth(), vocal: getVocal(),
         bypass: activeBypassList(),
-        genre: state.reference ? "" : getGenre(),
+        genre: state.reference ? "" : (getGenre() === "none" ? "Pop" : getGenre()),
+        style_mode: !state.reference && getGenre() === "none"
+          ? (state.eq === "Neutral" ? "off" : "eq_only") : "styled",
         loudness: getLoudness(), eq: state.eq,
       });
     } catch (e) {
@@ -1168,7 +1203,9 @@
       html:
         "<h3>质量档</h3><p>高频重建的精细程度：<b>快速</b>＝适合试听；<b>标准</b>＝日常使用；<b>精细</b>＝细节最多、但最慢。</p>" +
         "<h3>重建引导（0 – 2）</h3><p>重建产物的保留比例：<b>0</b>＝完全保留原始信号，<b>2</b>＝完全采用重建结果，默认 1.5（约 75%）。建议 1.0 – 1.75。</p>" +
-        "<h3>人声（-6.0 – +6.0 dB）</h3><p>人声轨整体增益：声场拓宽与母带处理后若人声变靠后，+1.5 ~ +3 dB 可把人声拉回原位；<b>0.0</b>＝完全旁路。只改动人声轨差值，其余内容逐样本不变。</p>" +
+        "<h3>人声（-6.0 – +6.0 dB）</h3><p>以每首原曲的人声/伴奏比例为参考调整中央声道（Mid）突出度。<b>0.0 dB</b>＝尽量保留原曲平衡；正值让人声更靠前，负值让人声更靠后。原曲单独离线分离，不以高频重建结果代替原曲，不随母带曲风选项变化。</p>" +
+        "<p>原曲与当前混音使用同一组可靠窗口：原曲 Mid 比例中位数减当前比例中位数，再加旋钮审美偏移，得到整曲固定人声 Mid 增益（限于 ±9 dB）。该增益整曲不变，不乘活动门控，不追随鼓点或音节；无可靠比例时不做增益校正。</p>" +
+        "<p>另用约 1.5 kHz、3 kHz 两个固定宽频带动态 EQ，仅在人声可靠活动且对应频带伴奏存在遮蔽时削减伴奏残差的 Mid，总衰减预算约 1.5 dB；约 100 ms 起效、200 ms 保持、500 ms 释放，无人声后恢复。不是全频压低伴奏，也不联动声场或宽度。处理位于声场之后、母带之前；分离残差、能量检测、增益边界及后续母带（包括全混音峰值保护）会影响结果，目标不保证每个时刻或最终听感精确达标。</p>" +
         "<h3>操作</h3><ul><li>旋钮上下拖动或滚轮调节</li><li>双击旋钮恢复默认值</li></ul>",
     },
     bass: {
@@ -1176,18 +1213,18 @@
       html:
         "<h3>Sub 提升（0 – 12 dB）</h3><p>次低音（30–60 Hz）low-shelf 增益，补低频包裹感；低发散虚就调高，发浑就调低。</p>" +
         "<h3>鼓身（0 – 10 dB）</h3><p>60–120 Hz 轻度 bell 提升，强化鼓的 body/punch（鼓点厚度与攻击感）。</p>" +
-        "<h3>瞬态（0.00 – 1.00）</h3><p>瞬态强调，单独放大鼓点起音，让节奏更清晰、不糊。</p>" +
-        "<h3>谐波饱和（0.00 – 1.00）</h3><p>为低频加入模拟暖感：0.30 左右合适，太高会明显失真。</p>" +
+        "<h3>瞬态（0% – 100%）</h3><p>瞬态强调，单独放大鼓点起音，让节奏更清晰、不糊。</p>" +
+        "<h3>谐波饱和（0% – 100%）</h3><p>为低频加入模拟暖感；约 30% 通常较自然，太高会明显失真。</p>" +
         "<h3>操作</h3><ul><li>旋钮上下拖动或滚轮调节</li><li>双击旋钮恢复默认值</li></ul>",
     },
     space: {
       title: "声场 · 参数说明",
       html:
-        "<h3>声场（0.00 – 1.00）</h3><p>声场重塑强度（干湿比）：向「宽度」目标混合的比例，把堆在中间的铺底/鼓元素向两侧摊开。" +
-        "<b>0</b>＝完全保留原样，<b>1.00</b>＝全量重塑；默认 0.60。只动 side（左右差），单声道合并不受影响。</p>" +
-        "<h3>宽度（0 – +12.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。<b>向右拖动</b>扇形扩大、<b>向左拖动</b>缩小（到 0 后不再变化），扇形张角就是当前宽度范围，最大张角 100°；默认 <b>+6.0</b>。与「声场」推子配合决定最终有多宽。</p>" +
-        "<h3>高频降噪（0.00 – 1.00）</h3><p>对铺底乐器轨 ≥10 kHz 的稳态沙沙噪声做门控衰减（自动噪声地板估计，类降噪采样）：贴着噪声电平的成分按比例衰减，" +
-        "突出的音乐瞬态（镲片敲击）原样保留。默认 0.20；AI 音乐的擦片毛刺感明显时可在 0.2–0.4 之间调。</p>" +
+        "<h3>声场（0% – 100%）</h3><p>声场重塑强度（干湿比）：向「宽度」目标混合的比例，把堆在中间的铺底/鼓元素向两侧摊开。" +
+        "<b>0%</b>＝完全保留原样，<b>100%</b>＝全量重塑；默认 60%。只动 side（左右差），单声道输入仍按统一混音/峰值保护处理，结果可能随整体增益调整。</p>" +
+        "<h3>宽度（0 – +12.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。<b>向右拖动</b>扇形扩大、<b>向左拖动</b>缩小（到 0 后不再变化），扇形张角就是当前宽度范围，最大张角 100°；默认 <b>+6.0 dB</b>。与「声场」推子配合决定最终有多宽。</p>" +
+        "<h3>高频降噪（0% – 100%）</h3><p>对铺底乐器轨 ≥10 kHz 的稳态沙沙噪声做门控衰减（自动噪声地板估计，类降噪采样）：贴着噪声电平的成分按比例衰减，" +
+        "突出的音乐瞬态（镲片敲击）原样保留。默认 20%；AI 音乐的擦片毛刺感明显时可在 20%–40% 之间调。</p>" +
         "<h3>面板开关</h3><p>关闭后，声场重塑与高频降噪会一起旁路；推子值保留，重新开启即可继续使用。</p>" +
         "<h3>操作</h3><ul><li>沿推子点击或横向拖动</li><li>滚轮或方向键精细调节</li><li>双击推子恢复默认值</li></ul>",
     },
