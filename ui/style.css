@@ -2,6 +2,9 @@
    ShadowBuster — KFL 合规 · 无圆角 · 暗黑哥特
    颜色角色: accent #4f378b / supporting #3d6fb4 / base #141218
    ═══════════════════════════════════════════════════════════════ */
+#btn-gpu-download[hidden], #btn-gpu-cancel[hidden],
+#btn-gpu-restart[hidden], #gpu-progress[hidden] { display: none !important; }
+
 :root {
   --c-bg:        #141218;
   --c-panel:     #211f26;

@@ -14,7 +14,7 @@ from apollo_scripts.stage_metadata import read_report
 from apollo_scripts.vocal_config import REFERENCE_MODE
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.3"
 GPU_ENV_VERSION = "1.5.0"
 
 if getattr(sys, "frozen", False):

@@ -106,6 +106,13 @@ def runner_dir():
 
 
 def env_dir():
+    try:
+        data = json.loads(marker_path().read_text(encoding="utf-8"))
+        name = data.get("directory", "env")
+        if isinstance(name, str) and re.fullmatch(r"\.staging-[0-9a-f]{32}", name):
+            return runner_dir() / name
+    except (OSError, ValueError, AttributeError):
+        pass
     return runner_dir() / "env"
 
 
@@ -197,7 +204,10 @@ def load_manifest(version, repo=REPO, timeout=10):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
 
-    rel = pick_release(_get(f"https://api.github.com/repos/{repo}/releases/latest"), version)
+    try:
+        rel = pick_release(_get(f"https://api.github.com/repos/{repo}/releases/latest"), version)
+    except (OSError, ValueError):
+        rel = None
     if rel is None:
         # 注意：releases/tags/{tag}/assets 不是合法路由（404）；
         # 先按 tag 取 release 对象，再取其 id 型 assets_url。
@@ -502,6 +512,54 @@ def _is_transient_swap_error(exc):
     return winerror in {5, 32, 33} or getattr(exc, "errno", None) in {13, 16, 26}
 
 
+def recover_extracted_runtime(manifest, *, cancel=lambda: False):
+    """Recover an interrupted install only after matching every packaged file."""
+    import zipfile
+    archive = dl_dir(manifest["version"]) / f"gpu-env-{manifest['version']}.zip"
+    candidates = sorted(runner_dir().glob(".staging-*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates or not valid_cached_file(archive, manifest["totalSize"], manifest["sha256"], cancel=cancel):
+        return None
+    with zipfile.ZipFile(archive) as package:
+        for candidate in candidates:
+            if not re.fullmatch(r"\.staging-[0-9a-f]{32}", candidate.name):
+                continue
+            matched = True
+            for entry in package.infolist():
+                if cancel():
+                    raise DownloadCancelled()
+                if entry.is_dir():
+                    continue
+                if "/__pycache__/" in entry.filename and entry.filename.endswith(".pyc"):
+                    source_dir, cache_name = entry.filename.rsplit("/__pycache__/", 1)
+                    source = source_dir + "/" + cache_name.split(".", 1)[0] + ".py"
+                    if source in package.namelist():
+                        continue
+                target = candidate / entry.filename
+                if not target.resolve().is_relative_to(candidate.resolve()):
+                    raise ValueError("Unsafe GPU archive path")
+                if not target.is_file() or target.stat().st_size != entry.file_size:
+                    matched = False
+                    break
+                with package.open(entry) as original, target.open("rb") as extracted:
+                    while True:
+                        block = original.read(1024 * 1024)
+                        if block != extracted.read(len(block)):
+                            matched = False
+                            break
+                        if not block:
+                            break
+                if not matched:
+                    break
+            if not matched:
+                continue
+            validate_runtime(candidate / "python.exe", torch_version="2.7.1+cu128",
+                             torchaudio_version="2.7.1+cu128")
+            assert_runtime_files(candidate / "python.exe")
+            swap_env(candidate, manifest["version"], manifest["sha256"], runtime_validated=True)
+            return installed_info(expected_version=manifest["version"], expected_sha256=manifest["sha256"])
+    return None
+
+
 def _retry_swap_fs(operation, label, *, missing_ok=False):
     """执行一次切换文件操作；只对可恢复的 Windows 锁错误退避重试。"""
     for attempt in range(SWAP_RETRIES):
@@ -564,7 +622,7 @@ def swap_env(staging_dir, version, sha256, *, runtime_validated=False):
             "sha256": str(sha256).lower(),
             "runtimeValidated": bool(runtime_validated),
         }), f"写入 {marker}")
-    except Exception:
+    except Exception as exc:
         if env_replaced and env.exists():
             try:
                 _remove_swap_tree(env)
@@ -579,6 +637,14 @@ def swap_env(staging_dir, version, sha256, *, runtime_validated=False):
             _retry_swap_fs(lambda: os.rename(old, env), f"恢复 {old} -> {env}")
         if marker_moved and old_marker.exists() and not marker.exists():
             _retry_swap_fs(lambda: os.rename(old_marker, marker), f"恢复 {old_marker} -> {marker}")
+        if (not had_env and not had_marker and not env_replaced
+                and runtime_validated and isinstance(exc, OSError)
+                and _is_transient_swap_error(exc)
+                and staging.parent.resolve() == runner_dir().resolve()
+                and re.fullmatch(r"\.staging-[0-9a-f]{32}", staging.name)):
+            _write_marker({"version": str(version), "sha256": str(sha256).lower(),
+                           "runtimeValidated": True, "directory": staging.name})
+            return staging
         raise
 
     # 新 marker 已提交后，旧备份只是垃圾清理；被扫描器暂时占用不应伪报安装失败。

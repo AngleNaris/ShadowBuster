@@ -292,6 +292,11 @@ class Bridge(QObject):
                                 "cur": int(cur), "total": int(total)})
 
         try:
+            installed = ge.installed_info(expected_version=backend.GPU_ENV_VERSION)
+            if installed is not None:
+                self._gpu_emit({"type": "done", "version": installed["version"],
+                                "reused": True})
+                return
             self._gpu_emit({"type": "progress", "phase": "info", "cur": 0, "total": 1})
             m = ge.load_manifest(backend.GPU_ENV_VERSION)
             expected_torch = "2.7.1+cu128"
@@ -314,6 +319,8 @@ class Bridge(QObject):
                     torch_version=expected_torch,
                     torchaudio_version=expected_torchaudio,
                 )
+            if installed is None:
+                installed = ge.recover_extracted_runtime(m, cancel=lambda: cancel.is_set())
             if installed is not None:
                 self._gpu_emit({"type": "done", "version": installed.get("version", m["version"]),
                                 "reused": True})
@@ -423,10 +430,11 @@ class Bridge(QObject):
         threading.Thread(target=self._probe_worker, daemon=True).start()
 
     def _probe_worker(self):
-        try:
-            dev = backend.auto_device()
-        except Exception:
-            dev = "cpu"
+        with self._gpu_lock:
+            try:
+                dev = backend.auto_device()
+            except Exception:
+                dev = "cpu"
         self._gpu_emit({"type": "device", "device": dev})
 
     @Slot()

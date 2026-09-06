@@ -1317,8 +1317,13 @@
     settingsTrigger = trigger || null;
     fillVersion();
     settingsModal.classList.add("open");
-    if (api && api.checkGpuEnv) {
-      gpuDlBtn.disabled = false;
+    if (api && api.checkGpuEnv && !GpuState.checking && !GpuState.downloading) {
+      GpuState.checking = true;
+      gpuDlBtn.disabled = true;
+      gpuDlBtn.hidden = true;
+      gpuCancelBtn.hidden = true;
+      gpuRestartBtn.hidden = true;
+      gpuStatusEl.textContent = "正在检查 GPU 环境…";
       api.checkGpuEnv();
       api.probeDevice();
     }
@@ -1368,7 +1373,7 @@
   const gpuStatusEl = $("gpu-status");
   const gpuProg = $("gpu-progress"), gpuProgFill = $("gpu-progress-fill");
   const gpuDlBtn = $("btn-gpu-download"), gpuCancelBtn = $("btn-gpu-cancel"), gpuRestartBtn = $("btn-gpu-restart");
-  const GpuState = { installed: null, dev: null, downloading: false };
+  const GpuState = { installed: null, dev: null, downloading: false, checking: false };
   const fmtSize = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1) + " GB" : Math.ceil(b / 1048576) + " MB");
   function setGpuBar(pct) {
     gpuProg.hidden = false;
@@ -1390,6 +1395,11 @@
     let r = null;
     try { r = JSON.parse(raw); } catch (e) {}
     if (!r) return;
+    if (["state", "done", "cancelled", "error"].includes(r.type)) {
+      GpuState.checking = false;
+      gpuDlBtn.disabled = false;
+      gpuRestartBtn.hidden = true;
+    }
     if (r.type === "state") {
       if (r.dev) {
         gpuStatusEl.textContent = "开发模式使用本地环境，无需下载 GPU 包";
@@ -1414,11 +1424,12 @@
       GpuState.dev = r.device;
       if (GpuState.installed) gpuRow();
     } else if (r.type === "busy") {
-      GpuState.downloading = false;
+      if (GpuState.downloading) return;
       gpuProg.hidden = true;
       gpuCancelBtn.hidden = true;
-      gpuDlBtn.hidden = false;
-      gpuDlBtn.disabled = false;
+      gpuRestartBtn.hidden = true;
+      gpuDlBtn.hidden = GpuState.checking;
+      gpuDlBtn.disabled = GpuState.checking;
       gpuStatusEl.textContent = "GPU 环境正在检查或安装，请稍后重试";
     } else if (r.type === "progress") {
       GpuState.downloading = true;
@@ -1449,7 +1460,7 @@
     }
   }
   gpuDlBtn.addEventListener("click", () => {
-    if (!api || !api.startGpuInstall) return;
+    if (!api || !api.startGpuInstall || GpuState.checking || GpuState.downloading) return;
     gpuDlBtn.disabled = true;
     gpuStatusEl.textContent = "正在准备下载…";
     const started = api.startGpuInstall();
