@@ -10,11 +10,11 @@ a = Analysis(
     pathex=[str(root)],
     binaries=[],
     datas=[(str(root / "ui"), "ui")],
-    hiddenimports=["numpy"],
+    hiddenimports=["numpy", "soundfile"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["torch", "torchaudio", "torchvision", "demucs", "scipy", "soundfile", "audioread", "librosa"],
+    excludes=["torch", "torchaudio", "torchvision", "demucs", "scipy", "audioread", "librosa"],
     noarchive=False,
     optimize=0,
 )
