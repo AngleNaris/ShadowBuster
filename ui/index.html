@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=45">
+<link rel="stylesheet" href="style.css?v=46">
 </head>
 <body>
 
@@ -270,7 +270,10 @@
       </div>
       <div class="err-body" id="err-body"></div>
       <div class="err-foot">
-        <button class="btn btn-primary err-ok" id="err-ok">知道了</button>
+        <div class="err-actions">
+          <button class="btn" id="err-copy" aria-live="polite">复制错误信息</button>
+          <button class="btn btn-primary err-ok" id="err-ok">知道了</button>
+        </div>
       </div>
     </div>
   </div>
@@ -365,6 +368,6 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="app.js?v=43"></script>
+<script src="app.js?v=44"></script>
 </body>
 </html>

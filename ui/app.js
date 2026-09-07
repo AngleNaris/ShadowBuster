@@ -1099,7 +1099,13 @@
   })();
 
   /* ─── 错误弹窗：任何错误以风格一致的窗口呈现；成功不显示任何日志 ─── */
+  let errorCopyText = "";
+  let errorCopyGeneration = 0;
   function showErrorModal(summary, detail, path) {
+    errorCopyGeneration += 1;
+    errorCopyText = [summary, path ? `产物目录：${path}` : "", detail].filter(Boolean).join("\n\n");
+    $("err-copy").textContent = "复制错误信息";
+    $("err-copy").disabled = false;
     const modal = $("err-modal");
     const body = $("err-body");
     modal.hidden = false;
@@ -1115,6 +1121,24 @@
     modal.classList.remove("open");
     setTimeout(() => { modal.hidden = true; }, 160);
   }
+  $("err-copy").addEventListener("click", async () => {
+    const button = $("err-copy");
+    const generation = errorCopyGeneration;
+    button.disabled = true;
+    try {
+      if (api && api.copyText) {
+        const copied = await new Promise((resolve) => api.copyText(errorCopyText, resolve));
+        if (!copied) throw new Error("Clipboard unavailable");
+      } else {
+        await navigator.clipboard.writeText(errorCopyText);
+      }
+      if (generation === errorCopyGeneration) button.textContent = "已复制";
+    } catch (_) {
+      if (generation === errorCopyGeneration) button.textContent = "复制失败，重试";
+    } finally {
+      if (generation === errorCopyGeneration) button.disabled = false;
+    }
+  });
   $("err-ok").addEventListener("click", hideErrorModal);
   $("err-close").addEventListener("click", hideErrorModal);
   $("err-backdrop").addEventListener("click", hideErrorModal);

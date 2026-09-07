@@ -150,6 +150,7 @@ Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyCont
 
 Write-Host "[2/5] 拷贝 Soren 母带链 ..."
 Copy-Item "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" -ErrorAction Stop
+Copy-Item "$root\packaging\soren_original.py" "$stage\Soren_src\soren_original.py" -ErrorAction Stop
 Copy-Item "$srcSoren\test_model.py" "$stage\Soren_src\" -ErrorAction Stop
 Copy-Item "$srcSoren\model", "$srcSoren\profiles", "$srcSoren\secured_genres" "$stage\Soren_src\" -Recurse -ErrorAction SilentlyContinue
 

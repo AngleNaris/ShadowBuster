@@ -516,6 +516,14 @@ class Bridge(QObject):
     def cancel(self):
         self._cancel_flag.set()
 
+    @Slot(str, result=bool)
+    def copyText(self, text):
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            return False
+        clipboard.setText(text)
+        return clipboard.text() == text
+
     @Slot(str)
     def openFolder(self, path):
         import subprocess
