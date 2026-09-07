@@ -291,7 +291,7 @@ Assert-SameFile "$appApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BA
 Assert-SameFile "$appApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
 Assert-SameFile "$appApollo\soundstage_reshape.py" "$stage\Apollo\soundstage_reshape.py" "声场重塑入口"
 Assert-SameFile "$appApollo\vocal_adjust.py" "$stage\Apollo\vocal_adjust.py" "人声入口"
-Assert-SameFile "$appApolloudio_validation.py" "$stage\Apolloudio_validation.py" "音频校验"
+Assert-SameFile "$appApollo\audio_validation.py" "$stage\Apollo\audio_validation.py" "音频校验"
 Assert-SameFile "$appApollo\stage_metadata.py" "$stage\Apollo\stage_metadata.py" "阶段 metadata"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"

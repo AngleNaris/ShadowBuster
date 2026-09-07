@@ -271,6 +271,9 @@ def match_rms_ms(target_mid, target_side, reference_mid, reference_side, sample_
 
     return matched_mid, matched_side
 
+def frequency_dependent_mix(freq, low_freq=10, high_freq=100000):
+    return 0.99 * (1 - np.exp(-freq/low_freq)) * np.exp(-freq/high_freq)
+
 def match_frequencies_ms(target_mid, target_side, reference_mid, reference_side, config):
     def calculate_average_fft(*args, sample_rate, fft_size, config):
         if len(args) == 1:
@@ -382,7 +385,15 @@ def match_frequencies_ms(target_mid, target_side, reference_mid, reference_side,
         matching_fft = np.clip(matching_fft, 10**(-max_boost_db/20), 10**(max_boost_db/20))
         
         matching_fft_filtered = smooth_spectrum(matching_fft, config)
-        
+
+        # These are frequency-domain curves and must be applied before building
+        # the FIR. Applying a len(audio) curve to time-domain samples made the
+        # mastering strength depend on where a sound occurs in the song.
+        analysis_sample_rate = config.internal_sample_rate * config.oversampling_factor
+        freqs = np.linspace(0, analysis_sample_rate / 2, len(matching_fft_filtered))
+        mix = frequency_dependent_mix(freqs)
+        matching_fft_filtered = 1 + (matching_fft_filtered - 1) * mix
+
         # Apply softer bass preservation
         bass_freq = config.bass_preservation_freq
         bass_blend = config.bass_preservation_blend
@@ -404,14 +415,6 @@ def match_frequencies_ms(target_mid, target_side, reference_mid, reference_side,
 
     result_mid = signal.fftconvolve(target_mid, mid_fir, mode="same")
     result_side = signal.fftconvolve(target_side, side_fir, mode="same")
-
-    def frequency_dependent_mix(freq, low_freq=10, high_freq=100000):
-        return 0.99 * (1 - np.exp(-freq/low_freq)) * np.exp(-freq/high_freq)
-
-    freqs = np.linspace(0, config.internal_sample_rate * config.oversampling_factor / 2, len(result_mid))
-    mix = frequency_dependent_mix(freqs)
-    result_mid = (1 - mix) * target_mid + mix * result_mid
-    result_side = (1 - mix) * target_side + mix * result_side
 
     return result_mid, result_side
 
@@ -821,14 +824,15 @@ def process_audio(target, reference, step, config, genre_profile=None):
             target_mid, target_side = match_frequencies_ms(target_mid, target_side, reference_mid, reference_side, config)
         print(f"After frequency matching: target_mid_max={np.max(np.abs(target_mid))}, target_side_max={np.max(np.abs(target_side))}")
         
-        # Apply high-pass filter to side channel
-        target_side = low_shelf_tighten(target_side, config.internal_sample_rate, cutoff_freq=100, gain=0.5, order=4)
-        print(f"After side channel high-pass: target_side_max={np.max(np.abs(target_side))}")
+        # Apply low-shelf tighten to side channel (audio is oversampled here,
+        # so the filter must be designed for the oversampled rate)
+        target_side = low_shelf_tighten(target_side, oversampled_rate, cutoff_freq=100, gain=0.5, order=4)
+        print(f"After side channel low-shelf tighten: target_side_max={np.max(np.abs(target_side))}")
 
         # Apply EQ style after frequency matching
         if config.eq_style != "Neutral":
             print(f"Applying {config.eq_style} EQ style")
-            target_mid, target_side = apply_eq_style(target_mid, target_side, config.internal_sample_rate, config.eq_style)
+            target_mid, target_side = apply_eq_style(target_mid, target_side, oversampled_rate, config.eq_style)
         
         # Apply lowpass filter
         result = ms_to_lr(target_mid, target_side)
@@ -1042,11 +1046,25 @@ def high_shelf_boost(audio, sample_rate, cutoff_freq, gain, order=4):
     return audio + (filtered_signal * (gain - 1))
 
 def low_shelf_tighten(audio, sample_rate, cutoff_freq, gain, order=4):
-    nyquist = 0.5 * sample_rate
-    normal_cutoff = cutoff_freq / nyquist
-    sos = signal.butter(order, normal_cutoff, btype='lowpass', output='sos')
-    filtered_signal = signal.sosfilt(sos, audio)
-    return audio * gain + filtered_signal * (1 - gain)
+    # RBJ low-shelf (same topology as soren_core): attenuates content below
+    # cutoff_freq by `gain` while leaving highs at unity. The previous
+    # audio*gain + lowpass*(1-gain) mix actually cut the highs instead.
+    gain_db = 20 * np.log10(max(gain, 1e-8))
+    A = 10 ** (gain_db / 40.0)
+    w0 = 2 * np.pi * cutoff_freq / sample_rate
+    alpha = np.sin(w0) / np.sqrt(2.0)
+    cos_w0 = np.cos(w0)
+    beta = 2 * np.sqrt(A) * alpha
+
+    b0 = A * ((A + 1) - (A - 1) * cos_w0 + beta)
+    b1 = 2 * A * ((A - 1) - (A + 1) * cos_w0)
+    b2 = A * ((A + 1) - (A - 1) * cos_w0 - beta)
+    a0 = (A + 1) + (A - 1) * cos_w0 + beta
+    a1 = -2 * ((A - 1) + (A + 1) * cos_w0)
+    a2 = (A + 1) + (A - 1) * cos_w0 - beta
+
+    sos = np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]])
+    return signal.sosfilt(sos, audio)
 
 def apply_eq_style(mid, side, sample_rate, eq_style):
     print(f"Applying {eq_style} EQ style")

@@ -7,6 +7,7 @@
 #   - other: 纯宽带 side 增益（broadband 默认，音色最保真）→ 可选 ≥10kHz 噪声地板降噪
 #   - drums: side 通道轻增益
 #   - bass / vocals: 不处理
+#   - 拓宽增量（delta）side 在 <120Hz 温和低架衰减 -6dB：低频不拉宽，mid/原始 side 不动
 # 用法（stems 由主管线 stage_demucs 预先产出）:
 #   python soundstage_reshape.py --in-mix premix.wav --out-wav out.wav \
 #       --stems-dir <htdemucs 输出下含 drums/other 的目录> \
@@ -160,6 +161,27 @@ def _reshape_bass(x, sr, sub_db, sub_fc):
     return _low_shelf(x, sr, sub_fc, sub_db)
 
 
+# 拓宽增量（delta）side 的低频保护：只在最底部温和收束新增宽度，保留鼓/Bass低中频包裹感
+DELTA_SIDE_LF_PROTECT_FC = 70.0
+DELTA_SIDE_LF_PROTECT_DB = -2.0
+
+
+def _protect_widen_delta(delta, sr, fc=None, shelf_db=None):
+    """对新增（delta）side 做温和低频保护：低架衰减 fc 以下的拓宽增量。
+
+    只过滤处理差值的 side 分量（mid 增量原样保留，纯 reshape 路径恒为 0），
+    原始 side 不参与；delta 全零（wet=0 或宽度=0）时精确恒等。
+    """
+    fc = DELTA_SIDE_LF_PROTECT_FC if fc is None else fc
+    shelf_db = DELTA_SIDE_LF_PROTECT_DB if shelf_db is None else shelf_db
+    if not np.any(delta):
+        return delta
+    delta_mid = (delta[:, 0] + delta[:, 1]) / 2.0
+    delta_side = (delta[:, 0] - delta[:, 1]) / 2.0
+    delta_side = _low_shelf(delta_side, sr, fc, shelf_db)
+    return np.column_stack((delta_mid + delta_side, delta_mid - delta_side))
+
+
 def _dynamic_side_shelf(x, sr, fc, gain_db, thr_pct=70.0, rel_db=6.0):
     """de-esser 思路的 side 高频 shelf：boost 受 side 高频包络动态控制。
 
@@ -277,7 +299,11 @@ def main():
             reshaped = _dynamic_side_shelf(stem, sr, fc, db)
         else:
             reshaped = _reshape_stem(stem, sr, db, fc, gain)
-        processed = stem + (reshaped - stem) * wet
+        delta = (reshaped - stem) * wet
+        # 低频保护只作用于新增 side 拓宽增量（mid 增量与原始 side 原样保留），
+        # 降噪是独立旋钮、其差值不走该保护。
+        delta = _protect_widen_delta(delta, sr)
+        processed = stem + delta
         if name == "other" and args.other_denoise_amount > 0:
             # 降噪是独立旋钮：作用于当前 wet 混合结果，wet=0 时仍可单独使用。
             processed = _spectral_denoise(processed, sr, args.other_denoise_fc,
