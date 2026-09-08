@@ -172,8 +172,7 @@ if ($LASTEXITCODE -ne 0) { throw "torch $expectTorch 安装失败(exit=$LASTEXIT
     numba==0.67.0 llvmlite==0.49.0 statsmodels==0.14.6 pyloudnorm==0.2.0 `
     joblib==1.5.3 cryptography==50.0.0 setuptools==78.1.0 `
     demucs==4.1.0 einops==0.8.2 julius==0.2.8 lameenc==1.8.4 tqdm==4.70.0 `
-    pytorch-lightning==2.6.5 lightning-utilities==0.15.3 `
-    rich==15.0.0 huggingface_hub==0.36.2 torch-complex==0.4.4 soxr==1.1.0 `
+    huggingface_hub==0.36.2 soxr==1.1.0 `
     --index-url $torchIndex --extra-index-url "https://pypi.org/simple"
 if ($LASTEXITCODE -ne 0) { throw "推理依赖安装失败(exit=$LASTEXITCODE)" }
 
@@ -195,18 +194,19 @@ if ($rc -ne 0) { throw "omegaconf 安装失败(exit=$rc)" }
 
 # [4b] 体积裁剪：只删运行期确定不需要的内容。
 #   - __pycache__：字节码缓存，运行时自动再生（约 25MB）
-#   - sklearn：推理链路（lew/bass/drum/demucs/Soren）无任何 import（约 45MB；
-#     注意 numba/statsmodels/pandas 是 Soren 母带的硬依赖，必须保留）
 #   - torch/include：C++ 头文件，仅构建扩展用（约 53MB；
 #     不删 torch/_inductor——未来若启用 torch.compile 会需要；
-#     不删 torch/testing——autograd/gradcheck 在 import 时即引用，删了 torch 起不来；
-#     不删 sklearn——Soren 的 model/ 是含 sklearn 对象的 joblib pickle，
-#     反序列化需要 sklearn 类，删了模型加载直接失败）
+#     不删 torch/testing——autograd/gradcheck 在 import 时即引用，删了 torch 起不来）
+#   - 0 字节 wheel 残留：pip 偶发留下的空 .whl（历史构建出现在 scipy，会被打进安装包）
+#   - sklearn 不删：Soren 的 model/ 是含 sklearn 对象的 joblib pickle，
+#     反序列化需要 sklearn 类；numba/statsmodels/pandas 是 Soren 硬依赖，必须保留
 Write-Host "  [4b] 体积裁剪 ..."
 Get-ChildItem $site -Directory -Filter "__pycache__" -Recurse -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Get-Item -Path "$site\torch\include" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem $site -Filter "*.whl" -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 # [4a] 清理 *.dist-info\licenses 深层许可目录：
 # torch 的第三方许可树路径极深，安装到 Program Files 会超 Windows MAX_PATH(260)，
@@ -266,7 +266,7 @@ if ($offlineModelRc -ne 0) { throw "Demucs 离线模型加载失败(exit=$offlin
 Write-Host "  [5a] 验证运行时依赖与关键文件 ..."
 $requiredImports = @(
     "torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy", "librosa",
-    "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography", "look2hear"
+    "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography", "look2hear.models"
 )
 $importNames = $requiredImports -join ","
 $importProbe = "import importlib,torch,torchaudio; [importlib.import_module(n) for n in '$importNames'.split(',')]; assert torch.__version__ == '$expectTorch', torch.__version__; assert torchaudio.__version__ == '$expectTorch', torchaudio.__version__; print('runtime imports OK', torch.__version__)"

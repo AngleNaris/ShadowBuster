@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AngleNaris/ShadowBuster/releases/tag/v1.5.0"><strong>查看 v1.5.0</strong></a>
+  <a href="https://github.com/AngleNaris/ShadowBuster/releases/latest"><strong>查看最新版本</strong></a>
   &nbsp;·&nbsp;
   <a href="#处理流程">处理流程</a>
   &nbsp;·&nbsp;
@@ -64,15 +64,9 @@ Lew 高频重建
 
 ## 发布与 GPU 环境
 
-[v1.5.0](https://github.com/AngleNaris/ShadowBuster/releases/tag/v1.5.0) 起采用 CPU 瘦身运行时，CUDA 环境改为在“设置 → GPU 环境”中按需下载。GPU 包支持断点续传、取消和 SHA-256 校验，安装到当前用户目录，不需要管理员权限。
+CPU 瘦身运行时直接随安装包分发；CUDA 环境改为在“设置 → GPU 环境”中按需下载。GPU 包支持断点续传、取消和 SHA-256 校验，安装到当前用户目录，不需要管理员权限。
 
-发布说明中的 Windows 安装包为 `ShadowBuster-Setup-1.5.0.exe`，SHA-256：
-
-```text
-76ea6a1b6fcf5a825a854230a9129c5af6303ef7bcb49dcb2082b3fb980af15c
-```
-
-安装包尚未进行代码签名。请从官方 [GitHub Releases](https://github.com/AngleNaris/ShadowBuster/releases) 获取发布信息，并在运行前核对校验值。
+各版本安装包的大小与 SHA-256 记录在 [`packaging/release-audit/`](packaging/release-audit/) 对应版本的发布说明中。安装包尚未进行代码签名，请从官方 [GitHub Releases](https://github.com/AngleNaris/ShadowBuster/releases) 获取发布信息，并在运行前核对校验值。
 
 ## 运行开发版
 
@@ -92,6 +86,7 @@ python main.py
 | `SB_PYTHON` | 带 PyTorch 与音频推理依赖的 Python |
 | `SB_APOLLO` | Apollo 源码、模型和 Demucs 工具链 |
 | `SB_SOREN` | Soren 母带组件 |
+| `SB_DSP` | 覆盖随仓库分发的 `apollo_scripts` DSP 脚本目录 |
 | `SB_FFMPEG` | `ffmpeg.exe` 路径 |
 | `SB_ASSETS` | 已装配完成的完整 runtime 根目录 |
 
@@ -103,7 +98,7 @@ powershell -File packaging\runtime_sync.ps1
 iscc packaging\installer.iss
 ```
 
-构建顺序是 PyInstaller 桌面外壳、AI runtime 装配和 Inno Setup 安装包。外部模型、闭源 Soren 组件与上游 Apollo 源码不属于本仓库；装配要求见远端仓库的 [`packaging/DEPLOY.md`](https://github.com/AngleNaris/ShadowBuster/blob/main/packaging/DEPLOY.md)。
+构建顺序是 PyInstaller 桌面外壳、AI runtime 装配和 Inno Setup 安装包。完整的构建约束、三层校验与版本号同步清单见 [`docs/BUILD.md`](docs/BUILD.md)；运行时依赖清单见 [`docs/RUNTIME_DEPENDENCIES.md`](docs/RUNTIME_DEPENDENCIES.md)。外部模型、闭源 Soren 组件与上游 Apollo 源码不属于本仓库。
 
 ## 验证
 

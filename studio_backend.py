@@ -1,4 +1,4 @@
-"""SorenStudio 后端管线：Lew 高频 → Demucs 4-stem 分离 → bass 增强 → drums 增强 → Soren 母带
+"""ShadowBuster 后端管线：Lew 高频 → Demucs 4-stem 分离 → bass 增强 → drums 增强 → Soren 母带
 所有阶段调用已验证的命令行工具（subprocess），支持进度回调与取消。
 """
 import os
@@ -564,6 +564,25 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
         progress(1.0, "Soren 母带完成")
 
 
+# 单次运行的临时工作目录名（v1.6.5 及之前为 .sorenstudio_work，遗留目录会被收编）。
+WORK_DIR_NAME = ".shadowbuster_work"
+LEGACY_WORK_DIR_NAME = ".sorenstudio_work"
+
+
+def _resolve_work_dir(output_dir: Path, work_dir) -> Path:
+    """显式 work_dir 优先；否则用新目录名并原子收编旧名遗留目录。"""
+    if work_dir:
+        return Path(work_dir)
+    work = output_dir / WORK_DIR_NAME
+    legacy = output_dir / LEGACY_WORK_DIR_NAME
+    if legacy.exists() and not work.exists():
+        try:
+            legacy.rename(work)
+        except OSError:
+            return legacy  # 被占用（另一实例在跑/文件锁）时沿用旧目录
+    return work
+
+
 def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
                  bass_gain_db=0.0, vocal_gain_db=0.0, genre="Pop", loudness="normal",
                  eq_profile="Neutral", reference=None, quality=1, guidance=1.5,
@@ -586,7 +605,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    work = Path(work_dir) if work_dir else output_dir / ".sorenstudio_work"
+    work = _resolve_work_dir(output_dir, work_dir)
     work.mkdir(parents=True, exist_ok=True)
 
     bypass = set(bypass)

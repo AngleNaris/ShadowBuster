@@ -5,7 +5,7 @@ from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtCore import QUrl, QTimer, QSize
 import json
 
-HTML = r"D:\_3.AI\audio_upscale\SorenStudio\ui\index.html"
+HTML = r"D:\_3.AI\audio_upscale\SorenStudio\ui\index.html"  # dev-only UI measuring tool
 
 app = QApplication(sys.argv)
 view = QWebEngineView()

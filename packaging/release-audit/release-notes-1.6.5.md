@@ -16,7 +16,7 @@ GPU 环境版本仍为 **1.5.0**，已安装环境继续复用，不重复下载
 - 全量测试：277 passed、29 subtests passed。
 - 低频保护与四项 DSP 修复回归测试通过。
 - 运行时从源码重新同步，关键 manifest 已刷新。
-- 1.6.5 安装包独立安装验证通过，安装后的 runtime imports OK（torch 2.5.2）。
+- 1.6.5 安装包独立安装验证通过，安装后的 runtime imports OK（torch 2.7.1+cpu / numpy 2.5.2）。
 - 安装包未签名，请核对 SHA-256。私人音频和实验结果不包含在发布内容中。
 
 大小：797,307,477 bytes

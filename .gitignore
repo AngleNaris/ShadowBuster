@@ -59,6 +59,7 @@ ENV/
 /ui_final*.png
 /ui_v3*.png
 /ui/final_check*.png
+/ui_*.png
 
 # Local audio and model artifacts
 *.wav
@@ -72,6 +73,8 @@ ENV/
 *.opus
 *.wma
 *.wave
+# Real experiment output directories (keep lightweight JSON/metadata separately)
+/experiments/results/*/
 *.ckpt
 *.bin
 *.pth

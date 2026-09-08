@@ -1,0 +1,574 @@
+{
+  "schema_version": 1,
+  "source_dir": "D:\\_4.Projects\\_MY\\中二病晚期患者",
+  "files": [
+    {
+      "integrated_lufs": -13.91189569007726,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.622528076171875,
+      "sample_peak_dbfs": -4.116821140016309,
+      "true_peak_4x": 0.6261228844743929,
+      "true_peak_4x_dbtp": -4.066808453627731,
+      "rms": 0.15317280619317594,
+      "crest_factor_db": 12.17954548206099,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.1646224732503558,
+          "fraction": 0.9628037046549222
+        },
+        "4-8k": {
+          "relative_energy_db": -15.625606823938835,
+          "fraction": 0.02738037031544562
+        },
+        "8-12k": {
+          "relative_energy_db": -21.172284050491037,
+          "fraction": 0.007634341711056364
+        },
+        "12-16k": {
+          "relative_energy_db": -27.39963806300816,
+          "fraction": 0.0018198525171106742
+        },
+        "16-20k": {
+          "relative_energy_db": -34.43848688663992,
+          "fraction": 0.0003598746962609978
+        },
+        "20-22k": {
+          "relative_energy_db": -60.191328355458005,
+          "fraction": 9.569013437588225e-07
+        }
+      },
+      "stereo_correlation": 0.9048993424463739,
+      "side_mid": {
+        "ratio": 0.22358721487866465,
+        "db": -13.011060676391589
+      },
+      "spectral_centroid_hz": 699.7404018165413,
+      "sample_rate": 48000,
+      "channels": 2,
+      "frames": 11147520,
+      "duration_s": 232.24,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\1.假想末日.wav"
+    },
+    {
+      "integrated_lufs": -10.247424750770405,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.9467049837112427,
+      "sample_peak_dbfs": -0.4757067326583711,
+      "true_peak_4x": 0.948582290416972,
+      "true_peak_4x_dbtp": -0.45849975362350587,
+      "rms": 0.24486595971429015,
+      "crest_factor_db": 11.745724958540338,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.11432770118688554,
+          "fraction": 0.9740185541877937
+        },
+        "4-8k": {
+          "relative_energy_db": -17.09284847873214,
+          "fraction": 0.01953058051249024
+        },
+        "8-12k": {
+          "relative_energy_db": -22.69484144762999,
+          "fraction": 0.005376700620399716
+        },
+        "12-16k": {
+          "relative_energy_db": -30.06594848859434,
+          "fraction": 0.0009849295131008824
+        },
+        "16-20k": {
+          "relative_energy_db": -40.50791550090872,
+          "fraction": 8.896280134082001e-05
+        },
+        "20-22k": {
+          "relative_energy_db": -65.66280138585905,
+          "fraction": 2.7146876138958956e-07
+        }
+      },
+      "stereo_correlation": 0.9186608051838029,
+      "side_mid": {
+        "ratio": 0.20596326254498837,
+        "db": -13.724204747649296
+      },
+      "spectral_centroid_hz": 499.4596059779177,
+      "sample_rate": 44100,
+      "channels": 2,
+      "frames": 10241784,
+      "duration_s": 232.24,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\1.假想末日_shadowbuster.wav"
+    },
+    {
+      "integrated_lufs": -16.17945305928593,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.5209746956825256,
+      "sample_peak_dbfs": -5.663667407035607,
+      "true_peak_4x": 0.5244455627355118,
+      "true_peak_4x_dbtp": -5.60599169490094,
+      "rms": 0.11055300825040364,
+      "crest_factor_db": 13.464921300300631,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.30137405093322084,
+          "fraction": 0.9329590780483432
+        },
+        "4-8k": {
+          "relative_energy_db": -13.061635344065149,
+          "fraction": 0.049412458840515275
+        },
+        "8-12k": {
+          "relative_energy_db": -18.971192999705746,
+          "fraction": 0.012673036918260081
+        },
+        "12-16k": {
+          "relative_energy_db": -24.416331839617857,
+          "fraction": 0.003617152474456591
+        },
+        "16-20k": {
+          "relative_energy_db": -28.752943122753187,
+          "fraction": 0.0013326180387555444
+        },
+        "20-22k": {
+          "relative_energy_db": -54.25611518647764,
+          "fraction": 3.753085699218222e-06
+        }
+      },
+      "stereo_correlation": 0.8145147833201367,
+      "side_mid": {
+        "ratio": 0.3197271654052579,
+        "db": -9.904409252395926
+      },
+      "spectral_centroid_hz": 1034.0594499889357,
+      "sample_rate": 48000,
+      "channels": 2,
+      "frames": 8851053,
+      "duration_s": 184.3969375,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\2.现实速通者.wav"
+    },
+    {
+      "integrated_lufs": -10.651229301792762,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.9461275339126587,
+      "sample_peak_dbfs": -0.4810063725693763,
+      "true_peak_4x": 0.9479024246167,
+      "true_peak_4x_dbtp": -0.4647273171952152,
+      "rms": 0.21795336307543464,
+      "crest_factor_db": 12.751722133851866,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.20667816796800254,
+          "fraction": 0.9535252176248351
+        },
+        "4-8k": {
+          "relative_energy_db": -14.353820996330853,
+          "fraction": 0.03669593014268503
+        },
+        "8-12k": {
+          "relative_energy_db": -20.960319268975578,
+          "fraction": 0.00801619130673381
+        },
+        "12-16k": {
+          "relative_energy_db": -28.201412886694296,
+          "fraction": 0.0015130689228785407
+        },
+        "16-20k": {
+          "relative_energy_db": -36.05165238673314,
+          "fraction": 0.00024821885121900384
+        },
+        "20-22k": {
+          "relative_energy_db": -58.626262506059675,
+          "fraction": 1.3720620408001125e-06
+        }
+      },
+      "stereo_correlation": 0.8814158199341529,
+      "side_mid": {
+        "ratio": 0.25094288507864676,
+        "db": -12.008502265020997
+      },
+      "spectral_centroid_hz": 779.6965807591578,
+      "sample_rate": 44100,
+      "channels": 2,
+      "frames": 8131905,
+      "duration_s": 184.3969387755102,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\2.现实速通者_shadowbuster.wav"
+    },
+    {
+      "integrated_lufs": -13.265524896404363,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.804595947265625,
+      "sample_peak_dbfs": -1.8884431858446995,
+      "true_peak_4x": 0.8046020863229868,
+      "true_peak_4x_dbtp": -1.8883769128644778,
+      "rms": 0.15823672650411855,
+      "crest_factor_db": 14.12541101512746,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.11818840128652097,
+          "fraction": 0.9731530763235662
+        },
+        "4-8k": {
+          "relative_energy_db": -17.296966459185374,
+          "fraction": 0.018633882562567997
+        },
+        "8-12k": {
+          "relative_energy_db": -21.600576491431195,
+          "fraction": 0.006917391419472837
+        },
+        "12-16k": {
+          "relative_energy_db": -29.45294597119618,
+          "fraction": 0.001134241159255157
+        },
+        "16-20k": {
+          "relative_energy_db": -37.94832003719749,
+          "fraction": 0.00016038656872251954
+        },
+        "20-22k": {
+          "relative_energy_db": -63.695481269258735,
+          "fraction": 4.27023595625816e-07
+        }
+      },
+      "stereo_correlation": 0.8812642337582032,
+      "side_mid": {
+        "ratio": 0.2512522850832064,
+        "db": -11.997799594850832
+      },
+      "spectral_centroid_hz": 604.1027668827631,
+      "sample_rate": 48000,
+      "channels": 2,
+      "frames": 8261760,
+      "duration_s": 172.12,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\3.蚀日之喉.wav"
+    },
+    {
+      "integrated_lufs": -10.225988721038915,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.945144772529602,
+      "sample_peak_dbfs": -0.4900332669547089,
+      "true_peak_4x": 0.9470524593781611,
+      "true_peak_4x_dbtp": -0.47251927553216944,
+      "rms": 0.22917358823995976,
+      "crest_factor_db": 12.306675439441168,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.09443763132748681,
+          "fraction": 0.9784896513748986
+        },
+        "4-8k": {
+          "relative_energy_db": -18.240765859677953,
+          "fraction": 0.014994203958356987
+        },
+        "8-12k": {
+          "relative_energy_db": -22.402194808881326,
+          "fraction": 0.0057514919875928635
+        },
+        "12-16k": {
+          "relative_energy_db": -31.40386911352316,
+          "fraction": 0.0007237908501554609
+        },
+        "16-20k": {
+          "relative_energy_db": -43.901401016784895,
+          "fraction": 4.07248879736576e-05
+        },
+        "20-22k": {
+          "relative_energy_db": -68.67573035979488,
+          "fraction": 1.3565223826343897e-07
+        }
+      },
+      "stereo_correlation": 0.8994827047869309,
+      "side_mid": {
+        "ratio": 0.23000580521145822,
+        "db": -12.76522405012763
+      },
+      "spectral_centroid_hz": 482.09837721958,
+      "sample_rate": 44100,
+      "channels": 2,
+      "frames": 7590492,
+      "duration_s": 172.12,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\3.蚀日之喉_shadowbuster.wav"
+    },
+    {
+      "integrated_lufs": -13.227495801301506,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.655517578125,
+      "sample_peak_dbfs": -3.6683131586439988,
+      "true_peak_4x": 0.6600094823639986,
+      "true_peak_4x_dbtp": -3.6089964979875604,
+      "rms": 0.15045733919360482,
+      "crest_factor_db": 12.783419298465564,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.33724321360098886,
+          "fraction": 0.9252853341963982
+        },
+        "4-8k": {
+          "relative_energy_db": -12.135032429805456,
+          "fraction": 0.06116412356665279
+        },
+        "8-12k": {
+          "relative_energy_db": -19.47568936123816,
+          "fraction": 0.0112831682412646
+        },
+        "12-16k": {
+          "relative_energy_db": -26.933709525358154,
+          "fraction": 0.0020259515142337235
+        },
+        "16-20k": {
+          "relative_energy_db": -36.19229075457553,
+          "fraction": 0.0002403094915430697
+        },
+        "20-22k": {
+          "relative_energy_db": -62.80187625030977,
+          "fraction": 5.245807805355166e-07
+        }
+      },
+      "stereo_correlation": 0.8619071898841727,
+      "side_mid": {
+        "ratio": 0.2723502254032484,
+        "db": -11.297445219173952
+      },
+      "spectral_centroid_hz": 1142.6856377137203,
+      "sample_rate": 48000,
+      "channels": 2,
+      "frames": 11038080,
+      "duration_s": 229.96,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\4.设定战争.wav"
+    },
+    {
+      "integrated_lufs": -10.226111928800313,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.9454929828643799,
+      "sample_peak_dbfs": -0.4868337999343524,
+      "true_peak_4x": 0.9462631229982731,
+      "true_peak_4x_dbtp": -0.479761691053446,
+      "rms": 0.23051223330636705,
+      "crest_factor_db": 12.259286632322702,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.20244485296649958,
+          "fraction": 0.9544551259598588
+        },
+        "4-8k": {
+          "relative_energy_db": -14.532225855251761,
+          "fraction": 0.035219031945168094
+        },
+        "8-12k": {
+          "relative_energy_db": -20.43748718121666,
+          "fraction": 0.009041724747056782
+        },
+        "12-16k": {
+          "relative_energy_db": -29.102593318509626,
+          "fraction": 0.0012295343552196168
+        },
+        "16-20k": {
+          "relative_energy_db": -42.63970725775622,
+          "fraction": 5.4453935703907845e-05
+        },
+        "20-22k": {
+          "relative_energy_db": -68.93455380162705,
+          "fraction": 1.2780405099457213e-07
+        }
+      },
+      "stereo_correlation": 0.8959992126105452,
+      "side_mid": {
+        "ratio": 0.23412234273696864,
+        "db": -12.61114277567384
+      },
+      "spectral_centroid_hz": 727.5740329192979,
+      "sample_rate": 44100,
+      "channels": 2,
+      "frames": 10141236,
+      "duration_s": 229.96,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\4.设定战争_shadowbuster.wav"
+    },
+    {
+      "integrated_lufs": -9.815111534689287,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.9506744742393494,
+      "sample_peak_dbfs": -0.43936333618639345,
+      "true_peak_4x": 0.9519055246179361,
+      "true_peak_4x_dbtp": -0.42812305275447327,
+      "rms": 0.23319468291088974,
+      "crest_factor_db": 12.206263787424515,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.3810364057893917,
+          "fraction": 0.9160018682041839
+        },
+        "4-8k": {
+          "relative_energy_db": -12.172489439029627,
+          "fraction": 0.060638863917471884
+        },
+        "8-12k": {
+          "relative_energy_db": -17.49120633964701,
+          "fraction": 0.017818837449077946
+        },
+        "12-16k": {
+          "relative_energy_db": -23.55016562624311,
+          "fraction": 0.004415536075676952
+        },
+        "16-20k": {
+          "relative_energy_db": -29.510273121178386,
+          "fraction": 0.001119367485938983
+        },
+        "20-22k": {
+          "relative_energy_db": -54.30914735809879,
+          "fraction": 3.7075350395137672e-06
+        }
+      },
+      "stereo_correlation": 0.8866169788512056,
+      "side_mid": {
+        "ratio": 0.2451672765318648,
+        "db": -12.210749946534031
+      },
+      "spectral_centroid_hz": 1094.8329484498936,
+      "sample_rate": 48000,
+      "channels": 2,
+      "frames": 9808629,
+      "duration_s": 204.3464375,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\5.愚蠢人类观察家.wav"
+    },
+    {
+      "integrated_lufs": -10.603675010225743,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.9455611705780029,
+      "sample_peak_dbfs": -0.4862074075548636,
+      "true_peak_4x": 0.9473462422146297,
+      "true_peak_4x_dbtp": -0.4698252646954483,
+      "rms": 0.23082643542065728,
+      "crest_factor_db": 12.248081693423279,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.20002605189976858,
+          "fraction": 0.9549868573517093
+        },
+        "4-8k": {
+          "relative_energy_db": -14.91931874102301,
+          "fraction": 0.032215741060506294
+        },
+        "8-12k": {
+          "relative_energy_db": -19.853158540280255,
+          "fraction": 0.010343896013768901
+        },
+        "12-16k": {
+          "relative_energy_db": -26.68682603009628,
+          "fraction": 0.0021444572699439645
+        },
+        "16-20k": {
+          "relative_energy_db": -35.14479966589978,
+          "fraction": 0.000305858133142697
+        },
+        "20-22k": {
+          "relative_energy_db": -54.96304120007464,
+          "fraction": 3.1893037241248176e-06
+        }
+      },
+      "stereo_correlation": 0.854001046093221,
+      "side_mid": {
+        "ratio": 0.2805807061291204,
+        "db": -11.038843922728063
+      },
+      "spectral_centroid_hz": 658.2114066646635,
+      "sample_rate": 44100,
+      "channels": 2,
+      "frames": 9011678,
+      "duration_s": 204.34643990929706,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\5.愚蠢人类观察家_shadowbuster.wav"
+    },
+    {
+      "integrated_lufs": -13.116937851820307,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.687042236328125,
+      "sample_peak_dbfs": -3.260331272188745,
+      "true_peak_4x": 0.689981370384124,
+      "true_peak_4x_dbtp": -3.2232527026056075,
+      "rms": 0.16303153297936732,
+      "crest_factor_db": 12.49423648335523,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.12699047614218517,
+          "fraction": 0.9711827331354556
+        },
+        "4-8k": {
+          "relative_energy_db": -16.808981416700952,
+          "fraction": 0.02084979831655631
+        },
+        "8-12k": {
+          "relative_energy_db": -21.801409392040068,
+          "fraction": 0.006604790715770971
+        },
+        "12-16k": {
+          "relative_energy_db": -29.177881888553156,
+          "fraction": 0.0012084030455094797
+        },
+        "16-20k": {
+          "relative_energy_db": -38.14900050366857,
+          "fraction": 0.00015314398705828505
+        },
+        "20-22k": {
+          "relative_energy_db": -63.36235308811705,
+          "fraction": 4.610676918371308e-07
+        }
+      },
+      "stereo_correlation": 0.8585327793634017,
+      "side_mid": {
+        "ratio": 0.2758981603685791,
+        "db": -11.185023905924695
+      },
+      "spectral_centroid_hz": 657.6361111329041,
+      "sample_rate": 48000,
+      "channels": 2,
+      "frames": 13424640,
+      "duration_s": 279.68,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\6.想象在彼方.wav"
+    },
+    {
+      "integrated_lufs": -10.471471562446576,
+      "loudness_backend": "pyloudnorm",
+      "sample_peak": 0.9452955722808838,
+      "sample_peak_dbfs": -0.4886475263218931,
+      "true_peak_4x": 0.9453027848746854,
+      "true_peak_4x_dbtp": -0.4885812533416712,
+      "rms": 0.22917683928373017,
+      "crest_factor_db": 12.307937963400876,
+      "band_energies": {
+        "0-4k": {
+          "relative_energy_db": -0.09714475553493476,
+          "fraction": 0.9778799112733131
+        },
+        "4-8k": {
+          "relative_energy_db": -17.910114238491207,
+          "fraction": 0.016180374756030833
+        },
+        "8-12k": {
+          "relative_energy_db": -22.843393757932308,
+          "fraction": 0.005195898087346352
+        },
+        "12-16k": {
+          "relative_energy_db": -31.542975311701372,
+          "fraction": 0.0007009749023986623
+        },
+        "16-20k": {
+          "relative_energy_db": -43.712106578616115,
+          "fraction": 4.2539202342632884e-05
+        },
+        "20-22k": {
+          "relative_energy_db": -65.21853730104861,
+          "fraction": 3.0070889162744505e-07
+        }
+      },
+      "stereo_correlation": 0.8757846675687968,
+      "side_mid": {
+        "ratio": 0.2572837444375827,
+        "db": -11.79175304563951
+      },
+      "spectral_centroid_hz": 491.1165869615664,
+      "sample_rate": 44100,
+      "channels": 2,
+      "frames": 12333888,
+      "duration_s": 279.68,
+      "path": "D:\\_4.Projects\\_MY\\中二病晚期患者\\6.想象在彼方_shadowbuster.wav"
+    }
+  ],
+  "notes": [
+    "Read-only source files were opened for measurement only.",
+    "LUFS/true peak use experiments.objective_compare.measure_audio; true peak is 4x oversampled."
+  ]
+}
