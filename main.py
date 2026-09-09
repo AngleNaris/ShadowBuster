@@ -4,6 +4,11 @@ PySide6 + QWebEngineView + QWebChannel，加载 ui/index.html（KFL 合规 DAW �
 """
 import os
 import sys
+
+if __name__ == "__main__" and any(arg in sys.argv[1:] for arg in ("--cli", "--help", "--version")):
+    from processing_cli import main as cli_main
+    raise SystemExit(cli_main())
+
 import threading
 import traceback
 import uuid
@@ -143,6 +148,7 @@ class Bridge(QObject):
     dragHover = Signal(bool)                 # 文件正在拖入悬停（前端高亮队列）
     updateInfo = Signal(str)                 # 检查更新结果（JSON，后台线程回传）
     gpuStatus = Signal(str)                  # GPU 环境状态/进度（JSON，后台线程回传）
+    cacheStatus = Signal(str)                # 处理缓存状态（JSON：info/cleared/busy/error）
 
     def __init__(self, window):
         super().__init__()
@@ -152,6 +158,9 @@ class Bridge(QObject):
         self._gpu_cancel = threading.Event()
         self._gpu_thread = None
         self._gpu_lock = threading.Lock()
+        # 缓存操作与批处理启动共用一把非阻塞闸门：任一方持有时另一方直接拒绝，
+        # 避免清空/改容量与开始处理之间出现竞态（闸门本身不做长任务持有）。
+        self._cache_gate = threading.Lock()
 
     # ── JS 可调用的方法 ──
     @Slot()
@@ -444,6 +453,77 @@ class Bridge(QObject):
         QProcess.startDetached(str(Path(sys.executable).resolve()))
         QTimer.singleShot(400, QCoreApplication.instance().quit)
 
+    # ── 处理缓存：状态 / 容量 / 清空 ──
+    # 删除一律经由 pipeline_cache 助手（clear_cache），桥接层不做任何文件操作。
+    def _cache_emit(self, d):
+        import json as _json
+        self.cacheStatus.emit(_json.dumps(d, ensure_ascii=False))
+
+    @staticmethod
+    def _cache_payload(pc):
+        info = pc.get_info() or {}
+        return {"capacity_gb": info.get("capacity_gb", 5),
+                "used_bytes": int(info.get("used_bytes", 0) or 0),
+                "entries": int(info.get("entries", 0) or 0)}
+
+    @Slot()
+    def refreshCacheInfo(self):
+        """后台线程读取缓存容量与已用量，结果经 cacheStatus 回传。"""
+        threading.Thread(target=self._cache_refresh_worker, daemon=True).start()
+
+    def _cache_refresh_worker(self):
+        try:
+            import pipeline_cache as pc
+            self._cache_emit({"type": "info", **self._cache_payload(pc)})
+        except ModuleNotFoundError:
+            self._cache_emit({"type": "error", "op": "info", "msg": "缓存组件未就绪"})
+        except Exception as e:
+            self._cache_emit({"type": "error", "op": "info", "msg": str(e)[:160]})
+
+    @Slot("QVariant", result=bool)
+    def setCacheCapacity(self, gb):
+        """设置缓存容量（GiB，0=关闭）。处理进行中拒绝；结果经 cacheStatus 回传。"""
+        return self._start_cache_op("capacity", gb)
+
+    @Slot(result=bool)
+    def clearCache(self):
+        """清空处理缓存（后台线程）。处理进行中拒绝；结果经 cacheStatus 回传。"""
+        return self._start_cache_op("clear")
+
+    def _start_cache_op(self, op, gb=None):
+        # 与批处理启动互斥：处理中拒绝；缓存操作已排队时同样拒绝（busy）。
+        if not self._cache_gate.acquire(blocking=False):
+            self._cache_emit({"type": "busy", "op": op})
+            return False
+        if self._thread and self._thread.is_alive():
+            self._cache_gate.release()
+            self._cache_emit({"type": "busy", "op": op})
+            return False
+        thread = threading.Thread(target=self._cache_op_worker, args=(op, gb), daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            self._cache_gate.release()
+            self._cache_emit({"type": "error", "op": op, "msg": "缓存操作启动失败"})
+            return False
+        return True
+
+    def _cache_op_worker(self, op, gb):
+        try:
+            import pipeline_cache as pc
+            if op == "clear":
+                pc.clear_cache()
+                self._cache_emit({"type": "cleared", **self._cache_payload(pc)})
+            else:
+                pc.set_capacity_gb(int(gb))
+                self._cache_emit({"type": "info", **self._cache_payload(pc)})
+        except ModuleNotFoundError:
+            self._cache_emit({"type": "error", "op": op, "msg": "缓存组件未就绪"})
+        except Exception as e:
+            self._cache_emit({"type": "error", "op": op, "msg": str(e)[:160]})
+        finally:
+            self._cache_gate.release()
+
     @Slot(str)
     def openExternal(self, url):
         """用系统默认浏览器打开链接（如更新页面）。"""
@@ -499,6 +579,10 @@ class Bridge(QObject):
         if self._gpu_lock.locked():
             self._gpu_emit({"type": "busy", "op": "process"})
             return False
+        if not self._cache_gate.acquire(blocking=False):
+            # 缓存清空 / 改容量进行中：拒绝启动，避免与缓存删除竞态
+            self._cache_emit({"type": "busy", "op": "process"})
+            return False
         self._cancel_flag.clear()
         p = dict(params or {})
         self._gpu_lock.acquire()
@@ -509,7 +593,9 @@ class Bridge(QObject):
         except Exception:
             self._thread = None
             self._gpu_lock.release()
+            self._cache_gate.release()
             raise
+        self._cache_gate.release()
         return True
 
     @Slot()
@@ -574,6 +660,8 @@ class Bridge(QObject):
             bypass = [b for b in (params.get("bypass") or []) if b]
             bypass = [b for b in bypass
                       if b in ("lew", "vocals", "bass", "drums", "reshape", "soren")]
+            # 低频自动清晰：opt-in 开关，默认关闭；由 run_batch 透传给 run_pipeline
+            bass_auto_clarity = bool(params.get("bass_auto_clarity", False))
             self.logLine.emit(f"── 开始批处理（{len(files)} 个文件）──", "")
             results = backend.run_batch(
                 files, params["output"],
@@ -586,6 +674,7 @@ class Bridge(QObject):
                 space_width_db=space_width_db,
                 vocal_gain_db=vocal_gain_db,
                 bypass=bypass,
+                bass_auto_clarity=bass_auto_clarity,
                 quality=int(params.get("quality", 1)),
                 guidance=float(params.get("guidance", 1.5)),
                 genre=params.get("genre", "Pop"),

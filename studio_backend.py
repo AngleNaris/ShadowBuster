@@ -14,7 +14,7 @@ from apollo_scripts.stage_metadata import read_report
 from apollo_scripts.vocal_config import REFERENCE_MODE
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.6.6"
 GPU_ENV_VERSION = "1.5.0"
 
 if getattr(sys, "frozen", False):
@@ -443,7 +443,9 @@ def _run_reported(cmd, in_mix, out_wav, report_json, stage, cancel):
 
 
 def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
-               bass_gain_db=0.0, progress=None, cancel=None, report_json=None):
+               bass_gain_db=0.0, auto_clarity=False, progress=None, cancel=None, report_json=None):
+    """贝斯增强。auto_clarity: opt-in 保守清晰度 EQ（--auto-clarity），
+    默认关闭；关闭时命令行与旧行为完全一致（位级透传）。"""
     if progress:
         progress(0.0, "贝斯增强")
     bass = stem_dir / "bass.wav"
@@ -453,6 +455,8 @@ def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, tra
            "--bass", str(bass), "--in-mix", str(in_mix), "--out", str(out_wav),
            "--sub-db", str(sub_db), "--sat", str(sat), "--punch-db", str(punch_db),
            "--trans", str(trans), "--bass-gain-db", str(bass_gain_db)]
+    if auto_clarity:
+        cmd.append("--auto-clarity")
     scale = _run_reported(cmd, in_mix, out_wav, report_json, "bass", cancel)
     if progress:
         progress(1.0, "贝斯增强完成")
@@ -584,16 +588,20 @@ def _resolve_work_dir(output_dir: Path, work_dir) -> Path:
 
 
 def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
-                 bass_gain_db=0.0, vocal_gain_db=0.0, genre="Pop", loudness="normal",
+                 bass_gain_db=0.0, bass_auto_clarity=False, vocal_gain_db=0.0,
+                 genre="Pop", loudness="normal",
                  eq_profile="Neutral", reference=None, quality=1, guidance=1.5,
                  device="cuda", progress=None, cancel=None, work_dir=None,
                  lowpass_cutoff=None, space_wet=0.0, space_denoise=0.0,
                  space_width_db=6.0, balance_target_db=None, bypass=(),
-                 balance_mode=REFERENCE_MODE, style_mode="styled"):
+                 balance_mode=REFERENCE_MODE, style_mode="styled", cache_enabled=True):
     """执行单文件完整链路。progress(stage_idx, frac, label)。
 
     bypass: 可迭代的阶段名（lew/vocals/bass/drums/reshape/soren），命中的阶段位级跳过。
     分离阶段不可 bypass（后续阶段依赖 stems 产物）。
+    bass_auto_clarity: opt-in 贝斯清晰度 EQ（默认 False；关闭时贝斯阶段行为位级不变）。
+    输出目录只保留最终成品：Soren 母带统计旁车（<out>.mastering.json/.mastering）
+    只在工作目录生成并随工作目录清理。
     """
     if style_mode not in ("styled", "off", "eq_only"):
         raise ValueError(f"Unknown Soren style mode: {style_mode}")
@@ -632,6 +640,53 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
                 progress(i, offset + span * frac, label)
         return inner
 
+    import inspect
+    import pipeline_cache
+    implementation = [Path(__file__), Path(pipeline_cache.__file__)]
+    implementation += list(Path(DSP_DIR).glob("*.py")) + list(Path(SOREN_DIR).glob("*.py"))
+    runtime_files = [Path(PYTHON)]
+    for folder in (Path(APOLLO_DIR), Path(SOREN_DIR)):
+        for pattern in ("*.pt", "*.pth", "*.ckpt", "*.json", "*.yaml"):
+            runtime_files.extend(folder.rglob(pattern))
+    runtime_stamp = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in runtime_files if p.is_file()]
+    identity = {"version": APP_VERSION, "runtime": str(PYTHON), "device": device,
+                "runtime_files": runtime_stamp, "input_md5": pipeline_cache.md5(input_wav),
+                "code": [(str(p), pipeline_cache.md5(p)) for p in implementation if p.is_file()]}
+    cache = pipeline_cache.StageCache(cache_enabled, identity)
+
+    def cached(fn, output_arg, input_args):
+        if not hasattr(fn, "__name__"):
+            return fn
+        signature = inspect.signature(fn)
+        def invoke(*args, **kwargs):
+            if cancel and cancel():
+                raise PipelineError("用户取消")
+            # Test doubles may not expose the production signature.
+            bound = signature.bind(*args, **kwargs)
+            values = dict(bound.arguments)
+            values.update(values.pop("kwargs", {}))
+            if output_arg not in values:
+                return fn(*args, **kwargs)
+            inputs = [values[k] for k in input_args if values.get(k) is not None]
+            params = {k: v for k, v in values.items() if k not in input_args + [output_arg, "progress", "cancel", "report_json"]}
+            if fn.__name__ == "stage_demucs":
+                params["stem_name"] = Path(inputs[0]).stem
+            result = cache.run(fn.__name__, inputs, params, [values[output_arg]], lambda: fn(*args, **kwargs))
+            if kwargs.get("progress"):
+                kwargs["progress"](1.0, "阶段完成（可复用缓存）")
+            return result
+        return invoke
+
+    run_lew = cached(stage_lew, "out_wav", ["input_wav"])
+    run_demucs = cached(stage_demucs, "out_dir", ["input_wav"])
+    run_bass = cached(stage_bass, "out_wav", ["stem_dir", "in_mix"])
+    run_drums = cached(stage_drums, "out_wav", ["stem_dir", "rest_wav"])
+    run_reshape = cached(stage_reshape, "out_wav", ["in_mix", "stems_dir"])
+    run_vocals = cached(stage_vocals, "out_wav", ["stem_dir", "in_mix", "reference_mix", "reference_vocals"])
+    run_soren = cached(stage_soren, "out_wav", ["input_wav", "reference"])
+    run_convert = cached(ffmpeg_convert, "dst", ["src"])
+
+    mastered = work / "mastered.wav"
     try:
         if "lew" in bypass:
             # 直接以原输入进入 Demucs；Demucs 会在解码时适配其模型采样率。
@@ -639,10 +694,10 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
             if progress:
                 cb(0)(1.0, "高频旁路")
         else:
-            stage_lew(input_wav, lew_out, device=device, progress=cb(0),
+            run_lew(input_wav, lew_out, device=device, progress=cb(0),
                       quality=quality, guidance=guidance, cancel=cancel)
             lew_src = lew_out
-        stage_demucs(lew_src, stems_out, progress=cb(1), cancel=cancel)
+        run_demucs(lew_src, stems_out, progress=cb(1), cancel=cancel)
         stem_dir = stems_out / "htdemucs" / lew_src.stem
         if "bass" in bypass:
             shutil.copyfile(lew_src, bass_out)
@@ -650,8 +705,9 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
             if progress:
                 cb(2)(1.0, "贝斯旁路")
         else:
-            bass_scale = stage_bass(stem_dir, lew_src, bass_out, sub_db=sub_db, sat=sat,
+            bass_scale = run_bass(stem_dir, lew_src, bass_out, sub_db=sub_db, sat=sat,
                        punch_db=0.0, trans=0.0, bass_gain_db=bass_gain_db,
+                       auto_clarity=bass_auto_clarity,
                        progress=cb(2), cancel=cancel, report_json=bass_report)
         if "drums" in bypass:
             shutil.copyfile(bass_out, drum_out)
@@ -659,7 +715,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
             if progress:
                 cb(3)(1.0, "鼓旁路")
         else:
-            drums_scale = stage_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
+            drums_scale = run_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
                         progress=cb(3), cancel=cancel, report_json=drums_report)
         if "reshape" in bypass:
             shutil.copyfile(drum_out, shape_out)
@@ -667,7 +723,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
             if progress:
                 cb(4, 0.0, 0.5)(1.0, "声场旁路")
         else:
-            reshape_scale = stage_reshape(drum_out, stem_dir, shape_out, wet=space_wet,
+            reshape_scale = run_reshape(drum_out, stem_dir, shape_out, wet=space_wet,
                           denoise=space_denoise, width_db=space_width_db,
                           progress=cb(4, 0.0, 0.5), cancel=cancel, report_json=reshape_report)
         # Only original vocals base scaling; unscaled original-stem delta additions remain residual.
@@ -681,10 +737,10 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
                 original_mix = work / "original_reference.wav"
                 original_stems = work / "original_reference_stems"
                 # HTDemucs preserves sample origin; DSP rejects frame/rate mismatch.
-                ffmpeg_convert(input_wav, original_mix, sr=44100)
-                stage_demucs(original_mix, original_stems, cancel=cancel)
+                run_convert(input_wav, original_mix, sr=44100)
+                run_demucs(original_mix, original_stems, cancel=cancel)
                 original_vocals = original_stems / "htdemucs" / original_mix.stem / "vocals.wav"
-            stage_vocals(stem_dir, shape_out, vocal_out, gain_db=vocal_gain_db,
+            run_vocals(stem_dir, shape_out, vocal_out, gain_db=vocal_gain_db,
                          balance_target_db=balance_target_db,
                          balance_mode=balance_mode if balance_target_db is None else None,
                          reference_mix=original_mix,
@@ -692,14 +748,15 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
                          vocal_scale=vocal_scale,
                          progress=cb(4, 0.5, 0.5), cancel=cancel)
         if "soren" in bypass:
-            shutil.copyfile(vocal_out, out_final)
+            shutil.copyfile(vocal_out, mastered)
             if progress:
                 cb(5)(1.0, "母带旁路")
         else:
-            stage_soren(vocal_out, out_final, genre=genre, loudness=loudness,
+            run_soren(vocal_out, mastered, genre=genre, loudness=loudness,
                         eq_profile=eq_profile, reference=reference,
                         lowpass_cutoff=lowpass_cutoff, progress=cb(5),
                         cancel=cancel, style_mode=style_mode)
+        shutil.copyfile(mastered, out_final)
     except PipelineError:
         raise
     finally:
@@ -756,41 +813,5 @@ def run_batch(input_files, output_dir, *, progress=None, file_finished=None, can
 
 
 if __name__ == "__main__":
-    # CLI 测试模式
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("-i", "--input", required=True)
-    ap.add_argument("-o", "--output", required=True)
-    ap.add_argument("--sub-db", type=float, default=6.0)
-    ap.add_argument("--sat", type=float, default=0.3)
-    ap.add_argument("--genre", default="Pop")
-    ap.add_argument("--loudness", default="normal")
-    ap.add_argument("--eq-profile", default="Neutral")
-    ap.add_argument("--style-mode", choices=["styled", "off", "eq_only"], default="styled")
-    ap.add_argument("--reference", default=None)
-    ap.add_argument("--lowpass-cutoff", type=float, default=None)
-    ap.add_argument("--space-wet", type=float, default=0.0)
-    ap.add_argument("--space-denoise", type=float, default=0.0)
-    ap.add_argument("--space-width-db", type=float, default=6.0,
-                    help="声场宽度上限 dB（other 轨 side 增益，drums 自动取一半）")
-    ap.add_argument("--vocal-gain-db", type=float, default=0.0,
-                    help="人声整体增益 dB（0 = 直通）")
-    ap.add_argument("--bypass", default="", help="逗号分隔的旁路阶段名")
-    ap.add_argument("--cpu", action="store_true")
-    args = ap.parse_args()
-
-    def p(i, frac, label):
-        print(f"  [{label}] {frac*100:.0f}%", flush=True)
-
-    t0 = time.time()
-    out = run_pipeline(args.input, args.output, sub_db=args.sub_db, sat=args.sat,
-                       genre=args.genre, loudness=args.loudness,
-                       eq_profile=args.eq_profile, reference=args.reference,
-                       style_mode=args.style_mode,
-                       lowpass_cutoff=args.lowpass_cutoff,
-                       space_wet=args.space_wet, space_denoise=args.space_denoise,
-                       space_width_db=args.space_width_db,
-                       vocal_gain_db=args.vocal_gain_db,
-                       bypass=[b.strip() for b in args.bypass.split(",") if b.strip()],
-                       device="cpu" if args.cpu else "cuda", progress=p)
-    print(f"完成: {out}（{time.time()-t0:.0f}s）")
+    from processing_cli import main
+    raise SystemExit(main())

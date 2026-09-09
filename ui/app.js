@@ -81,6 +81,7 @@
       });
       api.updateInfo.connect((raw) => onUpdateInfo(raw));
       api.gpuStatus.connect((raw) => onGpuStatus(raw));
+      if (api.cacheStatus) api.cacheStatus.connect((raw) => onCacheStatus(raw));
       resolve();
     });
   });
@@ -751,6 +752,26 @@
     return Object.entries(bypassState).filter(([, on]) => !on).map(([stage]) => stage);
   }
 
+  /* ─── 低频自动清晰 opt-in 开关：默认关闭，状态持久化 ───
+     复用 rack-bypass 拨杆契约（role="switch" + aria-checked + bp-track/bp-dot），
+     仅绑定领域行为；不参与 bypass 列表。读数列显示 开/关，不单靠颜色反馈。 */
+  const getBassClarity = (() => {
+    const btn = $("opt-bass-clarity");
+    const val = $("val-bass-clarity");
+    let enabled = loadValue("bass_auto_clarity", "0") === "1";
+    function render() {
+      btn.setAttribute("aria-checked", enabled ? "true" : "false");
+      val.textContent = enabled ? "开" : "关";
+    }
+    render();
+    btn.addEventListener("click", () => {
+      enabled = !enabled;
+      saveValue("bass_auto_clarity", enabled ? "1" : "0");
+      render();
+    });
+    return () => enabled;
+  })();
+
   /* ─── 自定义下拉组件（非原生，同一契约）─── */
   function buildDropdown(ddId, options, initial, onChange, storeKey) {
     const trigger = $(`${ddId}-trigger`);
@@ -780,11 +801,14 @@
         panel.appendChild(b);
       });
     }
-    function select(v) {
+    function setValue(v) {
       value = v;
       const opt = options.find((o) => o.v === v);
       label.textContent = opt ? opt.label : v;
       renderOptions();
+    }
+    function select(v) {
+      setValue(v);
       if (onChange) onChange(v);
       if (storeKey) saveValue(storeKey, v);
     }
@@ -792,10 +816,24 @@
       open = true;
       trigger.setAttribute("aria-expanded", "true");
       panel.classList.add("open");
-      // fixed 定位浮层：按触发按钮的视口坐标放置，不参与页面滚动高度
+      // fixed 定位浮层：按触发按钮的视口坐标放置，不参与页面滚动高度。
+      // 若存在 transformed 祖先（如设置弹窗），该祖先成为 fixed 的包含块，
+      // 需换算为相对包含块的坐标，否则面板会整体错位。
       const r = trigger.getBoundingClientRect();
-      panel.style.left = `${Math.round(r.left)}px`;
-      panel.style.top = `${Math.round(r.bottom + 2)}px`;
+      let host = null;
+      for (let el = trigger.parentElement; el && el !== document.body; el = el.parentElement) {
+        const cs = getComputedStyle(el);
+        if (cs.transform !== "none" || cs.perspective !== "none" ||
+            cs.filter !== "none" || (cs.willChange || "").includes("transform")) { host = el; break; }
+      }
+      if (host) {
+        const hr = host.getBoundingClientRect();
+        panel.style.left = `${Math.round(r.left - hr.left)}px`;
+        panel.style.top = `${Math.round(r.bottom - hr.top + 2)}px`;
+      } else {
+        panel.style.left = `${Math.round(r.left)}px`;
+        panel.style.top = `${Math.round(r.bottom + 2)}px`;
+      }
       panel.style.width = `${Math.round(r.width)}px`;
       // 初始焦点到选中项
       const sel = panel.querySelector('[aria-selected="true"]');
@@ -840,9 +878,14 @@
       }
     });
 
-    label.textContent = options.find((opt) => opt.v === value)?.label || value;
-    renderOptions();
-    return () => value;
+    setValue(value);
+    const get = () => value;
+    // 程序化同步（如设置弹窗中的缓存容量）：仅更新显示，不触发 onChange/持久化
+    get.set = (v) => {
+      const s = String(v);
+      if (options.some((o) => o.v === s)) setValue(s);
+    };
+    return get;
   }
 
   const getGenre = buildDropdown("dd-genre", [
@@ -1159,6 +1202,7 @@
     processRemaining.hidden = true;
     processBtn.style.setProperty("--btn-progress", "0%");
     btnFx.stop();
+    renderCache();   // 恢复缓存行（清空 / 改容量）可用
   }
   function setProcessing() {
     state.processing = true;
@@ -1170,6 +1214,7 @@
     processRemaining.hidden = false;
     btnFx.start();
     startProgressLoop();
+    renderCache();   // 处理期间禁用缓存清空与容量修改
   }
 
   processBtn.addEventListener("click", () => {
@@ -1206,6 +1251,7 @@
         reference: state.reference,
         quality: getQuality(), guidance: getGuidance(),
         sub: getSub(), sat: getSat(), punch: getPunch(), trans: getTrans(),
+        bass_auto_clarity: getBassClarity(),
         space: getSpace(), denoise: getDenoise(),
         space_width: getWidth(), vocal: getVocal(),
         bypass: activeBypassList(),
@@ -1223,47 +1269,45 @@
   /* ─── 参数说明浮层：打开 / 拖动 / 关闭 ─── */
   const HELP_CONTENT = {
     lew: {
-      title: "高频 · 参数说明",
+      title: "高频 · 怎么调",
       html:
-        "<h3>质量档</h3><p>高频重建的精细程度：<b>快速</b>＝适合试听；<b>标准</b>＝日常使用；<b>精细</b>＝细节最多、但最慢。</p>" +
-        "<h3>重建引导（0 – 2）</h3><p>重建产物的保留比例：<b>0</b>＝完全保留原始信号，<b>2</b>＝完全采用重建结果，默认 1.5（约 75%）。建议 1.0 – 1.75。</p>" +
-        "<h3>人声（-6.0 – +6.0 dB）</h3><p>以每首原曲的人声/伴奏比例为参考调整中央声道（Mid）突出度。<b>0.0 dB</b>＝尽量保留原曲平衡；正值让人声更靠前，负值让人声更靠后。原曲单独离线分离，不以高频重建结果代替原曲，不随母带曲风选项变化。</p>" +
-        "<p>原曲与当前混音使用同一组可靠窗口：原曲 Mid 比例中位数减当前比例中位数，再加旋钮审美偏移，得到整曲固定人声 Mid 增益（限于 ±9 dB）。该增益整曲不变，不乘活动门控，不追随鼓点或音节；无可靠比例时不做增益校正。</p>" +
-        "<p>另用约 1.5 kHz、3 kHz 两个固定宽频带动态 EQ，仅在人声可靠活动且对应频带伴奏存在遮蔽时削减伴奏残差的 Mid，总衰减预算约 1.5 dB；约 100 ms 起效、200 ms 保持、500 ms 释放，无人声后恢复。不是全频压低伴奏，也不联动声场或宽度。处理位于声场之后、母带之前；分离残差、能量检测、增益边界及后续母带（包括全混音峰值保护）会影响结果，目标不保证每个时刻或最终听感精确达标。</p>" +
-        "<h3>操作</h3><ul><li>旋钮上下拖动或滚轮调节</li><li>双击旋钮恢复默认值</li></ul>",
+        "<h3>质量档</h3><p><b>先用标准</b>。快速处理更快；精细处理更慢，不一定更好听。</p>" +
+        "<h3>重建引导</h3><p>调高会加入更多修复后的细节。声音变尖或不自然时，<b>往回调一点</b>。</p>" +
+        "<h3>人声</h3><p><b>听不清歌词就调高</b>，歌声太突出就调低。保持 0，会尽量保留原曲中歌声与伴奏的关系。</p>" +
+        "<h3>操作</h3><p>上下拖动旋钮，或用滚轮调节。<b>双击恢复默认值</b>。</p>",
     },
     bass: {
-      title: "低频 · 参数说明",
+      title: "低频 · 怎么调",
       html:
-        "<h3>Sub 提升（0 – 12 dB）</h3><p>次低音（30–60 Hz）low-shelf 增益，补低频包裹感；低发散虚就调高，发浑就调低。</p>" +
-        "<h3>鼓身（0 – 10 dB）</h3><p>60–120 Hz 轻度 bell 提升，强化鼓的 body/punch（鼓点厚度与攻击感）。</p>" +
-        "<h3>瞬态（0% – 100%）</h3><p>瞬态强调，单独放大鼓点起音，让节奏更清晰、不糊。</p>" +
-        "<h3>谐波饱和（0% – 100%）</h3><p>为低频加入模拟暖感；约 30% 通常较自然，太高会明显失真。</p>" +
-        "<h3>操作</h3><ul><li>旋钮上下拖动或滚轮调节</li><li>双击旋钮恢复默认值</li></ul>",
+        "<h3>Sub 提升</h3><p>让低音更深、更有分量。<b>轰头、发闷就调低</b>。</p>" +
+        "<h3>鼓身</h3><p>让鼓声更厚、更有力。鼓声盖过歌声时，<b>调低一点</b>。</p>" +
+        "<h3>瞬态</h3><p>让每一下鼓点更清楚。敲击声太硬、太刺耳时，调低。</p>" +
+        "<h3>谐波饱和</h3><p>让低音更饱满、更容易听见。<b>太多可能变粗糙</b>，先保持默认。</p>" +
+        "<h3>自动清晰（默认关）</h3><p>低音发闷时可以打开。它会在增强前做小幅调整，<b>不好听就关掉</b>；不会改动 Sub 提升的数值。</p>" +
+        "<h3>操作</h3><p><b>一次只调一项</b>，处理完成后用播放器比较，再调下一项。双击旋钮恢复默认值。</p>",
     },
     space: {
-      title: "声场 · 参数说明",
+      title: "声场 · 怎么调",
       html:
-        "<h3>声场（0% – 100%）</h3><p>声场重塑强度（干湿比）：向「宽度」目标混合的比例，把堆在中间的铺底/鼓元素向两侧摊开。" +
-        "<b>0%</b>＝完全保留原样，<b>100%</b>＝全量重塑；默认 60%。只动 side（左右差），单声道输入仍按统一混音/峰值保护处理，结果可能随整体增益调整。</p>" +
-        "<h3>宽度（0 – +12.0 dB）</h3><p>声场宽度上限：铺底乐器轨最大 side 增益（鼓自动取一半）。<b>向右拖动</b>扇形扩大、<b>向左拖动</b>缩小（到 0 后不再变化），扇形张角就是当前宽度范围，最大张角 100°；默认 <b>+6.0 dB</b>。与「声场」推子配合决定最终有多宽。</p>" +
-        "<h3>高频降噪（0% – 100%）</h3><p>对铺底乐器轨 ≥10 kHz 的稳态沙沙噪声做门控衰减（自动噪声地板估计，类降噪采样）：贴着噪声电平的成分按比例衰减，" +
-        "突出的音乐瞬态（镲片敲击）原样保留。默认 20%；AI 音乐的擦片毛刺感明显时可在 20%–40% 之间调。</p>" +
-        "<h3>面板开关</h3><p>关闭后，声场重塑与高频降噪会一起旁路；推子值保留，重新开启即可继续使用。</p>" +
-        "<h3>操作</h3><ul><li>沿推子点击或横向拖动</li><li>滚轮或方向键精细调节</li><li>双击推子恢复默认值</li></ul>",
+        "<h3>宽度</h3><p>让声音向左右展开。<b>向右拖更宽，向左拖更集中</b>。</p>" +
+        "<h3>声场</h3><p>控制展开效果有多明显。<b>0% 不增加宽度</b>；声音散了、不够有力时，往回调。</p>" +
+        "<h3>高频降噪</h3><p>减轻背景里的沙沙声。<b>细节变少就调低</b>，不是越高越好。</p>" +
+        "<h3>面板开关</h3><p>关闭后，<b>展开效果和降噪都停用</b>，原来的设置会保留。</p>" +
+        "<h3>操作</h3><p>左右拖动调节，双击恢复默认值。<b>比较成品时建议戴耳机</b>。</p>",
     },
     soren: {
-      title: "母带 · 参数说明",
+      title: "母带 · 怎么调",
       html:
-        "<h3>流派</h3><p>按曲风选择母带预设；选了参考音频时以参考为准，流派自动失效。</p>" +
-        "<ul><li>流行 Pop · 电子 EDM · 摇滚 Rock</li>" +
-        "<li>舞曲 Dance · 嘻哈 Hiphop · 钢琴 Piano</li>" +
-        "<li>氛围 Ambient（环境铺底）· 弛放 Chillout（舒缓电子）</li>" +
-        "<li>管弦 Orchestral · 人声 Speech</li></ul>" +
-        "<h3>响度</h3><p><b>轻柔</b>＝保留动态；<b>标准</b>＝均衡；<b>响亮</b>＝适合流媒体响度竞争。</p>" +
-        "<h3>EQ 风格</h3><p><b>平直</b>＝不染色；<b>温暖</b>＝加厚中低频；<b>明亮</b>＝提升高频光泽；<b>融合</b>＝整体更贴耳。</p>",
+        "<h3>流派</h3><p>给整首歌选择一种声音风格。拿不准就选<b>无风格</b>；选了参考音频，会以参考为准。</p>" +
+        "<h3>响度</h3><p>轻柔更舒缓，标准适合日常，响亮更满、更响。<b>更响不等于更好听</b>。</p>" +
+        "<h3>EQ 风格</h3><p><b>平直</b>：少改音色；<b>温暖</b>：更厚；<b>明亮</b>：更亮；<b>融合</b>：尝试更融合的整体音色。</p>" +
+        "<h3>怎么选</h3><p><b>先保持默认，再按喜好微调</b>。关闭面板可跳过这一步。</p>",
     },
   };
+  /* 试听说明：所有帮助面板共用一段固定文案，防止任何“实时试听”误导。
+     文案保持一句、加粗、口语化。 */
+  const AUDITION_NOTE =
+    "<h3>试听</h3><p><b>本软件不提供试听。处理完成后，请用播放器打开成品比较。</b></p>";
   const helpDialog = $("help-dialog");
   const helpTitle = $("help-title");
   const helpBody = $("help-body");
@@ -1279,7 +1323,7 @@
     const c = HELP_CONTENT[key];
     if (!c) return;
     helpTitle.textContent = c.title;
-    helpBody.innerHTML = c.html;
+    helpBody.innerHTML = c.html + AUDITION_NOTE;
     helpTrigger = trigger || helpTrigger;
     if (!helpOpen) {
       helpOpen = true;
@@ -1340,6 +1384,10 @@
   function openSettings(trigger) {
     settingsTrigger = trigger || null;
     fillVersion();
+    // 缓存行每次打开都向后端要最新状态（容量 + 已用量），不用本地缓存值
+    cacheMessage = "";
+    if (api && api.refreshCacheInfo) api.refreshCacheInfo();
+    renderCache();
     settingsModal.classList.add("open");
     if (api && api.checkGpuEnv && !GpuState.checking && !GpuState.downloading) {
       GpuState.checking = true;
@@ -1506,6 +1554,109 @@
       gpuStatusEl.textContent = "正在重启应用…";
       api.restartApp();
     }
+  });
+
+  /* ─── 处理缓存：容量选择 / 已用显示 / 手动清空 ───
+     容量与已用量的唯一来源是后端 pipeline_cache（跨会话一致），
+     前端不写 localStorage；处理进行中由前端禁用、后端拒绝双保险。 */
+  const CACHE_CAPS = [
+    { v: "0", label: "关闭" },
+    { v: "2", label: "2 GiB" }, { v: "5", label: "5 GiB" },
+    { v: "10", label: "10 GiB" }, { v: "20", label: "20 GiB" },
+    { v: "50", label: "50 GiB" }, { v: "100", label: "100 GiB" },
+  ];
+  const cacheStatusEl = $("cache-status");
+  const cacheTrigger = $("dd-cache-cap-trigger");
+  const cacheClearBtn = $("btn-cache-clear");
+  let cacheInfo = null;       // {capacity_gb, used_bytes, entries}（后端回传）
+  let cacheBusy = false;      // 容量设置 / 清空进行中
+  let cacheMessage = "";      // 一次性状态提示（已清空 / 失败 / 拒绝）
+  let cacheClearArmed = false, cacheClearTimer = 0;
+
+  function fmtCacheBytes(b) {
+    b = Math.max(0, Number(b) || 0);
+    if (b >= 1073741824) return (b / 1073741824).toFixed(2) + " GiB";
+    return Math.max(1, Math.round(b / 1048576)) + " MB";
+  }
+  function cacheStatusText() {
+    if (cacheMessage) return cacheMessage;
+    if (cacheBusy) return "正在更新…";
+    if (!cacheInfo) return api && api.refreshCacheInfo ? "正在读取…" : "—";
+    const cap = Number(cacheInfo.capacity_gb);
+    if (cap === 0) return "已关闭，处理不写入缓存";
+    return `已用 ${fmtCacheBytes(cacheInfo.used_bytes)} · ${cacheInfo.entries} 条`;
+  }
+  function renderCache() {
+    const cap = cacheInfo ? Number(cacheInfo.capacity_gb) : null;
+    const used = cacheInfo ? Number(cacheInfo.used_bytes || 0) : null;
+    cacheTrigger.disabled = state.processing || cacheBusy;
+    const clearable = cap !== null && cap > 0 && used !== null && used > 0;
+    if (cacheClearArmed && (state.processing || cacheBusy || !clearable)) disarmCacheClear();
+    cacheClearBtn.disabled = state.processing || cacheBusy || !clearable;
+    cacheStatusEl.textContent = cacheStatusText();
+  }
+  function disarmCacheClear() {
+    cacheClearArmed = false;
+    if (cacheClearTimer) { clearTimeout(cacheClearTimer); cacheClearTimer = 0; }
+    cacheClearBtn.textContent = "清空缓存";
+    cacheClearBtn.classList.remove("set-btn--danger");
+  }
+  const cacheCap = buildDropdown("dd-cache-cap", CACHE_CAPS, "5", (v) => {
+    if (!api || !api.setCacheCapacity) {
+      cacheMessage = "后端未连接，无法设置"; renderCache(); return;
+    }
+    cacheBusy = true;
+    renderCache();
+    // QWebChannel 带返回值的槽经回调回传：false = 后端拒绝（如处理进行中）
+    api.setCacheCapacity(Number(v), (started) => {
+      if (started === false) { cacheBusy = false; renderCache(); }
+    });
+  }, null);   // 容量以后端为唯一持久化来源，不写 localStorage
+  function syncCacheCapacity(gb) {
+    const s = String(gb);
+    // 后端处于非档位值（0..100 之间任意整数）：补一个选项再显示，不静默改值
+    if (!CACHE_CAPS.some((o) => o.v === s) && /^\d+$/.test(s)) {
+      CACHE_CAPS.push({ v: s, label: `${s} GiB` });
+    }
+    cacheCap.set(s);
+  }
+  function onCacheStatus(raw) {
+    let r = null;
+    try { r = JSON.parse(raw); } catch (e) {}
+    if (!r || !r.type) return;
+    if (r.type === "info" || r.type === "cleared") {
+      cacheInfo = { capacity_gb: Number(r.capacity_gb), used_bytes: Number(r.used_bytes || 0),
+        entries: Number(r.entries || 0) };
+      cacheBusy = false;
+      syncCacheCapacity(cacheInfo.capacity_gb);
+      cacheMessage = r.type === "cleared" ? "已清空" : "";
+    } else if (r.type === "busy") {
+      cacheBusy = false;
+      cacheMessage = r.op === "capacity" ? "处理进行中，请稍后再改容量" : "处理进行中，请稍后再清空";
+    } else if (r.type === "error") {
+      cacheBusy = false;
+      cacheMessage = `失败：${r.msg || "未知错误"}`;
+    }
+    renderCache();
+  }
+  // 两步确认：第一次点击进入待确认（变红、4 秒未确认自动复位），再次点击才执行
+  cacheClearBtn.addEventListener("click", () => {
+    if (cacheClearBtn.disabled) return;
+    if (!cacheClearArmed) {
+      cacheClearArmed = true;
+      cacheClearBtn.textContent = "确认清空？";
+      cacheClearBtn.classList.add("set-btn--danger");
+      cacheClearTimer = setTimeout(disarmCacheClear, 4000);
+      return;
+    }
+    disarmCacheClear();
+    if (!api || !api.clearCache) { cacheMessage = "后端未连接，无法清空"; renderCache(); return; }
+    cacheBusy = true;
+    renderCache();
+    // false = 后端拒绝（处理进行中 / 缓存操作排队中）；其余结果经 cacheStatus 回传
+    api.clearCache((started) => {
+      if (started === false) { cacheBusy = false; renderCache(); }
+    });
   });
 
   // 主题色 swatches（预设插入到自定义选择器之前）

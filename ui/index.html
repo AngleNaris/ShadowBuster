@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=46">
+<link rel="stylesheet" href="style.css?v=48">
 </head>
 <body>
 
@@ -150,6 +150,15 @@
           </div>
           <label class="knob-label">谐波饱和</label>
           <output class="knob-value" id="val-sat">30%</output>
+        </div>
+        <div class="knob-wrap">
+          <span class="opt-slot">
+            <button class="rack-bypass rack-bypass--hardware" id="opt-bass-clarity" type="button" role="switch" aria-checked="false" aria-labelledby="label-bass-clarity" title="低频自动清晰（默认关）">
+              <span class="bp-track"><span class="bp-dot"></span></span>
+            </button>
+          </span>
+          <span class="knob-label" id="label-bass-clarity">自动清晰</span>
+          <output class="knob-value" id="val-bass-clarity">关</output>
         </div>
       </div>
     </div>
@@ -337,6 +346,22 @@
             <button class="btn btn-ghost set-btn" id="btn-gpu-restart" hidden>立即重启</button>
           </div>
         </div>
+        <div class="set-row">
+          <div class="set-info">
+            <span class="set-label">处理缓存</span>
+            <span class="set-status" id="cache-status">—</span>
+          </div>
+          <div class="set-action">
+            <div class="dropdown" id="dd-cache-cap">
+              <button type="button" class="dd-trigger" id="dd-cache-cap-trigger" aria-haspopup="listbox" aria-expanded="false">
+                <span id="dd-cache-cap-label">5 GiB</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="square"/></svg>
+              </button>
+              <div class="dd-panel" id="dd-cache-cap-panel" role="listbox" aria-label="缓存容量"></div>
+            </div>
+            <button class="btn btn-ghost set-btn" id="btn-cache-clear" disabled>清空缓存</button>
+          </div>
+        </div>
         <div class="set-row set-row-col">
           <div class="set-info">
             <span class="set-label">主题色</span>
@@ -368,6 +393,6 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="app.js?v=44"></script>
+<script src="app.js?v=46"></script>
 </body>
 </html>

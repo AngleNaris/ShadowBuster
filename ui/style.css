@@ -236,6 +236,11 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .file-item.processing .fi-status { animation: none; }
+  /* 硬件拨杆：去除位移动画，保留布局与状态连续性（几何两态一致，无跳动） */
+  .rack-bypass--hardware,
+  .rack-bypass--hardware .bp-dot,
+  .rack-bypass--hardware .bp-track,
+  .rack-bypass--hardware::before { transition: none; }
 }
 
 /* ═══ 文件设置：输出与参考音频同行双列 ═══ */
@@ -315,10 +320,12 @@ body {
 
 /* ═══ 大旋钮（指针与高亮弧同原点 -135°）═══ */
 .knob-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+:root { --hardware-face: radial-gradient(circle at 50% 32%, var(--n-knob1), var(--n-knob2) 78%); }
+html[data-mode="light"] { --hardware-face: radial-gradient(circle at 50% 32%, #ffffff, #ccd1db 78%); }
 .knob {
   position: relative;
   width: 64px; height: 64px; border-radius: 50%;
-  background: radial-gradient(circle at 50% 32%, var(--n-knob1), var(--n-knob2) 78%);
+  background: var(--hardware-face);
   border: 1px solid var(--n-knob-b);
   box-shadow:
     0 3px 8px rgba(0,0,0,0.5),
@@ -848,10 +855,11 @@ body {
 .help-body {
   padding: var(--s-3) var(--s-4);
   max-height: 340px; overflow-y: auto;
-  display: flex; flex-direction: column; gap: var(--s-3);
+  display: flex; flex-direction: column; gap: 4px;
   font-size: 12px; line-height: 1.65; color: var(--c-text-dim);
 }
 .help-body h3 {
+  margin-top: 8px;
   font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
   color: var(--c-accent-hi);
 }
@@ -862,7 +870,11 @@ body {
   content: ""; position: absolute; left: 0; top: 8px;
   width: 5px; height: 2px; background: var(--c-support);
 }
-.help-body b { color: var(--c-text); font-weight: 600; }
+.help-body b {
+  color: var(--c-text); font-weight: 700;
+  background: rgba(var(--c-accent-rgb), 0.12);
+  padding: 0 2px;
+}
 
 /* ═══════════════════════════════════════════════════════════════
    主题系统：强调色 + 深/浅色模式（html[data-mode] / html[data-accent]）
@@ -1072,6 +1084,11 @@ html[data-mode="light"] .stage-dot {
 .set-action { display: flex; align-items: center; gap: var(--s-3); flex: none; }
 .set-btn { height: 26px; padding: 0 var(--s-3); }
 .set-status { font-size: 11.5px; color: var(--c-text-faint); }
+/* 处理缓存行：容量下拉与清空按钮复用 dropdown / set-btn 共享契约，仅做行内尺寸适配 */
+.set-action .dropdown { width: 118px; flex: none; }
+.set-btn--danger { color: #ff5d5f; border-color: rgba(255, 93, 95, 0.55); }
+.set-btn--danger:hover { border-color: #ff5d5f; }
+html[data-mode="light"] .set-btn--danger { color: #d43a3c; border-color: rgba(212, 58, 60, 0.55); }
 .gpu-progress { height: 5px; border-radius: 3px; background: var(--c-key); overflow: hidden; }
 .gpu-progress-fill {
   display: block; height: 100%; width: 0%;
@@ -1103,7 +1120,7 @@ html[data-mode="light"] .stage-dot {
 
 /* 浅色模式：旋钮深色金属面反色（滚花/弧线/刻度随变量与覆盖项适配） */
 html[data-mode="light"] .knob {
-  background: radial-gradient(circle at 50% 32%, #ffffff, #ccd1db 78%);
+  background: var(--hardware-face);
   border-color: #b4b9c6;
   box-shadow:
     0 3px 8px rgba(0,0,0,0.16),
@@ -1174,6 +1191,67 @@ html[data-mode="light"] .rack-bypass[aria-checked="true"] .bp-track { background
 html[data-mode="light"] .bp-dot { background: #aaa7b1; }
 html[data-mode="light"] .rack-bypass[aria-checked="true"] .bp-dot { background: #817b8d; }
 .file-card.drop-hover { border-color: var(--c-accent-hi); box-shadow: 0 0 0 2px rgba(var(--c-accent-rgb),0.25); }
+
+/* 面板内翘板开关；64px 槽位与旋钮标签基线共用。 */
+.opt-slot { height: 64px; display: flex; align-items: center; justify-content: center; }
+.rack-bypass--hardware {
+  --rocker-face: var(--hardware-face);
+  --rocker-face-on: var(--hardware-face);
+  --rocker-shadow: inset 0 7px 5px -2px rgba(0,0,0,.85), inset 0 -5px 0 var(--n-knob1), inset 0 -6px 0 rgba(255,255,255,.25), 0 2px 2px rgba(0,0,0,.35);
+  --rocker-shadow-on: inset 0 -7px 5px -2px rgba(0,0,0,.85), inset 0 5px 0 var(--n-knob1), inset 0 6px 0 rgba(255,255,255,.25), 0 -2px 2px rgba(0,0,0,.35);
+  position: relative; width: 48px; height: 64px;
+  padding: 0; justify-content: center;
+  border: none; border-radius: 0; background: none; box-shadow: none;
+}
+/* 隔离顶部旁路拨杆的 checked 配色；透明容器不构成可见底座。 */
+html .rack-bypass--hardware[aria-checked] .bp-track {
+  position: relative; width: 34px; height: 58px;
+  border: none; border-radius: 0; background: none; box-shadow: none;
+}
+html .rack-bypass--hardware[aria-checked] .bp-dot {
+  position: absolute; inset: 0; width: 34px; height: 58px;
+  border-radius: 0; border: 1px solid var(--n-knob-b);
+  background: var(--rocker-face); box-shadow: var(--rocker-shadow);
+  transform: none;
+  transition: box-shadow var(--dur) var(--ease);
+}
+.rack-bypass--hardware .bp-dot::before {
+  content: ""; position: absolute; top: 11px; left: 50%; transform: translateX(-50%);
+  width: 12px; height: 4px; border-radius: 0;
+  background: var(--c-text-faint); box-shadow: inset 0 1px 2px rgba(0,0,0,.5);
+  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.rack-bypass--hardware .bp-dot::after {
+  content: ""; position: absolute; inset: 8px 3px 6px;
+  border: 1px solid rgba(255,255,255,.12); pointer-events: none;
+  transition: inset var(--dur) var(--ease);
+}
+.rack-bypass--hardware[aria-checked="true"] .bp-dot::after { inset: 6px 3px 8px; }
+.rack-bypass--hardware[aria-checked="true"] .bp-dot::before {
+  background: var(--c-accent-hi); box-shadow: 0 0 7px rgba(var(--c-accent-rgb), .8);
+}
+html[data-mode="light"] .rack-bypass--hardware {
+  --rocker-face: var(--hardware-face);
+  --rocker-face-on: var(--hardware-face);
+  --rocker-shadow: inset 0 7px 5px -2px rgba(47,42,57,.35), inset 0 -5px 0 #f7f5fa, inset 0 -6px 0 #aaa5b4, 0 2px 2px rgba(47,42,57,.15);
+  --rocker-shadow-on: inset 0 -7px 5px -2px rgba(47,42,57,.35), inset 0 5px 0 #f7f5fa, inset 0 6px 0 #aaa5b4, 0 -2px 2px rgba(47,42,57,.15);
+}
+html[data-mode="light"] .rack-bypass--hardware[aria-checked] .bp-track {
+  background: none; border: none; box-shadow: none;
+}
+html[data-mode="light"] .rack-bypass--hardware[aria-checked] .bp-dot {
+  background: var(--rocker-face); border-color: #aaa5b4; box-shadow: var(--rocker-shadow);
+}
+html .rack-bypass--hardware[aria-checked="true"] .bp-dot,
+html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
+  background: var(--rocker-face-on);
+  box-shadow: var(--rocker-shadow-on);
+}
+@media (prefers-reduced-motion: reduce) {
+  html .rack-bypass--hardware[aria-checked] .bp-dot { transition: none; }
+  .rack-bypass--hardware .bp-dot::before,
+  .rack-bypass--hardware .bp-dot::after { transition: none; }
+}
 
 /* 旁路关闭：整面板熄灭主题色高亮并整体变暗（开关本身保持清晰，参数仍可预调） */
 .rack[data-bypassed="1"] .rack-body {

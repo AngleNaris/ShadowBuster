@@ -6,7 +6,12 @@
 #  - 新增瞬态强调(transient emphasize)单独强化鼓点起音；
 #  - 饱和 drive 从固定 2.5 降到 1.6，仅作用于 sub+low-mid，低值不再重染色；
 #  - 保留 RMS 门控(只控增强量) 与 混合后 -0.5dBTP 真峰值保护。
-# 用法: python bass_enhance.py --bass bass.wav --in-mix premix.wav --out mix.wav [--sub-db 4] [--punch-db 2] [--sat 0.3] [--trans 0.3]
+# 用法: python bass_enhance.py --bass bass.wav --in-mix premix.wav --out mix.wav [--sub-db 4] [--punch-db 2] [--sat 0.3] [--trans 0.3] [--auto-clarity]
+# v20260908: 新增 opt-in --auto-clarity（保守清晰度 EQ，默认关闭；关闭时位级透传）：
+#  - 立体声联动分析（两声道合并，共用同一组 EQ），在 sub 增强之前施加；
+#  - 检测到活跃谐波内容才动作：180-450Hz 泥浊削减 ≤2dB、~800Hz 清晰度提升 ≤2dB；
+#  - 能量启发式（静音门 + 谱平坦度 + 频段相对能量 + 斜坡 + 硬上限），非音色分类器，
+#    拿不准（静音/纯 sub/噪声样）一律不动。
 import argparse
 from pathlib import Path
 
@@ -71,17 +76,72 @@ def _transient(x, sr, amount, fc=120.0, q=0.7):
     return x + hp * w * amount
 
 
+AUTO_CLARITY_MUD_CENTER_HZ = 285.0
+AUTO_CLARITY_CLARITY_CENTER_HZ = 800.0
+
+
+def analyze_auto_clarity(stereo, sr):
+    """全曲联动的保守频谱启发式；不是音色或串音分类器。"""
+    x = np.asarray(stereo, dtype=np.float64)
+    if x.ndim == 1:
+        x = x[:, None]
+    if len(x) < sr * 0.25 or not np.isfinite(x).all():
+        return (0.0, 0.0)
+    if np.mean(x * x) < 10 ** (-55 / 10):
+        return (0.0, 0.0)
+    # 平均声道功率而非波形，避免反相内容在分析时抵消。
+    f, p = signal.welch(x, sr, nperseg=min(len(x), 16384), axis=0)
+    p = p.mean(axis=1)
+    spectrum = np.maximum(p[(f >= 60) & (f <= 1500)], 1e-30)
+    flatness = np.exp(np.mean(np.log(spectrum))) / np.mean(spectrum)
+    if flatness > 0.5:
+        return (0.0, 0.0)
+    def energy(lo, hi):
+        return float(np.sum(p[(f >= lo) & (f < hi)]) * (f[1] - f[0]))
+    bass, mud, clarity = energy(30, 160), energy(180, 450), energy(550, 1100)
+    if min(bass, mud, clarity) < 1e-6:
+        return (0.0, 0.0)
+    ratio = 10 * np.log10(clarity / mud)
+    # 既有谐波太弱不提噪声；已明亮的音色不再提亮。
+    confidence = np.clip((ratio + 30) / 10, 0, 1)
+    dullness = np.clip((-6 - ratio) / 12, 0, 1)
+    cut = np.clip((10 * np.log10(mud / bass) + 18) / 12, 0, 1)
+    return (round(float(-2 * cut * dullness * confidence), 2),
+            round(float(2 * dullness * confidence), 2))
+
+
+def apply_auto_clarity_eq(x, sr, mud_db, clarity_db):
+    """对单通道信号施加 auto-clarity 宽频 EQ；增益为 0 的频段保持原样。"""
+    if mud_db < 0.0:
+        x = _bell(x, sr, AUTO_CLARITY_MUD_CENTER_HZ, mud_db, q=0.8)
+    if clarity_db > 0.0:
+        x = _bell(x, sr, AUTO_CLARITY_CLARITY_CENTER_HZ, clarity_db, q=0.9)
+    return x
+
+
 def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
-                      drive=1.6, gate_db=-45.0, attack_ms=40.0, release_ms=250.0):
+                      drive=1.6, gate_db=-45.0, attack_ms=40.0, release_ms=250.0,
+                      auto_clarity_gains=None):
     """增强 bass stem。
     sub_db   : sub(30-60Hz) low-shelf 提升，给包裹感
     punch_db : 60-120Hz bell 提升，给鼓 body/punch
     sat      : 谐波饱和混入比例 0-1（仅作用于 sub+low-mid）
     trans    : 瞬态强调强度 0-1
+    auto_clarity_gains : None=关闭（默认，行为与旧版位级一致）；否则为
+        analyze_auto_clarity() 返回的 (mud_db, clarity_db)，在 sub 增强
+        **之前**施加同一组宽频 EQ。立体声联动：两声道必须传同一组增益。
     """
     x = x.astype(np.float64)
-    if sub_db == 0 and punch_db == 0 and sat == 0 and trans == 0:
+    mud_db, clar_db = (0.0, 0.0)
+    if auto_clarity_gains is not None:
+        mud_db, clar_db = (float(auto_clarity_gains[0]), float(auto_clarity_gains[1]))
+    if (sub_db == 0 and punch_db == 0 and sat == 0 and trans == 0
+            and mud_db == 0.0 and clar_db == 0.0):
         return x.astype(np.float32)
+
+    # ── 0. opt-in 清晰度 EQ：在 sub 增强之前（增益由立体声联动分析统一给出）──
+    if mud_db != 0.0 or clar_db != 0.0:
+        x = apply_auto_clarity_eq(x, sr, mud_db, clar_db)
 
     # ── 1. 包裹感：sub low-shelf（30Hz 起），仅低频，不污染全频段 ──
     x_warm = _shelf(x, sr, 30.0, sub_db)
@@ -126,6 +186,10 @@ def main():
     ap.add_argument("--sat", type=float, default=0.3, help="谐波饱和混入比例 0-1")
     ap.add_argument("--trans", type=float, default=0.3, help="瞬态强调强度 0-1")
     ap.add_argument("--bass-gain-db", type=float, default=0.0, help="bass 整体增益 dB")
+    ap.add_argument("--auto-clarity", action="store_true",
+                    help="opt-in 保守清晰度 EQ：能量启发式（非音色分类器）检测到活跃谐波"
+                         "内容时，做 ≤2dB 的 180-450Hz 泥浊削减与 ~800Hz 清晰度提升；"
+                         "静音/纯 sub/噪声样不动，默认关闭")
     ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
@@ -147,19 +211,28 @@ def main():
     if args.bass_gain_db:
         bass = bass * (10 ** (args.bass_gain_db / 20.0))
 
+    # 立体声联动：全曲只分析一次（两声道合并），两声道共用同一组 EQ 增益，
+    # 绝不做 per-channel 独立分析（否则左右清晰度会不一致）。
+    clarity_gains = analyze_auto_clarity(bass, sr) if args.auto_clarity else None
+
     out = np.zeros_like(bass)
     for c in range(bass.shape[1]):
         out[:, c] = enhance_bass_stem(
             bass[:, c], sr,
             sub_db=args.sub_db, punch_db=args.punch_db,
             sat=args.sat, trans=args.trans,
+            auto_clarity_gains=clarity_gains,
         )
     out = in_mix + (out - original_bass)
 
-    # 混合后样本峰值保护：增强 delta 与完整输入混音相加后统一留出母带余量。
+    # 混音后样本峰值保护：增强 delta 与完整输入混音相加后统一留出母带余量。
+    # original_bass 是 clarity EQ **之前**的 delta 基准（整段处理差值都被保留），
+    # 而 peak/scale 在施加 clarity EQ 之后的完整混音上测量——报告里的 scale
+    # 因此已计入 clarity 提升带来的静态电平变化。
     # 这里不是 true-peak limiter；真正的 4× true peak 检测由下游 Soren 完成。
     neutral = (args.sub_db == 0 and args.punch_db == 0 and args.sat == 0 and
-               args.trans == 0 and args.bass_gain_db == 0)
+               args.trans == 0 and args.bass_gain_db == 0 and
+               (clarity_gains is None or clarity_gains == (0.0, 0.0)))
     peak = np.max(np.abs(out))
     ceiling = 10 ** (-0.5 / 20.0)  # ≈ 0.944
     if not neutral and peak > ceiling:
@@ -170,7 +243,9 @@ def main():
         write_report(args.report_json, stage="bass", scale=float(ceiling / peak) if (not neutral and peak > ceiling) else 1.0,
                      input_path=args.in_mix, output_path=args.out)
     print(f"Bass-enhanced mix done: {args.out} | sub={args.sub_db}dB punch={args.punch_db}dB "
-          f"sat={args.sat} trans={args.trans} | {sr}Hz {bass.shape[1]}ch")
+          f"sat={args.sat} trans={args.trans} "
+          f"auto_clarity={clarity_gains if clarity_gains is not None else 'off'} "
+          f"| {sr}Hz {bass.shape[1]}ch")
 
 
 if __name__ == "__main__":

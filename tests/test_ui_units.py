@@ -46,6 +46,6 @@ def test_migration_is_idempotent_and_storage_failures_are_guarded():
 def test_help_does_not_make_absolute_invariance_claims_or_link_controls():
     assert '逐样本不变' not in APP
     assert '绝对不变' not in APP
-    assert '人声' in APP and '全混音峰值保护' in APP
+    assert '人声' in APP and '尽量保留原曲' in APP
     # The help describes independent domains; no automatic coupling promise is made.
-    assert '声场重塑与高频降噪会一起旁路' in APP
+    assert '展开效果和降噪都停用' in APP
