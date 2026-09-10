@@ -62,7 +62,7 @@ def test_pipeline_reuses_real_stage_call_sites(tmp_path, monkeypatch):
     import studio_backend as backend
     src=tmp_path/'song.wav';src.write_bytes(b'original')
     calls=[]
-    def stage_demucs(input_wav, out_dir, progress=None, cancel=None):
+    def stage_demucs(input_wav, out_dir, progress=None, cancel=None, device=None):
         calls.append('demucs')
         d=Path(out_dir)/'htdemucs'/Path(input_wav).stem
         d.mkdir(parents=True);(d/'bass.wav').write_bytes(b'stem')

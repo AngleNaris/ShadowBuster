@@ -2,6 +2,7 @@
 所有阶段调用已验证的命令行工具（subprocess），支持进度回调与取消。
 """
 import os
+import signal
 import sys
 import time
 import shutil
@@ -83,14 +84,14 @@ _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 def _user_gpu_py():
-    """GPU 环境（设置内下载的 CUDA 运行时，v1.5）。
+    """GPU 环境（设置内下载的 CUDA 运行时，v1.5，Windows 专属）。
 
     新版装在应用目录 runtime-gpu\\env；旧版用户目录
     LOCALAPPDATA\\ShadowBuster\\runtime-gpu\\env 仍被识别使用。
     两处任一可用即采用，仅替换解释器，Apollo/Soren/权重仍读安装目录。
-    返回解释器路径或 None。
+    macOS 无 CUDA 运行时下载机制（MPS/CPU 随系统内置），直接返回 None。
     """
-    if not getattr(sys, "frozen", False):
+    if os.name != "nt" or not getattr(sys, "frozen", False):
         return None
     try:
         import gpu_env as ge
@@ -103,7 +104,9 @@ def _resolve_runtime():
     """解析工具链根目录。
 
     部署包：优先取 exe 同级 runtime/（安装器就地放下，无需环境变量）；
-    其次 SB_ASSETS 环境变量；都未设置时回退到开发机布局。
+    其次 SB_ASSETS 环境变量；都未设置时回退到开发机布局（Windows 硬编码
+    DEV_* 仅是兜底，mac 上请设置 SB_PYTHON/SB_APOLLO/SB_SOREN，见 start.sh）；
+    macOS .app 的 runtime 也可能随 PyInstaller datas 落在 _internal/runtime。
     GPU 环境（应用目录 runtime-gpu 或旧版用户目录）仅覆盖解释器。
     """
     upy = _user_gpu_py()
@@ -112,16 +115,23 @@ def _resolve_runtime():
         apollo, soren = root / "Apollo", root / "Soren_src"
         if apollo.is_dir() and soren.is_dir():
             return upy, apollo, soren, root
-    for root in (ROOT / "runtime",
-                 Path(os.environ.get("SB_ASSETS", ".")) if os.environ.get("SB_ASSETS") else None):
-        if root is None:
-            continue
+    roots = [ROOT / "runtime"]
+    if os.name != "nt":
+        # PyInstaller 冻结后 datas 在 _internal 下；开发布局不存在该目录，自然跳过
+        roots.append(ROOT / "_internal" / "runtime")
+    if os.environ.get("SB_ASSETS"):
+        roots.append(Path(os.environ["SB_ASSETS"]))
+    for root in roots:
         apollo, soren = root / "Apollo", root / "Soren_src"
         if apollo.is_dir() and soren.is_dir():
-            # 便携 Python 布局 env\python.exe；兼容旧 venv 布局 env\Scripts\python.exe
-            py = root / "env" / "python.exe"
-            if not py.exists():
-                py = root / "env" / "Scripts" / "python.exe"
+            # 便携 Python 布局：Windows env\python.exe（旧 venv env\Scripts\python.exe）；
+            # POSIX env/bin/python
+            if os.name == "nt":
+                py = root / "env" / "python.exe"
+                if not py.exists():
+                    py = root / "env" / "Scripts" / "python.exe"
+            else:
+                py = root / "env" / "bin" / "python"
             return (py if py.exists() else sys.executable), apollo, soren, root
     return (
         Path(os.environ.get("SB_PYTHON", DEV_PYTHON)),
@@ -140,20 +150,31 @@ DSP_DIR = (APOLLO_DIR if ASSETS is not None or getattr(sys, "frozen", False)
 
 
 def auto_device():
-    """推理设备：通过子进程探测 CUDA，不在 UI 进程中 import torch。
+    """推理设备：通过子进程探测 MPS / CUDA，不在 UI 进程中 import torch。
     （QtWebEngine + 同进程 torch CUDA 初始化会卡死，内存缓涨无资源占用）
-    开发版与部署版统一用 PYTHON（带 torch 的运行时）做子进程探测：
-    开发版 GUI 解释器（如 C:/Python314）通常没有 torch，进程内 import 必失败，
-    若在此分支探测会误判为 CPU，故一律走 PYTHON 子进程。"""
+    SB_DEVICE=mps/cuda/cpu 可显式覆盖（如 MPS 与某模型不兼容时强制 CPU）。
+    探测优先级：macOS 的 Apple Silicon MPS → CUDA → CPU，与 torch 的
+    平台语义一致：macOS 上 torch.cuda.is_available() 恒为 False。
+    开发版 GUI 解释器通常没有 torch，故一律用 PYTHON（带 torch 的运行时）
+    做子进程探测，避免在无 torch 的分支误判为 CPU。"""
+    override = os.environ.get("SB_DEVICE", "").strip().lower()
+    if override in ("mps", "cuda", "cpu"):
+        _tr(f"auto_device: override SB_DEVICE={override}")
+        return override
     _tr("auto_device: start")
     py = PYTHON
+    probe = ("import torch;"
+             "_mps = getattr(torch.backends, 'mps', None) is not None "
+             "and torch.backends.mps.is_available();"
+             "print('mps' if _mps else ('cuda' if torch.cuda.is_available() else 'cpu'))")
     try:
-        probe = subprocess.run(
-            [str(py), "-c", "import torch;print('1' if torch.cuda.is_available() else '0')"],
+        probe_run = subprocess.run(
+            [str(py), "-c", probe],
             capture_output=True, text=True, timeout=120, creationflags=_NO_WINDOW,
         )
-        _tr(f"auto_device: probe({py}) -> {probe.stdout.strip()} err={probe.stderr[-200:]!r}")
-        return "cuda" if ("1" in probe.stdout) else "cpu"
+        dev = probe_run.stdout.strip().splitlines()[-1] if probe_run.stdout.strip() else ""
+        _tr(f"auto_device: probe({py}) -> {dev!r} err={probe_run.stderr[-200:]!r}")
+        return dev if dev in ("mps", "cuda", "cpu") else "cpu"
     except Exception as e:
         _tr(f"auto_device: probe err {e!r}")
         return "cpu"
@@ -162,7 +183,8 @@ def auto_device():
 def ffmpeg_bin():
     """ffmpeg 可执行：优先 runtime 内置 → 环境变量 → PATH。"""
     if ASSETS is not None:
-        cand = ASSETS / "ffmpeg" / "bin" / "ffmpeg.exe"
+        exe_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+        cand = ASSETS / "ffmpeg" / "bin" / exe_name
         if cand.exists():
             return str(cand)
     env = os.environ.get("SB_FFMPEG")
@@ -199,14 +221,22 @@ _ACTIVE_LOCK = threading.Lock()
 
 def _kill_tree(proc):
     """终止整棵进程树。proc.kill() 只杀直接子进程，demucs 的 DataLoader
-    worker 等孙进程会残留继续占用 CPU/GPU，必须 taskkill /T 连根拔。"""
-    try:
-        subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-            capture_output=True, timeout=15, creationflags=_NO_WINDOW,
-        )
-    except Exception:
-        pass
+    worker 等孙进程会残留继续占用 CPU/GPU。Windows 用 taskkill /T 连根拔；
+    POSIX 下管线子进程以独立进程组启动（见 _run_stream 的 start_new_session），
+    killpg(pgid=pid) 一次带走整棵树。"""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True, timeout=15, creationflags=_NO_WINDOW,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            pass
     for kill in (proc.kill, proc.wait):
         try:
             kill()
@@ -258,7 +288,9 @@ def _run_stream(cmd, cwd, env=None, on_progress=None, cancel=None):
     proc = subprocess.Popen(
         cmd, cwd=str(cwd), env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        creationflags=_NO_WINDOW,
+        # POSIX 下让子进程自成进程组，取消/退出时 killpg 连孙进程一起清；
+        # Windows 上该参数被忽略，杀树走 taskkill /T。
+        start_new_session=(os.name != "nt"),
     )
     with _ACTIVE_LOCK:
         _ACTIVE.add(proc)
@@ -436,7 +468,7 @@ def stage_lew(input_wav, out_wav, device="cuda", progress=None, quality=1, guida
         progress(1.0, "Lew 完成")
 
 
-def stage_demucs(input_wav, out_dir, progress=None, cancel=None):
+def stage_demucs(input_wav, out_dir, progress=None, cancel=None, device=None):
     if progress:
         progress(0.0, "Demucs 四轨分离")
     out_dir = Path(out_dir)
@@ -455,6 +487,11 @@ def stage_demucs(input_wav, out_dir, progress=None, cancel=None):
     # 需要作用在鼓所在的轨上（实测 kick 起音 ~100% 落在 drums 轨），两轨模式拿不到 drums
     cmd = [PYTHON, "-m", "demucs", "--float32", "--clip-mode=none", "-n", "htdemucs",
            "-o", str(out_dir), str(input_wav)]
+    # macOS Apple Silicon：demucs CLI 缺省按 cuda→cpu 选择，MPS 永远选不上，
+    # 显式传 -d mps 走 GPU（实测分轨与 CPU 数值一致、约 2 倍速）；CUDA 保持
+    # demucs 自带探测，Windows 行为不变。
+    if device == "mps":
+        cmd += ["-d", "mps"]
     # 流式解析 demucs 的 tqdm 百分比 → 真实阶段进度
     _run_stream(cmd, out_dir, env=env, cancel=cancel,
                 on_progress=(lambda f: progress(f, "Demucs 四轨分离")) if progress else None)
@@ -669,6 +706,26 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     if not bypass <= {"lew", "vocals", "bass", "drums", "reshape", "soren"}:
         raise PipelineError(f"未知 bypass 阶段: {sorted(bypass)}")
 
+    # ── macOS TCC 加固 ──
+    # 输入文件位于 Desktop/Downloads 等受保护目录时，拖放/文件对话框授予
+    # 父进程的访问权不传递给推理子进程（ffmpeg 等），子进程读取会以 EPERM
+    # 失败（现象：命令失败（1），Windows 上无此机制）。对策：父进程先把
+    # 输入复制到系统临时目录、工作目录也放临时目录（子进程只碰临时目录），
+    # 最终产物再由父进程写回输出目录（父进程持有对话框授予的访问权）。
+    neutralize_tcc = sys.platform == "darwin" and work_dir is None
+    if neutralize_tcc:
+        try:
+            tcc_tmp = Path(tempfile.mkdtemp(prefix="sb_tcc_"))
+            staged = tcc_tmp / input_wav.name
+            shutil.copy2(input_wav, staged)
+            input_wav = staged
+            work_dir = tcc_tmp
+        except OSError as exc:
+            raise PipelineError(
+                f"无法读取输入文件 {input_wav}：{exc}。请将文件移出"
+                "「桌面 / 下载」等受保护目录后重试，或在系统设置 → 隐私与"
+                "安全性 → 文件与文件夹中允许 ShadowBuster 访问。") from exc
+
     stem = input_wav.stem
     out_final = output_dir / f"{stem}_shadowbuster.wav"
     lew_out = work / f"{stem}_lew.wav"
@@ -759,7 +816,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
             run_lew(input_wav, lew_out, device=device, progress=cb(0),
                       quality=quality, guidance=guidance, cancel=cancel)
             lew_src = lew_out
-        run_demucs(lew_src, stems_out, progress=cb(1), cancel=cancel)
+        run_demucs(lew_src, stems_out, progress=cb(1), cancel=cancel, device=device)
         stem_dir = stems_out / "htdemucs" / lew_src.stem
         if "bass" in bypass:
             shutil.copyfile(lew_src, bass_out)
@@ -800,7 +857,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
                 original_stems = work / "original_reference_stems"
                 # HTDemucs preserves sample origin; DSP rejects frame/rate mismatch.
                 run_convert(input_wav, original_mix, sr=44100)
-                run_demucs(original_mix, original_stems, cancel=cancel)
+                run_demucs(original_mix, original_stems, cancel=cancel, device=device)
                 original_vocals = original_stems / "htdemucs" / original_mix.stem / "vocals.wav"
             run_vocals(stem_dir, shape_out, vocal_out, gain_db=vocal_gain_db,
                          balance_target_db=balance_target_db,

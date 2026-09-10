@@ -1,4 +1,11 @@
 import json
+import os
+import pytest
+
+# GPU 环境下载/安装是 Windows（CUDA）专属机制；macOS 走系统内置
+# MPS/CPU（studio_backend 自动守卫），以下全部用例不适用非 Windows。
+pytestmark = pytest.mark.skipif(os.name != "nt", reason="GPU 环境机制仅 Windows 适用")
+
 from unittest import mock
 import main
 import gpu_env

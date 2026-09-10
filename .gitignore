@@ -109,3 +109,11 @@ Desktop.ini
 /ui_v2*.png
 /ui_packaged*.png
 /ui_shot*.png
+
+# ── macOS 构建产物与本地环境（追加）──
+.venv-*/
+packaging/stage/
+dev_runtime/
+dist/
+webview_storage/
+.DS_Store

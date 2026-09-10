@@ -1475,7 +1475,9 @@
     }
     if (r.type === "state") {
       if (r.dev) {
-        gpuStatusEl.textContent = "开发模式使用本地环境，无需下载 GPU 包";
+        gpuStatusEl.textContent = r.platform === "darwin"
+          ? "使用系统内置的 Apple Silicon（MPS/CPU）推理，无需下载 GPU 包"
+          : "开发模式使用本地环境，无需下载 GPU 包";
         gpuDlBtn.hidden = true; gpuCancelBtn.hidden = true; gpuRestartBtn.hidden = true;
         GpuState.installed = null; GpuState.source = null; GpuState.downloading = false;
         gpuProg.hidden = true;
@@ -1510,6 +1512,7 @@
     } else if (r.type === "device") {
       GpuState.dev = r.device;
       if (GpuState.installed) gpuRow();
+      else if (r.device === "mps") gpuStatusEl.textContent = "GPU 加速已启用（Apple Silicon MPS）";
     } else if (r.type === "busy") {
       if (GpuState.downloading) return;
       gpuProg.hidden = true;

@@ -213,8 +213,11 @@ class Bridge(QObject):
 
     def _gpu_check_worker(self):
         try:
-            if not getattr(sys, "frozen", False):
-                self._gpu_emit({"type": "state", "dev": True})
+            if os.name != "nt" or not getattr(sys, "frozen", False):
+                # GPU 运行时下载是 Windows（NVIDIA CUDA）专属机制；macOS 走
+                # 系统内置 MPS/CPU，开发模式用本地环境，都无需下载。
+                self._gpu_emit({"type": "state", "dev": True,
+                                "platform": sys.platform})
                 return
             import gpu_env as ge
             # 检测顺序：应用目录（新安装位置）→ 旧版用户目录（系统环境）；
@@ -313,6 +316,10 @@ class Bridge(QObject):
                                 "cur": int(cur), "total": int(total)})
 
         try:
+            if os.name != "nt":
+                raise RuntimeError(
+                    "GPU 运行时下载仅支持 Windows；macOS 使用系统内置的 "
+                    "Apple Silicon MPS / CPU 推理，无需下载运行时。")
             installed = ge.installed_info(expected_version=backend.GPU_ENV_VERSION)
             if installed is not None:
                 self._gpu_emit({"type": "done", "version": installed["version"],
@@ -633,7 +640,14 @@ class Bridge(QObject):
     @Slot(str)
     def openFolder(self, path):
         import subprocess
-        subprocess.Popen(["explorer", "/select,", str(Path(path).resolve())])
+        resolved = str(Path(path).resolve())
+        if sys.platform == "darwin":
+            # Finder 里定位该文件/目录（目录不存在时 open -R 回退打开父目录）
+            subprocess.Popen(["open", "-R", resolved])
+        elif os.name == "nt":
+            subprocess.Popen(["explorer", "/select,", resolved])
+        else:
+            subprocess.Popen(["xdg-open", resolved])
 
     @Slot()
     def help(self):
@@ -734,7 +748,13 @@ class StudioWindow(QMainWindow):
         self.setWindowTitle("ShadowBuster — 击碎暗影 · 重塑声浪")
         self.setMinimumSize(*MIN_WINDOW)
         self._restore_or_default_geometry()
-        self.setWindowIcon(QIcon(str(ROOT / "ui" / "logo.ico")))
+        # Windows 用 ico；macOS/Linux 优先 icns（红边新版设计，与 .app bundle
+        # 图标同源，QIcon 可直接读取），无 icns 时回退 logo.png（旧版紫色设计）
+        if os.name == "nt":
+            icon_file = "logo.ico"
+        else:
+            icon_file = "logo.icns" if (ROOT / "ui" / "logo.icns").exists() else "logo.png"
+        self.setWindowIcon(QIcon(str(ROOT / "ui" / icon_file)))
 
         self.view = DropAwareWebEngineView(self)
         self.view.setContextMenuPolicy(Qt.NoContextMenu)
@@ -742,7 +762,7 @@ class StudioWindow(QMainWindow):
         # 显式使用命名 Profile 并开启持久存储，
         # 让前端 localStorage 在关闭后仍能保留参数。
         profile = QWebEngineProfile("ShadowBusterProfile", self.view)
-        profile.setPersistentStoragePath(str(ROOT / "webview_storage"))
+        profile.setPersistentStoragePath(str(self._persistent_storage_dir()))
         page = QWebEnginePage(profile, self.view)
         self.view.setPage(page)
 
@@ -765,6 +785,17 @@ class StudioWindow(QMainWindow):
         apply_native_theme(self, "dark")
 
         self.view.load(QUrl.fromLocalFile(str(UI_INDEX.resolve())))
+
+    def _persistent_storage_dir(self):
+        """WebView 持久存储目录。安装目录可写时随程序走（Windows 惯例）；
+        macOS .app 只读且用户不应翻包内容，放 ~/Library/Application Support。"""
+        if getattr(sys, "frozen", False) and sys.platform == "darwin":
+            from PySide6.QtCore import QStandardPaths
+            base = Path(QStandardPaths.writableLocation(
+                QStandardPaths.AppDataLocation))
+            (base / "webview_storage").mkdir(parents=True, exist_ok=True)
+            return base / "webview_storage"
+        return ROOT / "webview_storage"
 
     def _restore_or_default_geometry(self):
         """恢复上次窗口几何；首次启动按屏幕自适应默认尺寸并居中。
@@ -800,18 +831,124 @@ class StudioWindow(QMainWindow):
         settings = QSettings("AngleNaris", "ShadowBuster")
         settings.setValue("window/size", self.size())
         settings.setValue("window/pos", self.pos())
-        self.bridge.cancel()
-        backend.terminate_all()   # 兜底：杀掉仍在跑的推理子进程树
+        # 只在关闭最后一个主窗口时才终止任务：任何原因产生的额外窗口
+        # （系统重复激活、用户误开副本等）被关闭时，不应打断仍在进行的批处理
+        others = [w for w in QApplication.topLevelWidgets()
+                  if isinstance(w, StudioWindow) and w is not self]
+        if not any(o.isVisible() for o in others):
+            self.bridge.cancel()
+            backend.terminate_all()   # 兜底：杀掉仍在跑的推理子进程树
         event.accept()
+
+
+if sys.platform == "darwin":
+    try:
+        import objc
+        from AppKit import NSCompositingOperationSourceOver, NSView
+        from Foundation import NSMakeRect, NSZeroRect
+
+        class _FillIconView(NSView):
+            """按当前 bounds 绘制图标：内容占 ~80.5%（与其他应用图标的
+            824/1024 模板内容区一致），Dock 任意缩放磁贴都自动适配。"""
+            image = None
+
+            def drawRect_(self, rect):
+                if self.image is None:
+                    return
+                b = self.bounds()
+                inset = b.size.width * 0.0975   # (1024-824)/2/1024，对齐系统模板边距
+                self.image.drawInRect_fromRect_operation_fraction_(
+                    NSMakeRect(b.origin.x + inset, b.origin.y + inset,
+                               b.size.width - 2 * inset, b.size.height - 2 * inset),
+                    NSZeroRect, NSCompositingOperationSourceOver, 1.0)
+    except Exception:   # pyobjc 不可用时保持 _FillIconView 未定义，走回退
+        _FillIconView = None
+else:
+    _FillIconView = None
+
+
+def apply_custom_dock_icon(window):
+    """macOS 26 (Tahoe) 把 .icns 静态图标强制模板化：满幅方形裁系统圆角，
+    带透明边角则垫玻璃底板，且无任何开关。经 NSDockTile.contentView 放入
+    自定义 NSView 可绕过模板——Dock 按原样绘制直角图标（见
+    simonbs.dev "How To Bring Back Oddly Shaped App Icons on macOS 26 Tahoe"）。
+    需要 pyobjc-framework-Cocoa；缺失或失败时静默回退系统模板化图标。"""
+    if _FillIconView is None:
+        return
+    try:
+        from Foundation import NSApplication, NSImage
+        icon_path = ROOT / "ui" / "logo.png"   # 1024px 红边直角设计
+        image = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+        if image is None:
+            backend._tr("dock tile: icon load failed")
+            return
+        tile = NSApplication.sharedApplication().dockTile()
+        w = tile.size().width or 128
+        h = tile.size().height or 128
+        view = _FillIconView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        view.image = image
+        tile.setContentView_(view)
+        tile.display()
+        backend._tr(f"dock tile: custom sharp-corner icon applied (tile {w}x{h})")
+    except Exception as e:
+        backend._tr(f"dock tile: override failed {e!r}")
+
+
+_SINGLE_INSTANCE_KEY = "ShadowBuster.SingleInstance"
+
+
+def _another_instance_running():
+    """单实例检测：尝试连接已有实例的命名服务。连上即说明已有实例在跑，
+    给它发一个 raise 消息让它把主窗口带到前台，然后调用方退出本进程。"""
+    from PySide6.QtNetwork import QLocalSocket
+    sock = QLocalSocket()
+    sock.connectToServer(_SINGLE_INSTANCE_KEY)
+    connected = sock.waitForConnected(300)
+    if connected:
+        sock.write(b"raise\n")
+        sock.flush()
+        # 对端收到 raise 后可能已断开，避免对已断开套接字调用 waitForBytesWritten
+        if sock.state() == QLocalSocket.ConnectedState:
+            sock.waitForBytesWritten(500)
+    sock.abort()
+    return connected
+
+
+def _activate_existing_window(server, window):
+    """收到二次启动实例的 raise 消息：把主窗口带到前台。"""
+    conn = server.nextPendingConnection()
+    if conn is None:
+        return
+    conn.readAll()
+    conn.disconnectFromServer()
+    window.show()
+    window.raise_()
+    window.activateWindow()
 
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ShadowBuster")
+
+    # 单实例守卫：DMG 副本 / Applications 副本 / 快速双击都可能产生第二个
+    # 实例（macOS 不会按 bundle id 去重不同路径的启动），两个一模一样的窗口
+    # 会让用户混淆窗口归属；二次启动一律唤起已有窗口后退出。
+    from PySide6.QtNetwork import QLocalServer
+    if _another_instance_running():
+        return 0
+    QLocalServer.removeServer(_SINGLE_INSTANCE_KEY)   # 清理崩溃残留的套接字
+    server = QLocalServer()
+    server.listen(_SINGLE_INSTANCE_KEY)
+
     win = StudioWindow()
     win.show()
-    sys.exit(app.exec())
+    apply_custom_dock_icon(win)
+    server.newConnection.connect(
+        lambda: _activate_existing_window(server, win))
+    ret = app.exec()
+    server.close()
+    return ret
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

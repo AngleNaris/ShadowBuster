@@ -1,8 +1,14 @@
 """gpu_env 模块单元测试：清单校验 / 地址匹配 / 断点续传 / 组装 / 哈希 /
 解压 / 环境切换（全部纯逻辑，不访问网络）。"""
 import hashlib
-import json
 import os
+import pytest
+
+# GPU 环境下载/安装是 Windows（CUDA）专属机制；macOS 走系统内置
+# MPS/CPU（studio_backend 自动守卫），以下全部用例不适用非 Windows。
+pytestmark = pytest.mark.skipif(os.name != "nt", reason="GPU 环境机制仅 Windows 适用")
+
+import json
 import tempfile
 import unittest
 import zipfile

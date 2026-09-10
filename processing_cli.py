@@ -68,7 +68,7 @@ def main(argv=None):
                 kwargs.pop(key)
             kwargs['bypass'] = [p.strip() for p in opts.bypass.split(',') if p.strip()]
             kwargs['cache_enabled'] = not kwargs.pop('no_cache')
-            kwargs['device'] = 'cpu' if opts.cpu else 'cuda'
+            kwargs['device'] = 'cpu' if opts.cpu else backend.auto_device()
             results = backend.run_batch(inputs, opts.output, **kwargs)
             report['outputs'] = [{'input': i, 'output': o, 'error': e} for i,o,e in results]
             code = 1 if any(e for _,_,e in results) else 0

@@ -113,7 +113,8 @@ class VocalPipelineRoutingTests(unittest.TestCase):
                 studio_backend.run_pipeline(source, root/'out',
                     bypass=('bass','drums','reshape','soren'))
             decode.assert_called_once()
-            self.assertEqual(decode.call_args.args[0], source)
+            # macOS TCC 中性化会先把输入复制到临时目录：断言内容一致而非路径相同
+            self.assertEqual(decode.call_args.args[0].read_bytes(), source.read_bytes())
             self.assertEqual(separate.call_count, 2)
             routed = calls[0]
             self.assertEqual(routed['balance_mode'], studio_backend.REFERENCE_MODE)
