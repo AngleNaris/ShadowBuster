@@ -1,4 +1,19 @@
-"""Apply the additive style-off patch to hash-pinned runtime baselines."""
+"""[历史脚本·已停用] Apply the additive style-off patch to hash-pinned runtime baselines.
+
+2026-09-09 工作区统一化：本脚本曾直接改写 packaging/stage 副本，会造成
+canonical（packaging/soren_core.py / soren_original.py）与派生 stage 分叉，
+现拒绝执行。统一入口：
+  开发态：python tools/make_dev_runtime.py
+  打包态：packaging/runtime_sync.ps1
+如确需复现历史行为，设环境变量 SB_ACK_HISTORICAL_SCRIPT=1（不建议）。
+"""
+import os
+import sys
+
+if os.environ.get("SB_ACK_HISTORICAL_SCRIPT") != "1":
+    sys.exit("[历史脚本] patch_soren_style.py 已停用：直改 stage 会造成分叉。"
+             "统一入口：tools/make_dev_runtime.py（开发）或 packaging/runtime_sync.ps1（打包）。")
+
 from pathlib import Path
 import hashlib
 ROOT = Path(__file__).resolve().parents[1]

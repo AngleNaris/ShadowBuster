@@ -7,8 +7,13 @@ import pytest
 from scipy import signal
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE = ROOT/'packaging/stage/runtime/Soren_src/core_decrypted.py'
-sys.path.insert(0, str(CORE.parent))
+# 权威源码：packaging/soren_core.py（打包/运行时同名 core_decrypted.py）；
+# test_model 等资源走统一路由（dev runtime 优先，SB_SOREN/外部兜底）。
+CORE = ROOT/'packaging/soren_core.py'
+from soren_resources import SOREN_RESOURCE_DIR
+sys.path.insert(0, str(SOREN_RESOURCE_DIR))
+STAGE_CPU = ROOT/'packaging/stage/runtime/Soren_src/core_decrypted.py'
+STAGE_GPU = ROOT/'packaging/stage/runtime_gpu/Soren_src/core_decrypted.py'
 spec = importlib.util.spec_from_file_location('soren_style_test_core', CORE)
 core = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = core
@@ -56,6 +61,7 @@ def test_off_active_limiter_target_and_peak():
 
 def test_backend_default_and_off_cli(monkeypatch):
     import studio_backend as b
+    monkeypatch.setattr(b, '_ensure_dev_runtime', lambda: b.DEV_SOREN_RUNTIME)
     calls=[]
     monkeypatch.setattr(b,'_run_stream',lambda cmd,*a,**k:calls.append(cmd))
     b.stage_soren('in.wav','out.wav')
@@ -82,6 +88,7 @@ def test_batch_pipeline_style_routing(tmp_path, monkeypatch):
         calls.append(kwargs)
         shutil.copyfile(src,dst)
     monkeypatch.setattr(b,'stage_soren',master)
+    monkeypatch.setattr(b, '_ensure_dev_runtime', lambda: b.DEV_SOREN_RUNTIME)
     b.run_batch([source],tmp_path/'out',style_mode='off',
                 bypass=('lew','bass','drums','reshape','vocals'))
     assert len(calls)==1 and calls[0]['style_mode']=='off'
@@ -119,5 +126,11 @@ def test_gui_exposes_none_and_routes_eq_and_loudness():
     assert 'style_mode=params.get("style_mode", "styled")' in main
 
 
-def test_runtime_cores_identical():
-    assert CORE.read_bytes()==(ROOT/'packaging/stage/runtime_gpu/Soren_src/core_decrypted.py').read_bytes()
+@pytest.mark.skipif(not STAGE_CPU.is_file(),
+                    reason='packaging/stage 为派生产物且未构建；一致性由 runtime_sync 自检覆盖')
+def test_staged_cores_match_canonical():
+    """stage 副本存在时必须与 canonical 逐字节一致（构建一致性抽查）。"""
+    canonical = (ROOT/'packaging/soren_core.py').read_bytes()
+    assert STAGE_CPU.read_bytes() == canonical
+    if STAGE_GPU.is_file():
+        assert STAGE_GPU.read_bytes() == canonical

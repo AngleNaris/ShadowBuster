@@ -1445,7 +1445,7 @@
   const gpuStatusEl = $("gpu-status");
   const gpuProg = $("gpu-progress"), gpuProgFill = $("gpu-progress-fill");
   const gpuDlBtn = $("btn-gpu-download"), gpuCancelBtn = $("btn-gpu-cancel"), gpuRestartBtn = $("btn-gpu-restart");
-  const GpuState = { installed: null, dev: null, downloading: false, checking: false };
+  const GpuState = { installed: null, source: null, dev: null, downloading: false, checking: false };
   const fmtSize = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1) + " GB" : Math.ceil(b / 1048576) + " MB");
   function setGpuBar(pct) {
     gpuProg.hidden = false;
@@ -1458,9 +1458,10 @@
     gpuCancelBtn.hidden = !GpuState.downloading;
     gpuRestartBtn.hidden = true;
     if (inst) {
-      if (GpuState.dev === "cuda") gpuStatusEl.textContent = "GPU 加速已启用（CUDA）";
-      else if (GpuState.dev === "cpu") gpuStatusEl.textContent = `GPU 环境已安装（v${inst.version || "?"}），但未检测到可用 NVIDIA GPU`;
-      else gpuStatusEl.textContent = `GPU 环境已安装（v${inst.version || "?"}）`;
+      const loc = GpuState.source === "system" ? "，来自系统环境" : "";
+      if (GpuState.dev === "cuda") gpuStatusEl.textContent = `GPU 加速已启用（CUDA${loc}）`;
+      else if (GpuState.dev === "cpu") gpuStatusEl.textContent = `GPU 环境已就绪（v${inst.version || "?"}${loc}），但未检测到可用 NVIDIA GPU`;
+      else gpuStatusEl.textContent = `GPU 环境已就绪（v${inst.version || "?"}${loc}）`;
     }
   }
   function onGpuStatus(raw) {
@@ -1476,22 +1477,36 @@
       if (r.dev) {
         gpuStatusEl.textContent = "开发模式使用本地环境，无需下载 GPU 包";
         gpuDlBtn.hidden = true; gpuCancelBtn.hidden = true; gpuRestartBtn.hidden = true;
-        GpuState.installed = null; GpuState.downloading = false;
+        GpuState.installed = null; GpuState.source = null; GpuState.downloading = false;
         gpuProg.hidden = true;
         return;
       }
       GpuState.installed = r.installed || null;
+      GpuState.source = r.source || (r.installed ? "app" : null);
       GpuState.downloading = false;
       gpuProg.hidden = true;
       if (GpuState.installed) {
         gpuRow();
+      } else if (r.writable === false) {
+        gpuStatusEl.textContent = "未检测到可用的 GPU 环境；应用安装目录不可写，无法下载安装。请以管理员身份运行应用，或将应用安装到当前用户可写的目录";
+        gpuDlBtn.hidden = true; gpuCancelBtn.hidden = true;
+      } else if (r.manifest && r.nvidiaDriver === false) {
+        gpuStatusEl.textContent = `未检测到可用的 GPU 环境；未检测到 NVIDIA 显卡驱动，下载 CUDA 运行时（约 ${fmtSize(r.manifest.totalSize)}）也无法启用 GPU 加速`;
+        gpuDlBtn.hidden = false; gpuCancelBtn.hidden = true;
       } else if (r.manifest) {
-        gpuStatusEl.textContent = `GPU 加速未启用，可下载 CUDA 运行时（约 ${fmtSize(r.manifest.totalSize)}）`;
+        gpuStatusEl.textContent = `未检测到可用的 GPU 环境，可下载 CUDA 运行时（约 ${fmtSize(r.manifest.totalSize)}）安装到应用目录`;
         gpuDlBtn.hidden = false; gpuCancelBtn.hidden = true;
       } else {
         gpuStatusEl.textContent = r.error ? `GPU 环境信息获取失败：${r.error}` : "未检测到 GPU 环境发布信息";
         gpuDlBtn.hidden = true; gpuCancelBtn.hidden = true;
       }
+    } else if (r.type === "scanning") {
+      gpuProg.hidden = true;
+      gpuCancelBtn.hidden = true; gpuRestartBtn.hidden = true;
+      gpuDlBtn.hidden = true;
+      gpuStatusEl.textContent = r.phase === "app" ? "正在检查应用目录中的 GPU 环境…"
+        : r.phase === "system" ? "正在检查系统环境中的 GPU 环境…"
+        : "正在检查 GPU 环境…";
     } else if (r.type === "device") {
       GpuState.dev = r.device;
       if (GpuState.installed) gpuRow();
@@ -1514,6 +1529,7 @@
       gpuCancelBtn.hidden = false; gpuCancelBtn.disabled = false;
     } else if (r.type === "done") {
       GpuState.installed = { version: r.version || "" };
+      GpuState.source = "app";
       GpuState.downloading = false;
       gpuStatusEl.textContent = `GPU 环境安装完成（v${r.version}），重启应用后生效`;
       gpuProg.hidden = true;

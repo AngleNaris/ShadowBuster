@@ -217,9 +217,17 @@ class Bridge(QObject):
                 self._gpu_emit({"type": "state", "dev": True})
                 return
             import gpu_env as ge
+            # 检测顺序：应用目录（新安装位置）→ 旧版用户目录（系统环境）；
+            # 任一可用即无需下载。scanning 事件供 UI 展示扫描进度提示。
+            self._gpu_emit({"type": "scanning", "phase": "app"})
             current = ge.installed_info(expected_version=backend.GPU_ENV_VERSION)
+            source = "app"
+            if current is None:
+                self._gpu_emit({"type": "scanning", "phase": "system"})
+                current = ge.legacy_installed_info(expected_version=backend.GPU_ENV_VERSION)
+                source = "system"
             if current is not None:
-                self._gpu_emit({"type": "state", "installed": current,
+                self._gpu_emit({"type": "state", "installed": current, "source": source,
                                 "manifest": None, "error": None})
                 return
             m = ge.load_manifest(backend.GPU_ENV_VERSION)
@@ -237,7 +245,7 @@ class Bridge(QObject):
                     torch_version="2.7.1+cu128",
                     torchaudio_version="2.7.1+cu128",
                 )
-            if installed is None:
+            if installed is None and ge.app_writable():
                 installed = ge.migrate_legacy_runtime(
                     backend.ROOT / "runtime" / "env",
                     m["version"], m["sha256"],
@@ -246,12 +254,16 @@ class Bridge(QObject):
                     torchaudio_version="2.7.1+cu128",
                 )
             payload = {"type": "state", "installed": installed,
+                       "source": "app" if installed else None,
                        "manifest": {
                            "version": m["version"],
                            "totalSize": m["totalSize"],
                            "sha256": m["sha256"],
                            "parts": [{"name": p["name"], "size": p["size"]} for p in m["parts"]],
-                       }, "error": None}
+                       },
+                       "writable": ge.app_writable(),
+                       "nvidiaDriver": ge.nvidia_driver_present(),
+                       "error": None}
             self._gpu_emit(payload)
         except Exception as e:   # 兜底
             self._gpu_emit({"type": "error", "msg": f"内部错误: {e}"[:200]})
@@ -306,6 +318,12 @@ class Bridge(QObject):
                 self._gpu_emit({"type": "done", "version": installed["version"],
                                 "reused": True})
                 return
+            # GPU 环境就地安装到应用目录；目录不可写（如 Program Files 非
+            # 提权）时提前终止，避免白下载几个 GB 才失败。
+            if not ge.app_writable():
+                raise RuntimeError(
+                    "应用安装目录不可写，无法安装 GPU 环境；请以管理员身份运行"
+                    "应用，或将应用安装到当前用户可写的目录后重试")
             self._gpu_emit({"type": "progress", "phase": "info", "cur": 0, "total": 1})
             m = ge.load_manifest(backend.GPU_ENV_VERSION)
             expected_torch = "2.7.1+cu128"
@@ -336,8 +354,8 @@ class Bridge(QObject):
                 return
 
             total = m["totalSize"]
-            ge.user_base_dir().mkdir(parents=True, exist_ok=True)
-            free = _shutil.disk_usage(ge.user_base_dir()).free
+            ge.runner_dir().mkdir(parents=True, exist_ok=True)
+            free = _shutil.disk_usage(ge.runner_dir()).free
             if free < total * 2 + (1 << 30):
                 raise RuntimeError(f"磁盘空间不足：需要约 {max(1, (total*2 + (1<<30)) >> 30)} GB，"
                                    f"当前可用 {free >> 30} GB")
@@ -389,7 +407,7 @@ class Bridge(QObject):
 
             with _zipfile.ZipFile(zpath) as zf:
                 extracted = sum(i.file_size for i in zf.infolist() if not i.is_dir())
-            free = _shutil.disk_usage(ge.user_base_dir()).free
+            free = _shutil.disk_usage(ge.runner_dir()).free
             if free < extracted + (1 << 30):
                 raise RuntimeError(f"解压空间不足：需要约 {max(1, (extracted + (1<<30)) >> 30)} GB，"
                                    f"当前可用 {free >> 30} GB，请清理后重试")
@@ -422,8 +440,10 @@ class Bridge(QObject):
             self._gpu_emit({"type": "cancelled"})
         except Exception as e:
             msg = str(e)
-            if getattr(e, "winerror", None) in {5, 32, 33}:
-                msg = f"GPU 环境切换被 Windows 文件占用或权限阻止；旧环境和已下载缓存已保留，请关闭正在处理的任务后重试。{msg}"
+            if isinstance(e, PermissionError) or getattr(e, "winerror", None) in {5, 32, 33}:
+                msg = (f"GPU 环境写入应用目录被 Windows 权限或文件占用阻止；"
+                       f"现有环境和已下载缓存均已保留，请以管理员身份运行应用、"
+                       f"关闭正在处理的任务后重试。{msg}")
             self._gpu_emit({"type": "error", "msg": msg[:300]})
         finally:
             if staging is not None and not swap_started and staging.exists():

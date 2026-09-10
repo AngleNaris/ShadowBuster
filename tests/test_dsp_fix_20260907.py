@@ -19,10 +19,12 @@ import pytest
 from scipy import signal
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = ROOT / 'packaging/stage/runtime/Soren_src'
 APOLLO_DIR = ROOT / 'apollo_scripts'
-if str(RUNTIME) not in sys.path:
-    sys.path.insert(0, str(RUNTIME))  # soren_original 顶层 import test_model
+# soren_original 顶层 import test_model：资源走统一路由（dev runtime 优先，
+# SB_SOREN/外部兜底），不再依赖 packaging/stage 派生副本。
+from soren_resources import SOREN_RESOURCE_DIR as _soren_res
+if str(_soren_res) not in sys.path:
+    sys.path.insert(0, str(_soren_res))
 if str(APOLLO_DIR) not in sys.path:
     sys.path.insert(0, str(APOLLO_DIR))
 

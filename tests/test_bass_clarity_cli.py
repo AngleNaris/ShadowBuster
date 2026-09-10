@@ -68,7 +68,7 @@ def test_mastering_sidecars_stay_private_and_routing(tmp_path):
         assert Path(dest).parent != out
         Path(dest).write_bytes(b'mastered')
         Path(str(dest)+'.mastering.json').write_bytes(b'{}')
-    with patch.object(backend,'stage_demucs'), patch.object(backend,'stage_bass',side_effect=copy_stage) as b, patch.object(backend,'stage_drums',side_effect=copy_stage) as d, patch.object(backend,'stage_soren',side_effect=master):
+    with patch.object(backend,'stage_demucs'), patch.object(backend,'stage_bass',side_effect=copy_stage) as b, patch.object(backend,'stage_drums',side_effect=copy_stage) as d, patch.object(backend,'stage_soren',side_effect=master), patch.object(backend, '_ensure_dev_runtime', return_value=tmp_path/'runtime'):
         result=backend.run_pipeline(source,out,bypass=['lew','reshape','vocals'],bass_auto_clarity=True,punch_db=4,trans=.5)
     assert b.call_args.kwargs['auto_clarity'] is True
     assert b.call_args.kwargs['punch_db']==b.call_args.kwargs['trans']==0

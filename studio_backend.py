@@ -14,7 +14,7 @@ from apollo_scripts.stage_metadata import read_report
 from apollo_scripts.vocal_config import REFERENCE_MODE
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.6"
+APP_VERSION = "1.6.7"
 GPU_ENV_VERSION = "1.5.0"
 
 if getattr(sys, "frozen", False):
@@ -27,6 +27,55 @@ DEV_PYTHON = r"D:/_3.AI/audio_upscale/UniverSR/.venv/Scripts/python.exe"
 DEV_APOLLO = Path(r"D:/_3.AI/audio_upscale/Apollo")
 DEV_DSP = Path(__file__).parent / "apollo_scripts"
 DEV_SOREN = Path(r"D:/_3.AI/audio_upscale/Soren_src")
+# 开发态 canonical Soren 运行时（tools/make_dev_runtime.py 生成）：
+# 代码与打包权威逐字节一致，资源经 junction 引用 SB_SOREN/外部，绝不写外部。
+DEV_SOREN_RUNTIME = Path(__file__).parent / "dev_runtime" / "Soren_src"
+
+
+_DEV_RUNTIME_TOOL = None
+
+
+def _load_dev_runtime_tool():
+    """按路径加载 tools/make_dev_runtime.py（纯标准库，导入无副作用）。"""
+    global _DEV_RUNTIME_TOOL
+    if _DEV_RUNTIME_TOOL is None:
+        import importlib.util
+        tool_path = Path(__file__).parent / "tools" / "make_dev_runtime.py"
+        spec = importlib.util.spec_from_file_location("make_dev_runtime", tool_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["make_dev_runtime"] = module
+        spec.loader.exec_module(module)
+        _DEV_RUNTIME_TOOL = module
+    return _DEV_RUNTIME_TOOL
+
+
+def _dev_soren_dir():
+    """开发态 Soren 目录（惰性）：一律返回 canonical dev runtime 路径。
+
+    import 时不生成、不校验、不读任何外部资源——新 checkout 无 Soren 资源时
+    仍可导入本模块、跑 CLI --help 与全部非 Soren 测试。实际执行 Soren 前
+    必须经 _ensure_dev_runtime() 校验/生成；绝不回退执行外部旧 DSP。
+    """
+    return DEV_SOREN_RUNTIME
+
+
+def _ensure_dev_runtime():
+    """执行 Soren / 计算指纹前调用：校验/生成 canonical dev runtime（仅开发态）。
+
+    打包态（frozen 或 runtime/SB_ASSETS 已解析、ASSETS 非 None）直接返回已解析
+    的 SOREN_DIR，绝不触发 dev 工具。开发态缺失/陈旧/资源源（SB_SOREN）变化时
+    经 tools/make_dev_runtime.py 安全重建；含未知内容或用户改动时拒绝并指向
+    工具，绝不删除未知文件。
+    """
+    if getattr(sys, "frozen", False) or ASSETS is not None:
+        return Path(SOREN_DIR)
+    try:
+        return _load_dev_runtime_tool().ensure(target=DEV_SOREN_RUNTIME)
+    except Exception as exc:
+        raise RuntimeError(
+            "开发态 Soren runtime 不可用且无法安全生成（拒绝回退执行外部旧 DSP）。"
+            "请运行 python tools/make_dev_runtime.py（资源源经 SB_SOREN 指定，"
+            f"默认 D:/_3.AI/audio_upscale/Soren_src）。原因：{exc}") from exc
 
 # 无控制台的 GUI 进程里，子进程默认会新建可见控制台（安装版弹 python 黑框）；
 # CREATE_NO_WINDOW 让推理 / ffmpeg 子进程全程无窗。
@@ -34,21 +83,20 @@ _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 def _user_gpu_py():
-    """用户级 GPU 环境（设置内下载的 CUDA 运行时，v1.5）。
+    """GPU 环境（设置内下载的 CUDA 运行时，v1.5）。
 
-    装在 LOCALAPPDATA\\ShadowBuster\\runtime-gpu\\env（应用非提权运行也能写），
-    仅替换解释器；Apollo/Soren/权重仍读安装目录。返回解释器路径或 None。
+    新版装在应用目录 runtime-gpu\\env；旧版用户目录
+    LOCALAPPDATA\\ShadowBuster\\runtime-gpu\\env 仍被识别使用。
+    两处任一可用即采用，仅替换解释器，Apollo/Soren/权重仍读安装目录。
+    返回解释器路径或 None。
     """
     if not getattr(sys, "frozen", False):
         return None
     try:
         import gpu_env as ge
-        info = ge.installed_info(expected_version=GPU_ENV_VERSION)
+        return ge.usable_python(expected_version=GPU_ENV_VERSION)
     except (ImportError, OSError, ValueError):
         return None
-    if info is None:
-        return None
-    return ge.env_dir() / "python.exe"
 
 
 def _resolve_runtime():
@@ -56,7 +104,7 @@ def _resolve_runtime():
 
     部署包：优先取 exe 同级 runtime/（安装器就地放下，无需环境变量）；
     其次 SB_ASSETS 环境变量；都未设置时回退到开发机布局。
-    用户级 GPU 环境（LOCALAPPDATA\\ShadowBuster\\runtime-gpu）仅覆盖解释器。
+    GPU 环境（应用目录 runtime-gpu 或旧版用户目录）仅覆盖解释器。
     """
     upy = _user_gpu_py()
     if upy is not None:
@@ -78,7 +126,7 @@ def _resolve_runtime():
     return (
         Path(os.environ.get("SB_PYTHON", DEV_PYTHON)),
         Path(os.environ.get("SB_APOLLO", DEV_APOLLO)),
-        Path(os.environ.get("SB_SOREN", DEV_SOREN)),
+        _dev_soren_dir(),
         None,
     )
 
@@ -549,9 +597,10 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
         raise ValueError(f"Unknown Soren style mode: {style_mode}")
     if progress:
         progress(0.0, f"Soren 母带（{genre or '自定义参考'} / {loudness} / {eq_profile}）")
+    soren_dir = _ensure_dev_runtime()   # 执行前确保 canonical dev runtime（无资源时清晰报错）
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(SOREN_DIR)
-    cmd = [PYTHON, str(SOREN_DIR / "core_decrypted.py"),
+    env["PYTHONPATH"] = str(soren_dir)
+    cmd = [PYTHON, str(soren_dir / "core_decrypted.py"),
            str(input_wav), str(out_wav),
            "--loudness", loudness, "--eq-profile", eq_profile]
     if style_mode != "styled":
@@ -562,7 +611,7 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
         cmd += ["--genre", genre]
     if lowpass_cutoff:
         cmd += ["--lowpass-cutoff", str(lowpass_cutoff)]
-    _run_stream(cmd, SOREN_DIR, env=env, cancel=cancel,
+    _run_stream(cmd, soren_dir, env=env, cancel=cancel,
                 on_progress=(lambda f: progress(f * 0.999, "Soren 母带")) if progress else None)
     if progress:
         progress(1.0, "Soren 母带完成")
@@ -643,9 +692,17 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     import inspect
     import pipeline_cache
     implementation = [Path(__file__), Path(pipeline_cache.__file__)]
-    implementation += list(Path(DSP_DIR).glob("*.py")) + list(Path(SOREN_DIR).glob("*.py"))
+    # 指纹前确保 canonical dev runtime（soren 参与处理时）。失败在执行任何阶段前
+    # 中止：不执行、不缓存任何东西（绝不吞错，注释与行为一致）。
+    soren_root = Path(SOREN_DIR) if "soren" in bypass else _ensure_dev_runtime()
+    implementation += list(Path(DSP_DIR).glob("*.py")) + list(soren_root.glob("*.py"))
+    # dev runtime 有效性入缓存身份：manifest 记录资源源与生成期哈希，资源切换或
+    # 重建后旧缓存自动失效（dev runtime 下代码即 packaging canonical 字节）。
+    _dev_manifest = soren_root / "dev_runtime_manifest.json"
+    if _dev_manifest.is_file():
+        implementation.append(_dev_manifest)
     runtime_files = [Path(PYTHON)]
-    for folder in (Path(APOLLO_DIR), Path(SOREN_DIR)):
+    for folder in (Path(APOLLO_DIR), soren_root):
         for pattern in ("*.pt", "*.pth", "*.ckpt", "*.json", "*.yaml"):
             runtime_files.extend(folder.rglob(pattern))
     runtime_stamp = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in runtime_files if p.is_file()]

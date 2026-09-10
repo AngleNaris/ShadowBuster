@@ -28,8 +28,13 @@ class GpuEnvTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         os.environ["LOCALAPPDATA"] = self._tmp.name
+        # 安装根目录（应用目录）重定向到临时子目录，避免测试写仓库/真实环境
+        self._app = Path(self._tmp.name) / "app"
+        self._app_patch = mock.patch.object(ge, "app_root", return_value=self._app)
+        self._app_patch.start()
 
     def tearDown(self):
+        self._app_patch.stop()
         self._tmp.cleanup()
         os.environ.pop("LOCALAPPDATA", None)
 
@@ -180,13 +185,83 @@ class PickReleaseTests(GpuEnvTestCase):
 
 
 class PathAndCacheTests(GpuEnvTestCase):
-    def test_local_appdata_fallback_is_absolute(self):
+    def test_app_root_frozen_uses_executable_dir(self):
+        import types
+        exe = Path(self._tmp.name) / "ShadowBuster.exe"
+        with mock.patch.object(ge, "sys", types.SimpleNamespace(frozen=True, executable=str(exe))):
+            self.assertEqual(ge.app_root(), exe.parent)
+
+    def test_paths_derive_from_app_root(self):
+        self.assertEqual(ge.runner_dir(), self._app / "runtime-gpu")
+        self.assertEqual(ge.dl_dir("1.5.0"), self._app / "gpu_dl" / "1.5.0")
+        self.assertEqual(ge.marker_path(), self._app / "runtime-gpu" / "gpu-env.json")
+
+    def test_legacy_base_dir_fallback_is_absolute(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch("gpu_env.Path.home", return_value=Path(self._tmp.name)):
                 self.assertEqual(
-                    ge.user_base_dir(),
+                    ge.legacy_base_dir(),
                     Path(self._tmp.name) / "AppData" / "Local" / "ShadowBuster",
                 )
+
+    def test_app_writable(self):
+        self.assertTrue(ge.app_writable())
+        with mock.patch.object(ge, "app_root", return_value=Path(self._tmp.name) / "ro" / "file.txt"):
+            (Path(self._tmp.name) / "ro" / "file.txt").write_bytes(b"x")
+            self.assertFalse(ge.app_writable())
+
+    def test_nvidia_driver_present(self):
+        with mock.patch.object(ge.shutil, "which", return_value=r"C:\tools\nvidia-smi.exe"):
+            self.assertTrue(ge.nvidia_driver_present())
+        with mock.patch.object(ge.shutil, "which", return_value=None), \
+             mock.patch.dict(os.environ, {"SystemRoot": self._tmp.name}):
+            self.assertFalse(ge.nvidia_driver_present())
+            (Path(self._tmp.name) / "System32").mkdir()
+            (Path(self._tmp.name) / "System32" / "nvidia-smi.exe").write_bytes(b"x")
+            self.assertTrue(ge.nvidia_driver_present())
+
+    def _build_env(self, env_dir, marker_path, version="1.5.0", sha="a" * 64, validated=True):
+        env_dir.mkdir(parents=True)
+        (env_dir / "python.exe").write_bytes(b"py")
+        numpy_dir = env_dir / "Lib" / "site-packages" / "numpy"
+        numpy_dir.mkdir(parents=True)
+        (numpy_dir / "__init__.py").write_bytes(b"numpy")
+        (numpy_dir / "core.pyd").write_bytes(b"pyd")
+        marker_path.write_text(json.dumps({
+            "version": version, "sha256": sha, "runtimeValidated": validated,
+        }), encoding="utf-8")
+        return env_dir
+
+    def test_legacy_installed_info_reads_user_dir(self):
+        runner = ge.legacy_runner_dir()
+        self._build_env(runner / "env", runner / "gpu-env.json")
+        self.assertIsNotNone(ge.legacy_installed_info(expected_version="1.5.0"))
+        self.assertIsNone(ge.installed_info(), "应用目录为空时不应误报已安装")
+
+    def test_legacy_installed_info_ignores_invalid_env(self):
+        runner = ge.legacy_runner_dir()
+        self._build_env(runner / "env", runner / "gpu-env.json", validated=False)
+        self.assertIsNone(ge.legacy_installed_info())
+
+    def test_usable_python_prefers_app_dir_over_legacy(self):
+        runner = ge.legacy_runner_dir()
+        self._build_env(runner / "env", runner / "gpu-env.json")
+        self.assertEqual(ge.usable_python(expected_version="1.5.0"), runner / "env" / "python.exe")
+        self._build_env(ge.env_dir(), ge.marker_path())
+        self.assertEqual(ge.usable_python(expected_version="1.5.0"), ge.env_dir() / "python.exe")
+
+    def test_usable_python_none_without_env(self):
+        self.assertIsNone(ge.usable_python(expected_version="1.5.0"))
+
+    def test_migrate_legacy_user_dir_into_app_dir(self):
+        runner = ge.legacy_runner_dir()
+        self._build_env(runner / "env", runner / "gpu-env.json")
+        with mock.patch.object(ge, "validate_runtime", return_value="ok"), \
+             mock.patch.object(ge, "assert_runtime_files", return_value=None):
+            info = ge.migrate_legacy_runtime(runner / "env", "1.5.0", "c" * 64)
+        self.assertIsNotNone(info)
+        self.assertIsNotNone(ge.installed_info(expected_version="1.5.0", expected_sha256="c" * 64),
+                              "迁移后应用目录应有完整环境与新标记")
 
     def test_installed_info_checks_expected_release_identity(self):
         ge.env_dir().mkdir(parents=True)

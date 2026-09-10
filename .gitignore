@@ -32,6 +32,7 @@ ENV/
 /packaging/stage/
 /packaging/test_install*/
 /runtime/
+/dev_runtime/
 /Apollo/
 /Soren_src/
 *.log

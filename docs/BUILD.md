@@ -16,7 +16,7 @@
 | runtime/Soren_src/ | core_decrypted.py、soren_original.py、model/、profiles/、secured_genres/ | ~1 GB（模型） |
 | runtime/ffmpeg/bin/ | ffmpeg.exe（后端自动探测） | ~80 MB |
 
-- v1.5.0 起安装包为 CPU 瘦身运行时（整包约 1 GB），CUDA torch 环境改为应用内“设置 → GPU 环境”按需下载（`build_gpu_env.ps1` 产出分卷与清单，`gpu_env.py` 负责校验、续传、解压与原子切换，安装到 `%LOCALAPPDATA%\ShadowBuster\runtime-gpu\env`）。
+- v1.5.0 起安装包为 CPU 瘦身运行时（整包约 1 GB），CUDA torch 环境改为应用内“设置 → GPU 环境”按需下载（`build_gpu_env.ps1` 产出分卷与清单，`gpu_env.py` 负责校验、续传、解压与原子切换，安装到**应用安装目录** `runtime-gpu\env`；v1.6.x 旧版安装在 `%LOCALAPPDATA%\ShadowBuster\runtime-gpu\env` 的环境仍被检测识别，无需重新下载）。应用目录不可写时（如 Program Files 非提权运行）会提示以管理员身份运行。
 - **运行时必须可重定位**：不用 venv。`runtime_sync.ps1` 用 python-build-standalone 整目录拷贝 + `pip --target` 安装 site-packages，依赖清单见 [`RUNTIME_DEPENDENCIES.md`](RUNTIME_DEPENDENCIES.md)。
 - **离线优先**：Lew 权重（`runtime/Apollo/ckpts/`）、Soren 模型（`runtime/Soren_src/model/`）、demucs 的 htdemucs 权重（`runtime/hf_home/`）全部内置，装完即可离线处理。
 

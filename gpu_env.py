@@ -3,11 +3,14 @@
 CPU 版安装包不带 CUDA 运行时；需要 GPU 加速的用户在「设置 → GPU 环境」
 里下载安装。运行时包以分卷资产发布在 GitHub Release 上（1 个清单 JSON +
 N 个 <2GiB 的分卷），本模块负责：拉取清单 → 断点续传下载分卷 →
-逐卷校验 → 组装 zip → 全包 SHA-256 校验 → 解压到用户目录并原子切换。
+逐卷校验 → 组装 zip → 全包 SHA-256 校验 → 解压到应用目录并原子切换。
 
-解压目标 LOCALAPPDATA\\ShadowBuster\\runtime-gpu\\env（不写 Program Files，
-应用非提权运行也能安装）；studio_backend._resolve_runtime() 优先采用该环境，
-重启应用后 CUDA 加速生效。
+安装目标为应用自身目录 app_root\\runtime-gpu\\env（随应用一起卸载）；
+检测时同时扫描应用目录与旧版用户目录（LOCALAPPDATA\\ShadowBuster\\
+runtime-gpu，v1.6.x 安装位置），任一可用即无需重新下载。
+studio_backend._resolve_runtime() 经 usable_python() 采用该环境，
+重启应用后 CUDA 加速生效。应用目录不可写时（如装在 Program Files），
+下载安装会失败并提示以管理员身份运行。
 
 网络层收敛在 load_manifest / download_part 两个函数，其余逻辑无 I/O，
 便于单元测试（tests/test_gpu_env.py）。
@@ -18,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -95,25 +99,46 @@ def local_appdata_dir():
     return Path(raw) if raw else Path.home() / "AppData" / "Local"
 
 
-def user_base_dir():
-    """用户数据根目录（下载、GPU 环境都放这里）。"""
+def app_root():
+    """应用自身安装目录：冻结态为 exe 所在目录，源码态为仓库根。
+
+    GPU 环境与下载缓存都放在这里，随应用卸载一起清理；测试经 mock
+    重定向（tests/test_gpu_env.py），开发态不会真正触发下载安装。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+def legacy_base_dir():
+    """旧版（v1.6.x 及更早）用户级安装根目录，仅用于检测已装环境。"""
     return local_appdata_dir() / "ShadowBuster"
 
 
 def runner_dir():
-    """GPU 环境安装位置（env 与 gpu-env.json 标记都在这里）。"""
-    return user_base_dir() / "runtime-gpu"
+    """GPU 环境安装位置（应用目录下，env 与 gpu-env.json 标记都在这里）。"""
+    return app_root() / "runtime-gpu"
+
+
+def legacy_runner_dir():
+    """旧版用户级安装位置，仅用于检测已装环境。"""
+    return legacy_base_dir() / "runtime-gpu"
+
+
+def _resolve_env(runner, marker):
+    """按 marker 的 directory 字段解析 env 目录（断点安装恢复产物）。"""
+    try:
+        data = json.loads(Path(marker).read_text(encoding="utf-8"))
+        name = data.get("directory", "env")
+        if isinstance(name, str) and re.fullmatch(r"\.staging-[0-9a-f]{32}", name):
+            return Path(runner) / name
+    except (OSError, ValueError, AttributeError):
+        pass
+    return Path(runner) / "env"
 
 
 def env_dir():
-    try:
-        data = json.loads(marker_path().read_text(encoding="utf-8"))
-        name = data.get("directory", "env")
-        if isinstance(name, str) and re.fullmatch(r"\.staging-[0-9a-f]{32}", name):
-            return runner_dir() / name
-    except (OSError, ValueError, AttributeError):
-        pass
-    return runner_dir() / "env"
+    return _resolve_env(runner_dir(), marker_path())
 
 
 def marker_path():
@@ -121,8 +146,8 @@ def marker_path():
 
 
 def dl_dir(version):
-    """分卷下载工作目录。"""
-    return user_base_dir() / "gpu_dl" / version
+    """分卷下载工作目录（应用目录下）。"""
+    return app_root() / "gpu_dl" / version
 
 
 # ── 清单：结构校验（纯函数）+ 网络拉取 ──
@@ -361,19 +386,20 @@ def extract_zip(zip_path, dest_dir, cancel=None, progress=None):
     return dest_dir
 
 
-def installed_info(expected_version=None, expected_sha256=None):
-    """读本地 GPU 环境标记；可按发布版本和内容哈希严格匹配。"""
+def _env_state(env, marker, expected_version=None, expected_sha256=None):
+    """按 marker 与文件结构判定某个位置的 GPU 环境是否完整可用。"""
     try:
-        data = json.loads(marker_path().read_text(encoding="utf-8"))
+        data = json.loads(Path(marker).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
         return None
-    if not (env_dir() / "python.exe").is_file():
+    env = Path(env)
+    if not (env / "python.exe").is_file():
         return None
     if data.get("runtimeValidated") is not True:
         return None
-    numpy_dir = env_dir() / "Lib" / "site-packages" / "numpy"
+    numpy_dir = env / "Lib" / "site-packages" / "numpy"
     if not (numpy_dir / "__init__.py").is_file():
         return None
     if not any(numpy_dir.rglob("*.pyd")):
@@ -383,6 +409,52 @@ def installed_info(expected_version=None, expected_sha256=None):
     if expected_sha256 is not None and str(data.get("sha256", "")).lower() != str(expected_sha256).lower():
         return None
     return data
+
+
+def installed_info(expected_version=None, expected_sha256=None):
+    """读应用目录 GPU 环境标记；可按发布版本和内容哈希严格匹配。"""
+    return _env_state(env_dir(), marker_path(), expected_version, expected_sha256)
+
+
+def legacy_installed_info(expected_version=None, expected_sha256=None):
+    """读旧版用户目录（LOCALAPPDATA\\ShadowBuster\\runtime-gpu）安装标记。"""
+    runner = legacy_runner_dir()
+    marker = runner / "gpu-env.json"
+    return _env_state(_resolve_env(runner, marker), marker,
+                      expected_version, expected_sha256)
+
+
+def usable_python(expected_version=None, expected_sha256=None):
+    """可用 GPU 环境的解释器路径：先应用目录（新安装位置），后旧版用户目录。"""
+    if installed_info(expected_version, expected_sha256) is not None:
+        return env_dir() / "python.exe"
+    if legacy_installed_info(expected_version, expected_sha256) is not None:
+        return _resolve_env(legacy_runner_dir(),
+                            legacy_runner_dir() / "gpu-env.json") / "python.exe"
+    return None
+
+
+def app_writable():
+    """应用目录是否可写（GPU 环境需就地安装；Program Files 需提权）。"""
+    probe = app_root() / ".gpu_write_probe"
+    try:
+        probe.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            probe.rmdir()
+        except OSError:
+            pass
+
+
+def nvidia_driver_present():
+    """是否存在 NVIDIA 驱动（nvidia-smi）。仅用于下载前提示，不代表 CUDA 运行时可用。"""
+    if shutil.which("nvidia-smi"):
+        return True
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    return (Path(system_root) / "System32" / "nvidia-smi.exe").is_file()
 
 
 def _write_marker(data):

@@ -3,11 +3,9 @@
 #   - 以输入混音为基底，每条轨只把自己的"处理差值"加回；
 #   - wet=0 时仅旁路声场拓宽；降噪为 0 时输出才与输入逐样本一致；
 #   - 分离残差 (mix − Σstems) 随基底原样保留，不丢"胶感"。
-# 处理（全部线性域，不放大分离伪影）：
-#   - other: 纯宽带 side 增益（broadband 默认，音色最保真）→ 可选 ≥10kHz 噪声地板降噪
-#   - drums: side 通道轻增益
-#   - bass / vocals: 不处理
-#   - 拓宽增量（delta）side 在 <120Hz 温和低架衰减 -6dB：低频不拉宽，mid/原始 side 不动
+# 新增宽度按频段/时间窗约束，原始 Mid/Side 保留；分离伪影仍需试听检查。
+# drums 的新增宽度在攻击段收紧，other 可独立进行高频降噪。
+# bass/vocals 不直接拓宽；低频不生成新增宽度。
 # 用法（stems 由主管线 stage_demucs 预先产出）:
 #   python soundstage_reshape.py --in-mix premix.wav --out-wav out.wav \
 #       --stems-dir <htdemucs 输出下含 drums/other 的目录> \
@@ -17,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from scipy import signal
+from scipy import signal, ndimage
 
 from audio_validation import validate_audio, validate_audio_pair, finite_range
 from stage_metadata import write_report
@@ -45,6 +43,8 @@ def _low_shelf(x, sr, fc, gain_db, order=2):
 
 def _reshape_stem(x, sr, side_high_db, side_high_fc, side_gain_db):
     """M/S 域只动 side：高频 shelf + 整体 side 增益；mid 保持不变。"""
+    if side_high_db == 0 and side_gain_db == 0:
+        return x.copy()
     left, right = x[:, 0], x[:, 1]
     mid, side = (left + right) / 2.0, (left - right) / 2.0
     side = _high_shelf(side, sr, side_high_fc, side_high_db)
@@ -210,6 +210,76 @@ MODES = {
 }
 
 
+WIDTH_BANDS = ((120, 300, 0.10, 1.0), (300, 2000, 0.35, 2.0),
+               (2000, 8000, 0.55, 3.0), (8000, 24000, 0.45, 2.0))
+
+
+def drum_width_envelope(stem, sr):
+    """Linked attack protection; an envelope estimate, not room-source separation."""
+    if len(stem) == 0:
+        return np.zeros(0)
+    power = np.mean(np.asarray(stem, dtype=np.float64) ** 2, axis=1)
+    def envelope(ms):
+        pole = np.exp(-1.0 / (sr * ms / 1000))
+        return signal.lfilter([1 - pole], [1, -pole], power)
+    ratio = 10 * np.log10((envelope(4) + 1e-14) / (envelope(70) + 1e-14))
+    amount = np.clip((ratio - 3) / 9, 0, 1)
+    gain = 1 - 0.75 * amount
+    return ndimage.uniform_filter1d(gain, max(1, int(sr * .003)), mode='nearest')
+
+
+def constrain_width_delta(mix, delta, sr):
+    """Bound added Side against the final mix in overlapping time/frequency windows.
+
+    Caps are analysis-domain budgets, not perceptual width units. Reconstruction
+    can change window energies slightly; existing over-wide content is retained.
+    """
+    n = len(mix)
+    report = {'bands': [], 'analysis': '4096 Hann / 75% overlap'}
+    if n < 32 or not np.any(delta):
+        return np.zeros_like(delta), report
+    size = min(4096, n)
+    overlap = size * 3 // 4
+    mid = np.asarray(mix, dtype=np.float64).mean(axis=1)
+    side = (mix[:, 0] - mix[:, 1]) * .5
+    added = (delta[:, 0] - delta[:, 1]) * .5
+    def stft(x):
+        return signal.stft(x, sr, nperseg=size, noverlap=overlap,
+                           boundary='zeros', padded=True)
+    f, _, m = stft(mid)
+    _, _, s = stft(side)
+    _, _, d = stft(added)
+    # No generated width below 120 Hz; cosine transition avoids a hard step.
+    highpass = .5 - .5 * np.cos(np.pi * np.clip((f - 120) / 120, 0, 1))
+    d *= highpass[:, None]
+    gain = np.ones_like(d.real)
+    for lo, hi, cap, relative_db in WIDTH_BANDS:
+        mask = (f >= lo) & (f < hi)
+        if not np.any(mask):
+            continue
+        em = np.sum(abs(m[mask]) ** 2, axis=0)
+        es = np.sum(abs(s[mask]) ** 2, axis=0)
+        ed = np.sum(abs(d[mask]) ** 2, axis=0)
+        cross = np.sum((s[mask].conj() * d[mask]).real, axis=0)
+        maximum = np.minimum(em * cap / (1 - cap), es * 10 ** (relative_db / 10))
+        budget = np.maximum(maximum - es, 0)
+        root = np.sqrt(np.maximum(cross * cross + ed * budget, 0))
+        alpha = np.clip((-cross + root) / np.maximum(ed, 1e-30), 0, 1)
+        alpha[(es >= em * cap / (1 - cap)) | (es < 1e-16)] = 0
+        alpha[ed < 1e-30] = 0
+        # Conservative look-around smoothing never exceeds a frame's safe gain.
+        limited = ndimage.minimum_filter1d(alpha, size=5, mode='nearest')
+        alpha = np.minimum(alpha, ndimage.uniform_filter1d(limited, size=5, mode='nearest'))
+        gain[mask] = alpha
+        report['bands'].append({'low_hz': lo, 'high_hz': min(hi, sr / 2),
+                                'max_side_fraction': cap, 'max_growth_db': relative_db,
+                                'mean_admitted': float(np.mean(alpha))})
+    _, restored = signal.istft(d * gain, sr, nperseg=size,
+                               noverlap=overlap, input_onesided=True, boundary=True)
+    restored = restored[:n]
+    return np.column_stack((restored, -restored)), report
+
+
 def width_report(mix, out, sr):
     """时域分频段宽度 + 单声道兼容检查。"""
     def band_width(x, lo, hi):
@@ -285,6 +355,8 @@ def main():
 
     params = resolve_side_gains(args.mode, args.side_gain_db)
     out = mix.copy()
+    width_delta = np.zeros_like(mix)
+    denoise_delta = np.zeros_like(mix)
     wet = args.wet
     for name, (db, fc, gain) in params.items():
         stem, s_sr = sf.read(stem_dir / f"{name}.wav", always_2d=True, dtype="float64")
@@ -300,18 +372,22 @@ def main():
         else:
             reshaped = _reshape_stem(stem, sr, db, fc, gain)
         delta = (reshaped - stem) * wet
-        # 低频保护只作用于新增 side 拓宽增量（mid 增量与原始 side 原样保留），
-        # 降噪是独立旋钮、其差值不走该保护。
+        if name == 'drums':
+            delta *= drum_width_envelope(stem, sr)[:, None]
         delta = _protect_widen_delta(delta, sr)
+        width_delta += delta
         processed = stem + delta
         if name == "other" and args.other_denoise_amount > 0:
-            # 降噪是独立旋钮：作用于当前 wet 混合结果，wet=0 时仍可单独使用。
-            processed = _spectral_denoise(processed, sr, args.other_denoise_fc,
-                                          args.other_denoise_amount)
+            cleaned = _spectral_denoise(processed, sr, args.other_denoise_fc,
+                                       args.other_denoise_amount)
+            denoise_delta += cleaned - processed
             print(f"  other: ≥{args.other_denoise_fc:.0f}Hz 噪声地板降噪 {args.other_denoise_amount*100:.0f}%")
-        out += processed - stem        # delta-add：只加处理差值
         print(f"  {name}: shelf +{db}dB@{fc:.0f}Hz, side gain +{gain}dB"
               + ("  [动态门]" if args.mode == "dynamic" and db > 0 else ""))
+    base = mix + denoise_delta
+    accepted, budget = constrain_width_delta(base, width_delta, sr)
+    out = base + accepted
+    print(f"  自适应宽度预算: {budget}")
     if wet != 1.0:
         print(f"  声场干湿比 wet={wet:.2f} (0=不拓宽, 1=全量)")
 

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-CORE = Path(__file__).resolve().parents[1] / "packaging/stage/runtime/Soren_src/core_decrypted.py"
+CORE = Path(__file__).resolve().parents[1] / "packaging/soren_core.py"  # 权威源码；stage 一致性另测
 
 
 def test_mid_presence_protection_contract_is_present():

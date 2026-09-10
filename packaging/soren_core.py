@@ -913,13 +913,7 @@ def process_transparent(target, config, requested_lufs, core):
 
 
 def process_original_styled(target, reference, step, config, genre_profile):
-    import importlib.util
-    from pathlib import Path
-
-    source = Path(__file__).with_name("soren_original.py")
-    spec = importlib.util.spec_from_file_location("soren_original", source)
-    original = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(original)
+    original = load_soren_original_module()
     audio = np.array(target, dtype=np.float64, copy=True)
     if audio.ndim != 2 or audio.shape[0] != 2 or not audio.shape[1]:
         raise ValueError("Soren requires nonempty stereo input")
@@ -1337,38 +1331,33 @@ def low_shelf_tighten(audio, sample_rate, cutoff_freq, gain, order=4):
     sos = np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]])
     return signal.sosfilt(sos, audio)
 
+_SOREN_ORIGINAL_MODULE = None
+
+
+def load_soren_original_module():
+    """Load (once) the canonical soren_original implementation.
+
+    process_original_styled reloads the same file per styled call; EQ only
+    needs one cached instance. The file must sit next to this module (same
+    resolution rule as process_original_styled).
+    """
+    global _SOREN_ORIGINAL_MODULE
+    if _SOREN_ORIGINAL_MODULE is None:
+        import importlib.util
+        from pathlib import Path
+
+        source = Path(__file__).with_name("soren_original.py")
+        spec = importlib.util.spec_from_file_location("soren_original", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _SOREN_ORIGINAL_MODULE = module
+    return _SOREN_ORIGINAL_MODULE
+
+
 def apply_eq_style(mid, side, sample_rate, eq_style):
-    print(f"Applying {eq_style} EQ style")
-    if eq_style == "Warm":
-        # Mid channel processing
-        mid = boost_band(mid, sample_rate, low_cutoff=200, high_cutoff=300, gain=1.19, order=4)  # +1.5dB
-        mid = boost_band(mid, sample_rate, low_cutoff=2000, high_cutoff=3000, gain=0.89, order=4)  # -1dB
-
-        # Side channel processing
-        side = boost_band(side, sample_rate, low_cutoff=3500, high_cutoff=4500, gain=0.92, order=4)  # -0.7dB
-        side = boost_band(side, sample_rate, low_cutoff=150, high_cutoff=210, gain=1.06, order=4)  # +0.5dB
-
-    elif eq_style == "Bright":
-        # Mid channel processing
-        mid = boost_band(mid, sample_rate, low_cutoff=2700, high_cutoff=3300, gain=1.19, order=4)  # +1.5dB
-        mid = boost_band(mid, sample_rate, low_cutoff=500, high_cutoff=600, gain=1.08, order=4)  # +0.7dB
-
-        # Side channel processing
-        side = boost_band(side, sample_rate, low_cutoff=200, high_cutoff=300, gain=0.92, order=4)  # -0.7dB
-        side = high_shelf_boost(side, sample_rate, cutoff_freq=8000, gain=1.19, order=4)  # +1.5dB
-
-    elif eq_style == "Fusion":
-        # Combination of both Warm and Bright
-        # Mid channel processing
-        mid = boost_band(mid, sample_rate, low_cutoff=200, high_cutoff=300, gain=1.10, order=4)  # Moderate low boost
-        mid = boost_band(mid, sample_rate, low_cutoff=2700, high_cutoff=3300, gain=1.15, order=4)  # Boost similar to bright
-
-        # Side channel processing
-        side = boost_band(side, sample_rate, low_cutoff=200, high_cutoff=300, gain=0.97, order=4)  # Slight cut
-        side = high_shelf_boost(side, sample_rate, cutoff_freq=8000, gain=1.12, order=4)  # Slight high-end boost
-
-    print(f"After EQ - Mid max: {np.max(np.abs(mid)):.4f}, Side max: {np.max(np.abs(side)):.4f}")
-    return mid, side
+    # Canonical EQ curves live in soren_original (the styled engine runs the
+    # exact same function), so eq_only can never drift from styled.
+    return load_soren_original_module().apply_eq_style(mid, side, sample_rate, eq_style)
 
 def master_audio(input_file, output_file, config, eq_style, is_preview=False):
     if os.path.realpath(input_file) == os.path.realpath(output_file):

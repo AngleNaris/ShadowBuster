@@ -47,7 +47,22 @@ if ($Flavor -eq "cpu") {
 }
 $srcApollo= if ($env:SB_APOLLO) { $env:SB_APOLLO } else { Join-Path $workspace "Apollo" }
 $appApollo= Join-Path $root "apollo_scripts"
-$srcSoren = if ($env:SB_SOREN) { $env:SB_SOREN } else { Join-Path $workspace "Soren_src" }
+# Soren 资源根：SB_SOREN 优先；默认 workspace/Soren_src，不存在则回退开发机外部源。
+# 仅作为资源源（test_model/model/profiles/secured_genres）；Soren 代码一律取自
+# packaging/soren_core.py、packaging/soren_original.py（canonical，见 docs/WORKSPACE.md）。
+$srcSoren = if ($env:SB_SOREN) {
+    $env:SB_SOREN
+} else {
+    $wsSoren = Join-Path $workspace "Soren_src"
+    if (Test-Path -LiteralPath $wsSoren -PathType Container) { $wsSoren }
+    elseif (Test-Path -LiteralPath "D:\_3.AI\audio_upscale\Soren_src" -PathType Container) { "D:\_3.AI\audio_upscale\Soren_src" }
+    else { $wsSoren }
+}
+foreach ($sorenNeed in @("test_model.py", "model", "profiles", "secured_genres")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $srcSoren $sorenNeed))) {
+        throw "Soren 资源根无效：$srcSoren 缺少 $sorenNeed。请设 SB_SOREN 指向 Soren 源目录（见 docs/WORKSPACE.md）。"
+    }
+}
 $srcPy    = if ($env:SB_PORTABLE_PYTHON) {
     $env:SB_PORTABLE_PYTHON
 } else {
@@ -132,7 +147,8 @@ Assert-NonEmptyFile "$appApollo\soundstage_reshape.py" "声场重塑入口"
 Assert-NonEmptyFile "$appApollo\vocal_adjust.py" "人声入口"
 Assert-TreeHasNonEmptyFile "$srcApollo\look2hear" "look2hear 源码"
 Assert-TreeHasNonEmptyFile "$srcApollo\ckpts" "Apollo checkpoint"
-Assert-NonEmptyFile "$srcSoren\core_decrypted.py" "Soren 入口"
+Assert-NonEmptyFile "$root\packaging\soren_core.py" "Soren 权威入口"
+Assert-NonEmptyFile "$root\packaging\soren_original.py" "Soren 权威风格层"
 Assert-NonEmptyFile "$srcSoren\test_model.py" "Soren 模型入口"
 Assert-TreeHasNonEmptyFile "$srcSoren\model" "Soren 模型"
 Assert-TreeHasNonEmptyFile "$srcSoren\profiles" "Soren profiles"
@@ -296,6 +312,7 @@ Assert-SameFile "$appApollo\stage_metadata.py" "$stage\Apollo\stage_metadata.py"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"
 Assert-SameFile "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
+Assert-SameFile "$root\packaging\soren_original.py" "$stage\Soren_src\soren_original.py" "Soren 风格与EQ"
 Assert-SameFile "$srcSoren\test_model.py" "$stage\Soren_src\test_model.py" "Soren 模型入口"
 Assert-SameTree "$srcSoren\model" "$stage\Soren_src\model" "Soren 模型"
 Assert-SameTree "$srcSoren\profiles" "$stage\Soren_src\profiles" "Soren profiles"

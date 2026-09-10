@@ -1066,35 +1066,68 @@ def low_shelf_tighten(audio, sample_rate, cutoff_freq, gain, order=4):
     sos = np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]])
     return signal.sosfilt(sos, audio)
 
+def high_shelf_eq(audio, sample_rate, cutoff_freq, gain_db):
+    # RBJ high shelf: unity below cutoff_freq, +gain_db above (minimum phase;
+    # the butter-mix shelf phase-cancels near cutoff and must not be used).
+    A = 10 ** (gain_db / 40.0)
+    w0 = 2 * np.pi * cutoff_freq / sample_rate
+    alpha = np.sin(w0) / np.sqrt(2.0)
+    cos_w0 = np.cos(w0)
+    beta = 2 * np.sqrt(A) * alpha
+
+    b0 = A * ((A + 1) + (A - 1) * cos_w0 + beta)
+    b1 = -2 * A * ((A - 1) + (A + 1) * cos_w0)
+    b2 = A * ((A + 1) + (A - 1) * cos_w0 - beta)
+    a0 = (A + 1) - (A - 1) * cos_w0 + beta
+    a1 = 2 * ((A - 1) - (A + 1) * cos_w0)
+    a2 = (A + 1) - (A - 1) * cos_w0 - beta
+
+    sos = np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]])
+    return signal.sosfilt(sos, audio)
+
+def presence_eq(audio, sample_rate, center_freq, gain_db, q=0.9):
+    # RBJ peaking bell, +gain_db at center_freq (unity DC/Nyquist gain).
+    A = 10 ** (gain_db / 40.0)
+    w0 = 2 * np.pi * center_freq / sample_rate
+    alpha = np.sin(w0) / (2 * q)
+    cos_w0 = np.cos(w0)
+
+    b0 = 1 + alpha * A
+    b1 = -2 * cos_w0
+    b2 = 1 - alpha * A
+    a0 = 1 + alpha / A
+    a1 = -2 * cos_w0
+    a2 = 1 - alpha / A
+
+    sos = np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]])
+    return signal.sosfilt(sos, audio)
+
 def apply_eq_style(mid, side, sample_rate, eq_style):
+    """Shared minimum-phase EQ curves for styled and EQ-only mastering."""
     print(f"Applying {eq_style} EQ style")
+    if eq_style == "Neutral":
+        return mid, side
     if eq_style == "Warm":
-        # Mid channel processing
-        mid = boost_band(mid, sample_rate, low_cutoff=200, high_cutoff=300, gain=1.19, order=4)  # +1.5dB
-        mid = boost_band(mid, sample_rate, low_cutoff=2000, high_cutoff=3000, gain=0.89, order=4)  # -1dB
-        
-        # Side channel processing
-        side = boost_band(side, sample_rate, low_cutoff=3500, high_cutoff=4500, gain=0.92, order=4)  # -0.7dB
-        side = boost_band(side, sample_rate, low_cutoff=150, high_cutoff=210, gain=1.06, order=4)  # +0.5dB
+        # Mid channel: light low warmth, keep presence and air intact.
+        mid = low_shelf_tighten(mid, sample_rate, cutoff_freq=150, gain=10 ** (1.5 / 20))  # +1.5 dB shelf below 150 Hz
 
     elif eq_style == "Bright":
-        # Mid channel processing
-        mid = boost_band(mid, sample_rate, low_cutoff=2700, high_cutoff=3300, gain=1.19, order=4)  # +1.5dB
-        mid = boost_band(mid, sample_rate, low_cutoff=500, high_cutoff=600, gain=1.08, order=4)  # +0.7dB
-        
-        # Side channel processing
-        side = boost_band(side, sample_rate, low_cutoff=200, high_cutoff=300, gain=0.92, order=4)  # -0.7dB
-        side = high_shelf_boost(side, sample_rate, cutoff_freq=8000, gain=1.19, order=4)  # +1.5dB
+        # Mid channel: moderate presence (not harsh) + air shelf.
+        mid = presence_eq(mid, sample_rate, center_freq=3200, gain_db=1.0)  # +1.0 dB presence bump
+        mid = high_shelf_eq(mid, sample_rate, cutoff_freq=9000, gain_db=1.5)  # +1.5 dB air shelf
+
+        # Side channel: slight low-mid cleanup + matching air shelf.
+        side = presence_eq(side, sample_rate, center_freq=250, gain_db=-0.7, q=1.0)  # -0.7 dB low-mid dip
+        side = high_shelf_eq(side, sample_rate, cutoff_freq=8000, gain_db=1.5)  # +1.5 dB air shelf
 
     elif eq_style == "Fusion":
-        # Combination of both Warm and Bright
-        # Mid channel processing
-        mid = boost_band(mid, sample_rate, low_cutoff=200, high_cutoff=300, gain=1.10, order=4)  # Moderate low boost
-        mid = boost_band(mid, sample_rate, low_cutoff=2700, high_cutoff=3300, gain=1.15, order=4)  # Boost similar to bright
+        # Mid channel: mild warm tilt + mild air tilt, no presence emphasis.
+        mid = low_shelf_tighten(mid, sample_rate, cutoff_freq=150, gain=10 ** (0.8 / 20))  # +0.8 dB shelf below 150 Hz
+        mid = high_shelf_eq(mid, sample_rate, cutoff_freq=9000, gain_db=0.8)  # +0.8 dB air shelf
 
-        # Side channel processing
-        side = boost_band(side, sample_rate, low_cutoff=200, high_cutoff=300, gain=0.97, order=4)  # Slight cut
-        side = high_shelf_boost(side, sample_rate, cutoff_freq=8000, gain=1.12, order=4)  # Slight high-end boost
+        # Side channel: slight low-mid cleanup + mild air shelf.
+        side = presence_eq(side, sample_rate, center_freq=250, gain_db=-0.26, q=1.0)  # -0.26 dB low-mid dip
+        side = high_shelf_eq(side, sample_rate, cutoff_freq=8000, gain_db=0.8)  # +0.8 dB air shelf
 
     print(f"After EQ - Mid max: {np.max(np.abs(mid)):.4f}, Side max: {np.max(np.abs(side)):.4f}")
     return mid, side
