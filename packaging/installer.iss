@@ -1,6 +1,13 @@
 ﻿; ══════════════════════════════════════════════════════════════════
-; ShadowBuster — Inno Setup 安装器（per-machine，默认装 Program Files，
-; 用户可在向导中自选安装目录）
+; ShadowBuster — Inno Setup 安装器（per-user，无需管理员权限，
+; 默认装 %LOCALAPPDATA%\Programs\ShadowBuster，用户可在向导中自选目录，
+; 例如 D:\ShadowBuster）
+;
+; 选 per-user 的原因：应用目录对当前用户可写，「设置 → GPU 环境」下载的
+; CUDA 运行时（runtime-gpu\env，见 gpu_env.py）才能就地安装；装进
+; Program Files 等受限目录时安装会被应用检测并提示不可写。
+; 注意：历史 per-machine 安装（v1.6.x 早期）不会被本安装器自动卸载，
+; 升级用户需手动卸载旧机级安装或在向导中选回原目录。
 ;
 ; 前置：
 ;   1) powershell -File packaging\build_shell.ps1     → dist\ShadowBuster\
@@ -19,10 +26,11 @@ AppId={{9F4B7A3C-2D5E-4B1A-9C6D-9E2A1F5B7C3D}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher=ShadowBuster
+; per-user 模式下 {autopf} 自动解析为 {userpf}（%LOCALAPPDATA%\Programs）
 DefaultDirName={autopf}\ShadowBuster
 DisableProgramGroupPage=yes
 DisableDirPage=no
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=out
 OutputBaseFilename=ShadowBuster-Setup-{#MyAppVersion}

@@ -696,6 +696,11 @@ def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, tr
     # 中止：不执行、不缓存任何东西（绝不吞错，注释与行为一致）。
     soren_root = Path(SOREN_DIR) if "soren" in bypass else _ensure_dev_runtime()
     implementation += list(Path(DSP_DIR).glob("*.py")) + list(soren_root.glob("*.py"))
+    # Lew 脚本在 APOLLO_DIR（模型/工具根）而非 DSP_DIR，必须单独入指纹：
+    # 否则 lew_upscale.py 的算法变更（如计算精度）不会使旧阶段缓存失效。
+    _lew_script = Path(APOLLO_DIR) / "lew_upscale.py"
+    if _lew_script.is_file():
+        implementation.append(_lew_script)
     # dev runtime 有效性入缓存身份：manifest 记录资源源与生成期哈希，资源切换或
     # 重建后旧缓存自动失效（dev runtime 下代码即 packaging canonical 字节）。
     _dev_manifest = soren_root / "dev_runtime_manifest.json"

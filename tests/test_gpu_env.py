@@ -187,9 +187,13 @@ class PickReleaseTests(GpuEnvTestCase):
 class PathAndCacheTests(GpuEnvTestCase):
     def test_app_root_frozen_uses_executable_dir(self):
         import types
-        exe = Path(self._tmp.name) / "ShadowBuster.exe"
-        with mock.patch.object(ge, "sys", types.SimpleNamespace(frozen=True, executable=str(exe))):
-            self.assertEqual(ge.app_root(), exe.parent)
+        self._app_patch.stop()  # 先解除 setUp 的重定向，测真实冻结态判定
+        try:
+            exe = Path(self._tmp.name) / "ShadowBuster.exe"
+            with mock.patch.object(ge, "sys", types.SimpleNamespace(frozen=True, executable=str(exe))):
+                self.assertEqual(ge.app_root(), exe.parent)
+        finally:
+            self._app_patch.start()
 
     def test_paths_derive_from_app_root(self):
         self.assertEqual(ge.runner_dir(), self._app / "runtime-gpu")
@@ -206,8 +210,10 @@ class PathAndCacheTests(GpuEnvTestCase):
 
     def test_app_writable(self):
         self.assertTrue(ge.app_writable())
-        with mock.patch.object(ge, "app_root", return_value=Path(self._tmp.name) / "ro" / "file.txt"):
-            (Path(self._tmp.name) / "ro" / "file.txt").write_bytes(b"x")
+        ro = Path(self._tmp.name) / "ro"
+        ro.mkdir()
+        (ro / "file.txt").write_bytes(b"x")
+        with mock.patch.object(ge, "app_root", return_value=ro / "file.txt"):
             self.assertFalse(ge.app_writable())
 
     def test_nvidia_driver_present(self):
