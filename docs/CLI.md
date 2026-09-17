@@ -19,6 +19,10 @@ Get-Content -Raw -Encoding UTF8 'D:\Music\run-001.json'
 
 `--cpu` 使用 CPU，默认 cuda。主要旋钮与 UI 范围一致：Sub 0–12dB，Punch 0–10dB，sat/trans/space-wet/space-denoise 0–1，space-width-db 0–12dB。默认母带 style-mode=off（UI 无风格），默认 space-wet=.6、space-denoise=.2。**低频默认值经两轮听音校准定版（2026-09-17）**：`--sub-db 2 --punch-db 3 --trans 0.4 --sat 0.2`（此前 6/2/0.3/0.3；sub 6/9 被判低频偏多，弹性档 rc1e 在真实歌曲上最好，记录见 `listening_pack/ROUND1_RESULTS.md` / `ROUND2_RESULTS.md`）。三旋钮派生的 Kick/Bass 侧链默认 0.5、auto-clarity 授权 1.0（u_low=1.0）。`--loudness loud` 不只是更高的目标响度（流派 profile +2.5dB），还配合更快的限制器恢复（release 由 150ms 收紧到 80ms，其余响度档保持 150ms）。`--style-mode styled` 时 `--style-blend` 是风格处理强度（0–1，默认 0.85）：0 不施加风格处理，1 完整风格处理；它是处理强度而非波形比例，100%（1.0）与旧版"末端干湿混合"的实现不再位级一致。off / eq_only 忽略该强度；eq_only 的 EQ 与强度相互独立。`--help` 列出完整参数。bypass 不跳过分轨阶段，仅当低频/鼓/声场/人声四个分轨消费阶段全部旁路时才自动跳过分轨（此时分轨产物无人消费）。旁路 Lew 时输入若探测到非 44.1kHz 采样率，会先统一重采样为 44.1kHz 再进入后续阶段（Soren 母带只接受 44.1k；已是 44.1k 不重编码；六个阶段全部旁路时逐字节透传）。
 
+## 参考音频与响度（§10.4 契约，v1.6.10）
+
+管线（GUI 与 `--reference`）在参考模式下对引擎传 `--reference-tone-only`：**参考音频只驱动音色匹配，不覆盖用户的响度选择**——响度目标保持流派 profile 基准（选了流派用该流派，否则 Pop 回退）+ 响度档偏移。黑盒实测：tone-only normal → −9.25 LUFS（Pop 基准 −9.20）、soft → −12.298（目标 −12.30）、tone-only + Orchestral → −19.877。引擎直接调用**不带**该标志时保持旧行为（目标 = 参考实测响度 + 档偏移），兼容历史脚本；两条路径在母带旁车 `loudness_target_source`（`genre_profile:<g>` / `reference_measured`）中如实可辨。
+
 ## 母带验证与试听
 
 将 `lew,bass,drums,reshape,vocals` 全部旁路而保留 `soren`，表示原曲直接进入母带（必要时重采样），不代表重跑了前三个上游处理环节。比较风格强度应使用相同母带输入、相同响度档和 EQ；不能把与历史完整流水线成品的差异全部归因于母带。

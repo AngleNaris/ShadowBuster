@@ -959,7 +959,13 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
     if style_mode != "styled":
         cmd += ["--style-mode", style_mode]
     if reference:
-        cmd += ["--reference", str(reference)]
+        # §10.4：参考文件只覆盖音色目标，不覆盖用户响度选择——tone-only
+        # 传给引擎后响度基准保持流派 profile（genre 真值时作基准，否则引擎
+        # 回退 Pop）+ 响度档偏移。旧"参考实测响度作目标"仅保留给不带该
+        # 标志的直接引擎调用（兼容路径，soren_capability_manifest 记录）。
+        cmd += ["--reference", str(reference), "--reference-tone-only"]
+        if genre:
+            cmd += ["--genre", str(genre)]
     else:
         cmd += ["--genre", genre]
     if lowpass_cutoff:

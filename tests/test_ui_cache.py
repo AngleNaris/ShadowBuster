@@ -160,5 +160,5 @@ def test_help_states_no_realtime_audition_once_with_shared_note():
 def test_asset_versions_bumped_for_cache_busting():
     # v1.6.9 合入 macOS 移植（已发布 macOS.1 的 53/50）后 UI 再次变更：
     # v1.6.8（52/49）与 macOS.1（53/50）两批客户端缓存都必须失效，继续递增。
-    assert 'style.css?v=56' in HTML
-    assert 'app.js?v=53' in HTML
+    assert 'style.css?v=57' in HTML
+    assert 'app.js?v=54' in HTML

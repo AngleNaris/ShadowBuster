@@ -69,7 +69,10 @@
         "stereo_widening_db": 0.2187,
         "style_width_change_db": 0.0371
       },
-      "input_protection": {"input_true_peak_dbtp": 0.7245, "applied_gain_db": -0.8245}
+      "input_protection": {
+        "input_true_peak_dbtp": 0.7245,
+        "applied_gain_db": -0.8245
+      }
     },
     {
       "run": "3_styled_pop_blend035",
@@ -190,7 +193,7 @@
       "name": "reference vs genre precedence",
       "status": "confirmed_by_probe",
       "evidence": "Run 7 (--reference without --genre) succeeded with target_lufs=-11.7584 in the sidecar, which equals the measured LUFS of pop_ref.wav (-11.7584) plus the normal offset (0.0). Genre profile Pop (-9.20) was NOT used. Code: core_decrypted.py:1551-1556 (CLI: --reference wins over --genre), :1470-1479 (reference loaded, genre_profile=None), :994-997 (styled: requested_lufs = loudness_target_lufs({'lufs': reference_lufs}, option)).",
-      "notes": "YES, the reference file sets the LUFS target: target = measured reference integrated LUFS + loudness preset offset (soft -3.10 / dynamic -1.94 / normal 0.0 / loud +2.50). The loudness preset therefore still applies in reference mode. The spectral style target becomes the reference audio itself."
+      "notes": "YES, the reference file sets the LUFS target: target = measured reference integrated LUFS + loudness preset offset (soft -3.10 / dynamic -1.94 / normal 0.0 / loud +2.50). The loudness preset therefore still applies in reference mode. The spectral style target becomes the reference audio itself. | RESOLVED 2026-09-17 (later session): --reference-tone-only flag added (spec 10.4) - reference drives TONE only; loudness target stays on the genre profile base (genre or Pop fallback) + user preset offset. Black-box re-probe: tone-only normal -> -9.25 LUFS (Pop base -9.20), soft -> -12.298 (target -12.30), Orchestral -> -19.877 (target -19.88); legacy path without the flag unchanged (-11.757 = reference-measured). Production pipeline (stage_soren) always passes the flag with references; sidecar records loudness_target_source (genre_profile:<g> | reference_measured)."
     },
     {
       "name": "loudness target mapping (preset offsets + genre profile base)",

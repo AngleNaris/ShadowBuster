@@ -68,6 +68,10 @@ class Config:
         self.oversampling_factor = 4
         self.true_peak_oversampling = 4
         self.true_peak_ceiling_db = -0.4
+        # 开发规格 §10.4：参考文件只覆盖音色目标，响度基准保持流派 profile
+        # + 用户响度档（False = 旧行为：参考实测响度作基准，兼容保留）。
+        self.reference_tone_only = False
+        self.loudness_target_source = None
         self.limiter_ceiling_db = -0.5
         self.limiter_lookahead_ms = 5.0
         self.limiter_attack_ms = 1.0
@@ -993,8 +997,21 @@ def process_original_styled(target, reference, step, config, genre_profile):
         raise RuntimeError("Original Soren returned non-finite samples")
     requested_lufs = loudness_target_lufs(genre_profile, config.loudness_option)
     if requested_lufs is None:
-        reference_lufs = calculate_lufs(reference, config.internal_sample_rate)
-        requested_lufs = loudness_target_lufs({'lufs': reference_lufs}, config.loudness_option)
+        if getattr(config, 'reference_tone_only', False):
+            # 开发规格 §10.4：有效参考覆盖流派的音色目标，但不覆盖用户的
+            # 响度选择——响度基准保持流派 profile（config.genre or "Pop"）
+            # + 用户响度档偏移，绝不跟随参考实测响度。
+            loudness_genre = config.genre or "Pop"
+            requested_lufs = loudness_target_lufs(
+                load_genre_profile(loudness_genre), config.loudness_option)
+            config.loudness_target_source = f"genre_profile:{loudness_genre}"
+        else:
+            # 旧行为（不带 --reference-tone-only 的直接调用）：参考实测响度
+            # 作为基准。兼容保留；产品管线一律走 tone-only。
+            reference_lufs = calculate_lufs(reference, config.internal_sample_rate)
+            requested_lufs = loudness_target_lufs({'lufs': reference_lufs},
+                                                  config.loudness_option)
+            config.loudness_target_source = "reference_measured"
     style_stats = getattr(original_config, 'last_mastering_stats', {})
     result = process_transparent(result, config, requested_lufs, sys.modules[__name__])
     config.last_mastering_stats.update({
@@ -1002,6 +1019,7 @@ def process_original_styled(target, reference, step, config, genre_profile):
         "style_blend": strength, "style_strength": strength,
         "strength_semantics": "processing_amount", "style_processing": style_stats,
         "loudness_option": config.loudness_option,
+        "loudness_target_source": getattr(config, "loudness_target_source", None),
         "input_protection": {"input_true_peak_dbtp": float(true_peak),
                              "applied_gain_db": float(gain_db)},
         "spectral_processing": step >= 2 and (strength > 0 or config.eq_style != "Neutral"),
@@ -1458,6 +1476,20 @@ def master_audio(input_file, output_file, config, eq_style, is_preview=False):
     if config.style_mode in ("off", "eq_only"):
         genre_profile = load_genre_profile(config.genre or "Pop")
         reference = None
+    elif config.reference_tone_only and config.reference_file:
+        # §10.4 tone-only：参考文件驱动音色匹配（styled 收到真实参考，
+        # genre_profile=None），响度基准留在流派 profile——由
+        # process_original_styled 的 reference_tone_only 分支解析
+        # （config.genre 或 "Pop"）+ 用户响度档偏移。
+        print(f"Using reference file (tone only): {config.reference_file}")
+        reference, reference_sr = load_audio(config.reference_file, config)
+        if reference.ndim == 1:
+            reference = np.tile(reference, (2, 1))
+        config.reference_bandwidth_hz = min(reference_sr, config.internal_sample_rate) / 2.0
+        if reference_sr != config.internal_sample_rate:
+            reference = librosa.resample(y=reference, orig_sr=reference_sr,
+                                         target_sr=config.internal_sample_rate)
+        genre_profile = None
     elif config.genre:
         print(f"Using genre profile: {config.genre}")
         genre_profile = load_genre_profile(config.genre)
@@ -1529,10 +1561,18 @@ if __name__ == "__main__":
                         help="JSON 文件：上游等效频谱意图（freqs/mid_db/side_db/rms_mid/rms_side）")
     parser.add_argument("--style-blend", type=float, default=0.85,
                         help="styled processing strength (0-1), not an audio dry/wet ratio")
+    parser.add_argument("--reference-tone-only", action="store_true",
+                        help="reference drives the TONE target only; the loudness "
+                             "target stays genre-profile based (spec 10.4: a valid "
+                             "reference must not override the user's loudness "
+                             "choice). Without this flag the legacy behavior "
+                             "(reference measured LUFS as target base) is kept "
+                             "for compatibility.")
     args = parser.parse_args()
 
     config = Config()
     config.style_mode = args.style_mode
+    config.reference_tone_only = args.reference_tone_only
     if args.style_mode == "styled":
         config.style_blend = min(max(float(args.style_blend), 0.0), 1.0)
     if args.upstream_delta:
@@ -1550,7 +1590,13 @@ if __name__ == "__main__":
         config.lowpass_cutoff = args.lowpass_cutoff
     if args.reference:
         config.reference_file = args.reference
-        print(f"Using custom reference file: {config.reference_file}")
+        # tone-only 模式下 --genre 只作为响度基准（音色目标仍是参考文件）；
+        # 未传时回退 Pop。旧分发里参考与流派互斥的行为在不带
+        # --reference-tone-only 时保持不变。
+        if args.reference_tone_only and args.genre:
+            config.genre = args.genre
+        print(f"Using custom reference file: {config.reference_file}"
+              + (" (tone only)" if args.reference_tone_only else ""))
     elif args.genre:
         config.genre = args.genre
         print(f"Using genre profile: {config.genre}")
