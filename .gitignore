@@ -117,3 +117,6 @@ dev_runtime/
 dist/
 webview_storage/
 .DS_Store
+
+# Local git bundle backups (repo backups, not source)
+*.bundle
