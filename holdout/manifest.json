@@ -1,0 +1,772 @@
+{
+  "schema": "sorenstudio_holdout_check/1",
+  "purpose": "开发规格 §13.6 留出集复核：以未参与调参的曲目检查定稿默认档偏好/损伤与强设置可用性（工程与音质门禁）",
+  "generated": "2026-09-17 16:13",
+  "repo_version": "v1.6.10 @ ae031d1",
+  "blind": false,
+  "dsp_python": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe",
+  "soren_runtime": "D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src",
+  "loudness_match": {
+    "reference": "ref0 per song",
+    "tolerance_lu": 0.2,
+    "clip_ceiling_dbfs": -1.0,
+    "method": "与 tools/prepare_listening_pack.py 相同"
+  },
+  "lufs_method": "audio_metrics.integrated_lufs / measure_audio (repo module)",
+  "true_peak_method": "audio_metrics.measure_audio true_peak_4x (resample_poly 4x, kaiser 8.6, padtype=line)",
+  "low_band_method": "mono fold (L+R)/2, butter(4) bandpass 30-120Hz (sosfiltfilt), RMS dB",
+  "gate_thresholds": {
+    "final_modest_max_db": 4.0,
+    "strong_intent_min_db": 1.0
+  },
+  "variants": {
+    "ref0": {
+      "sub_db": 0.0,
+      "sat": 0.0,
+      "punch_db": 0.0,
+      "trans": 0.0,
+      "sidechain": 0.0,
+      "clarity": false,
+      "clarity_auth": 0.0
+    },
+    "final": {
+      "sub_db": 2.0,
+      "sat": 0.2,
+      "punch_db": 3.0,
+      "trans": 0.4,
+      "sidechain": 0.5,
+      "clarity": true,
+      "clarity_auth": 1.0
+    },
+    "old_default": {
+      "sub_db": 6.0,
+      "sat": 0.3,
+      "punch_db": 2.0,
+      "trans": 0.3,
+      "sidechain": 0.5,
+      "clarity": true,
+      "clarity_auth": 1.0
+    },
+    "strong": {
+      "sub_db": 6.0,
+      "sat": 0.4,
+      "punch_db": 5.0,
+      "trans": 0.5,
+      "sidechain": 0.5,
+      "clarity": true,
+      "clarity_auth": 1.0
+    }
+  },
+  "holdout_material": [
+    {
+      "song": "set_1",
+      "input": "D:\\_3.AI\\audio_upscale\\_e2e_tmp\\inference_samples\\set_1\\input.wav",
+      "duration_s": 15.001,
+      "note": "未参与第一/第二轮调参（set_3 为校准曲）"
+    },
+    {
+      "song": "set_2",
+      "input": "D:\\_3.AI\\audio_upscale\\_e2e_tmp\\inference_samples\\set_2\\input.wav",
+      "duration_s": 9.16,
+      "note": "未参与第一/第二轮调参（set_3 为校准曲）"
+    }
+  ],
+  "songs": {
+    "set_1": {
+      "input": "D:\\_3.AI\\audio_upscale\\_e2e_tmp\\inference_samples\\set_1\\input.wav",
+      "variants": {
+        "ref0": {
+          "final": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\final_set_1_ref0.wav",
+          "bass_stdout": "Bass-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\bassout_set_1_ref0.wav | sub=0.0dB punch=0.0dB sat=0.0 trans=0.0 sat_lmid_trim=off (heuristic, not listening-verified) auto_clarity=off sidechain=off | 44100Hz 2ch",
+          "drum_stdout": "Drum-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\final_set_1_ref0.wav | punch=0.0dB trans=0.0 | 44100Hz 2ch",
+          "bass_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\bass_enhance.py --bass holdout\\_work\\set_1\\real_bass.wav --in-mix holdout\\_work\\set_1\\real_inmix.wav --out holdout\\_work\\set_1\\bassout_set_1_ref0.wav --sub-db 0.0 --punch-db 0 --sat 0.0 --trans 0",
+          "drum_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\drum_enhance.py --drums holdout\\_work\\set_1\\real_drums.wav --in-mix holdout\\_work\\set_1\\bassout_set_1_ref0.wav --out holdout\\_work\\set_1\\final_set_1_ref0.wav --punch-db 0.0 --trans 0.0",
+          "render_lufs": -15.981,
+          "error": null,
+          "file": "set_1_ref0.wav",
+          "knobs": {
+            "sub_db": 0.0,
+            "sat": 0.0,
+            "punch_db": 0.0,
+            "trans": 0.0,
+            "sidechain": 0.0,
+            "clarity": false,
+            "clarity_auth": 0.0
+          },
+          "match_gain_db": 0.0,
+          "lufs": -18.449,
+          "residual_lu": 0.0,
+          "sample_peak_dbfs": -2.51,
+          "true_peak_4x_dbtp": -2.51,
+          "clipping_samples": 0,
+          "duration_s": 15.001,
+          "samples": 661538,
+          "low_band_rms_db": -24.08,
+          "low_band_delta_db": 0.0,
+          "finite": true,
+          "length_ok": true,
+          "verified": true,
+          "dsp": {
+            "sidechain": {
+              "applied": false,
+              "note": "off"
+            },
+            "sat_lmid_trim": "off",
+            "auto_clarity": {
+              "applied": false
+            }
+          }
+        },
+        "final": {
+          "final": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\final_set_1_final.wav",
+          "bass_stdout": "Bass-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\bassout_set_1_final.wav | sub=2.0dB punch=0.0dB sat=0.2 trans=0.0 sat_lmid_trim=0.00dB (heuristic, not listening-verified) auto_clarity=(-0.97, 1.41)(auth=1.00) sidechain=requested_but_not_applied (no confident kicks) | 44100Hz 2ch",
+          "drum_stdout": "Drum-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\final_set_1_final.wav | punch=3.0dB trans=0.4 | 44100Hz 2ch",
+          "bass_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\bass_enhance.py --bass holdout\\_work\\set_1\\real_bass.wav --in-mix holdout\\_work\\set_1\\real_inmix.wav --out holdout\\_work\\set_1\\bassout_set_1_final.wav --sub-db 2.0 --punch-db 0 --sat 0.2 --trans 0 --sidechain-drums holdout\\_work\\set_1\\real_drums.wav --sidechain-amount 0.5 --auto-clarity --clarity-auth 1.0",
+          "drum_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\drum_enhance.py --drums holdout\\_work\\set_1\\real_drums.wav --in-mix holdout\\_work\\set_1\\bassout_set_1_final.wav --out holdout\\_work\\set_1\\final_set_1_final.wav --punch-db 3.0 --trans 0.4",
+          "render_lufs": -17.418,
+          "error": null,
+          "file": "set_1_final.wav",
+          "knobs": {
+            "sub_db": 2.0,
+            "sat": 0.2,
+            "punch_db": 3.0,
+            "trans": 0.4,
+            "sidechain": 0.5,
+            "clarity": true,
+            "clarity_auth": 1.0
+          },
+          "match_gain_db": 1.438,
+          "lufs": -18.449,
+          "residual_lu": 0.0,
+          "sample_peak_dbfs": -1.531,
+          "true_peak_4x_dbtp": -1.524,
+          "clipping_samples": 0,
+          "duration_s": 15.001,
+          "samples": 661538,
+          "low_band_rms_db": -23.182,
+          "low_band_delta_db": 0.898,
+          "finite": true,
+          "length_ok": true,
+          "verified": true,
+          "dsp": {
+            "sidechain": {
+              "applied": false,
+              "note": "requested_but_not_applied (no confident kicks)"
+            },
+            "sat_lmid_trim": "0.00dB",
+            "auto_clarity": {
+              "applied": true,
+              "mud_db": -0.97,
+              "clarity_db": 1.41,
+              "auth": 1.0
+            }
+          }
+        },
+        "old_default": {
+          "final": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\final_set_1_old_default.wav",
+          "bass_stdout": "Bass-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\bassout_set_1_old_default.wav | sub=6.0dB punch=0.0dB sat=0.3 trans=0.0 sat_lmid_trim=0.00dB (heuristic, not listening-verified) auto_clarity=(-0.97, 1.41)(auth=1.00) sidechain=requested_but_not_applied (no confident kicks) | 44100Hz 2ch",
+          "drum_stdout": "Drum-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\final_set_1_old_default.wav | punch=2.0dB trans=0.3 | 44100Hz 2ch",
+          "bass_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\bass_enhance.py --bass holdout\\_work\\set_1\\real_bass.wav --in-mix holdout\\_work\\set_1\\real_inmix.wav --out holdout\\_work\\set_1\\bassout_set_1_old_default.wav --sub-db 6.0 --punch-db 0 --sat 0.3 --trans 0 --sidechain-drums holdout\\_work\\set_1\\real_drums.wav --sidechain-amount 0.5 --auto-clarity --clarity-auth 1.0",
+          "drum_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\drum_enhance.py --drums holdout\\_work\\set_1\\real_drums.wav --in-mix holdout\\_work\\set_1\\bassout_set_1_old_default.wav --out holdout\\_work\\set_1\\final_set_1_old_default.wav --punch-db 2.0 --trans 0.3",
+          "render_lufs": -17.098,
+          "error": null,
+          "file": "set_1_old_default.wav",
+          "knobs": {
+            "sub_db": 6.0,
+            "sat": 0.3,
+            "punch_db": 2.0,
+            "trans": 0.3,
+            "sidechain": 0.5,
+            "clarity": true,
+            "clarity_auth": 1.0
+          },
+          "match_gain_db": 1.117,
+          "lufs": -18.449,
+          "residual_lu": 0.0,
+          "sample_peak_dbfs": -1.851,
+          "true_peak_4x_dbtp": -1.84,
+          "clipping_samples": 0,
+          "duration_s": 15.001,
+          "samples": 661538,
+          "low_band_rms_db": -23.128,
+          "low_band_delta_db": 0.952,
+          "finite": true,
+          "length_ok": true,
+          "verified": true,
+          "dsp": {
+            "sidechain": {
+              "applied": false,
+              "note": "requested_but_not_applied (no confident kicks)"
+            },
+            "sat_lmid_trim": "0.00dB",
+            "auto_clarity": {
+              "applied": true,
+              "mud_db": -0.97,
+              "clarity_db": 1.41,
+              "auth": 1.0
+            }
+          }
+        },
+        "strong": {
+          "final": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\final_set_1_strong.wav",
+          "bass_stdout": "Bass-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\bassout_set_1_strong.wav | sub=6.0dB punch=0.0dB sat=0.4 trans=0.0 sat_lmid_trim=0.00dB (heuristic, not listening-verified) auto_clarity=(-0.97, 1.41)(auth=1.00) sidechain=requested_but_not_applied (no confident kicks) | 44100Hz 2ch",
+          "drum_stdout": "Drum-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\final_set_1_strong.wav | punch=5.0dB trans=0.5 | 44100Hz 2ch",
+          "bass_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\bass_enhance.py --bass holdout\\_work\\set_1\\real_bass.wav --in-mix holdout\\_work\\set_1\\real_inmix.wav --out holdout\\_work\\set_1\\bassout_set_1_strong.wav --sub-db 6.0 --punch-db 0 --sat 0.4 --trans 0 --sidechain-drums holdout\\_work\\set_1\\real_drums.wav --sidechain-amount 0.5 --auto-clarity --clarity-auth 1.0",
+          "drum_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\drum_enhance.py --drums holdout\\_work\\set_1\\real_drums.wav --in-mix holdout\\_work\\set_1\\bassout_set_1_strong.wav --out holdout\\_work\\set_1\\final_set_1_strong.wav --punch-db 5.0 --trans 0.5",
+          "render_lufs": -17.949,
+          "error": null,
+          "file": "set_1_strong.wav",
+          "knobs": {
+            "sub_db": 6.0,
+            "sat": 0.4,
+            "punch_db": 5.0,
+            "trans": 0.5,
+            "sidechain": 0.5,
+            "clarity": true,
+            "clarity_auth": 1.0
+          },
+          "match_gain_db": 1.969,
+          "lufs": -18.449,
+          "residual_lu": -0.0,
+          "sample_peak_dbfs": -1.0,
+          "true_peak_4x_dbtp": -0.979,
+          "clipping_samples": 0,
+          "duration_s": 15.001,
+          "samples": 661538,
+          "low_band_rms_db": -22.443,
+          "low_band_delta_db": 1.637,
+          "finite": true,
+          "length_ok": true,
+          "verified": true,
+          "dsp": {
+            "sidechain": {
+              "applied": false,
+              "note": "requested_but_not_applied (no confident kicks)"
+            },
+            "sat_lmid_trim": "0.00dB",
+            "auto_clarity": {
+              "applied": true,
+              "mud_db": -0.97,
+              "clarity_db": 1.41,
+              "auth": 1.0
+            }
+          }
+        }
+      },
+      "source": {
+        "sr": 44100,
+        "channels": 2,
+        "duration_s": 15.001
+      },
+      "separation": {
+        "bass": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\real_bass.wav",
+        "drums": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\real_drums.wav",
+        "in_mix": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_1\\real_inmix.wav",
+        "sr": 44100,
+        "duration_s": 15.001,
+        "n_samples": 661538,
+        "cached": true
+      },
+      "sr": 44100,
+      "duration_s": 15.001,
+      "n_samples": 661538,
+      "match": {
+        "ref_lufs_render": -15.980601672412615,
+        "class_atten_db": 2.4686240976170684,
+        "match_gains_db": {
+          "ref0": 0.0,
+          "final": 1.4378472797443251,
+          "old_default": 1.1173846160113428,
+          "strong": 1.9686242284634154
+        },
+        "ref_lufs_matched": -18.449225770029685
+      },
+      "low_band_ref0_rms_db": -24.080149402227697,
+      "mastering": {
+        "cmd": [
+          "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe",
+          "D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src\\core_decrypted.py",
+          "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\set_1_final.wav",
+          "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\set_1_final_mastered.wav",
+          "--loudness",
+          "normal",
+          "--eq-profile",
+          "Neutral",
+          "--genre",
+          "Pop",
+          "--style-mode",
+          "styled",
+          "--style-blend",
+          "0.85"
+        ],
+        "cwd": "D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src",
+        "timeout_s": 600,
+        "seconds": 10.7,
+        "returncode": 0,
+        "stdout_tail": "dev_runtime\\Soren_src\\secured_genres\\Pop.secgnr\nAttempting to load model from: D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src\\model\\genre_model.joblib\nAttempting to load feature scaler from: D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src\\model\\genre_feature_scaler.joblib\nAttempting to load target scaler from: D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src\\model\\genre_target_scaler.joblib\nNumerical features: 9\nGenre encoding: 10\nSpectrum mid: 10\nSpectrum side: 10\nTotal features: 39\nModel suggestions for Pop:\nRMS Mid: 0.4600\nRMS Side: 0.1323\nStereo Width: 0.7834\nInitial RMS - Mid: 0.3074, Side: 0.0849\nAfter guardrails - RMS Mid: 0.3842, RMS Side: 0.1062\nFinal RMS - Mid: 0.3842, Side: 0.1062\n--- Reference from Genre Metrics ---\nShape: (2, 8828928)\nMax amplitude: 1.2846\nLUFS: -9.82\nMid RMS: 0.3842\nSide RMS: 0.1062\nStereo Width: 0.0709\n-------------------\nFinalizing stereo image...\nInitial stereo width: 0.0394\nReference stereo width: 0.0709\nApplied 2.6% stereo width increase.\nInitial stereo width: 0.0394\nFinal stereo width: 0.0413\nStereo image finalization complete. Output max amplitude: 0.8554\nAudio processing time: 8.00 seconds\nSaving audio to: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\set_1_final_mastered.wav\nAudio shape: (2, 661538), max=0.9441459100139509, min=1.5801783764418954e-07\nSaving with sample rate: 44100\nPCM24 readback True Peak (dBTP): -0.49\nAudio saving time: 0.23 seconds\nTotal Python processing time: 9.51 seconds\nMastering completed\n",
+        "sidecar": {
+          "style_mode": "styled",
+          "target_lufs": -9.199554764198625,
+          "input_lufs": -19.010741292184342,
+          "actual_lufs": -12.377429871665274,
+          "target_error_lu": 3.1778751058854944,
+          "target_signed_error_lu": 3.1778751058854944,
+          "target_met": false,
+          "target_status": "below_target",
+          "stop_reason": "dynamic_budget",
+          "dynamic_budget_limited": true,
+          "limiter_p95_budget_db": 6.0,
+          "limiter_peak_budget_db": 18.0,
+          "limiter_release_ms": 150.0,
+          "applied_gain_db": 10.111817056508375,
+          "safety_trim_db": 0.0,
+          "true_peak_dbtp": -0.49369132641668134,
+          "limiter": {
+            "input_peak": 2.5089961794654,
+            "input_peak_dbfs": 7.989999999999999,
+            "drive_above_ceiling_db": 8.489999999999998,
+            "max_gain_reduction_db": 8.49,
+            "active_fraction": 0.9442178680589777,
+            "gain_reduction_p50_db": 1.177215119355088,
+            "gain_reduction_p95_db": 5.997649496596832,
+            "output_peak": 0.9440608762859235
+          },
+          "iterations": 12,
+          "spectral_processing": true,
+          "engine": "soren_bounded_v2",
+          "style_blend": 0.85,
+          "style_strength": 0.85,
+          "strength_semantics": "processing_amount",
+          "style_processing": {
+            "style_strength": 0.85,
+            "rms_match_mid_db": 0.2125,
+            "rms_match_side_db": 0.2125,
+            "spectral_mid_min_db": -0.8925,
+            "spectral_mid_max_db": 0.6892053110839477,
+            "spectral_mid_high_vs_body_db": 0.23161050893386248,
+            "spectral_mid_darkening_guard_db": 0.0,
+            "spectral_side_min_db": -0.6375,
+            "spectral_side_max_db": 0.6368477311150353,
+            "spectral_side_high_vs_body_db": 0.21544566104185192,
+            "spectral_side_darkening_guard_db": 0.0,
+            "level_correction_db": 0.2125,
+            "stereo_widening_db": 0.2187132940877025,
+            "style_width_change_db": 0.21791325838220277,
+            "dynamics": {
+              "profile": "Pop",
+              "ratio": 1.5524999999999998,
+              "attack_ms": 18.0,
+              "release_ms": 120.0,
+              "budget_db": 2.125,
+              "max_gain_reduction_db": 1.580975442382607,
+              "gain_reduction_p95_db": 1.1790631599089088,
+              "saturation_drive": 0.1275
+            }
+          },
+          "loudness_option": "normal",
+          "loudness_target_source": null,
+          "input_protection": {
+            "input_true_peak_dbtp": -1.5248385068120587,
+            "applied_gain_db": 0.0
+          }
+        },
+        "measured": {
+          "finite": true,
+          "sr": 44100,
+          "samples": 661538,
+          "duration_s": 15.001,
+          "integrated_lufs": -12.377,
+          "true_peak_4x_dbtp": -0.496,
+          "clipping_samples": 0,
+          "length_delta_samples_vs_ref0": 0
+        },
+        "measured_file": "set_1_final_mastered.wav"
+      }
+    },
+    "set_2": {
+      "input": "D:\\_3.AI\\audio_upscale\\_e2e_tmp\\inference_samples\\set_2\\input.wav",
+      "variants": {
+        "ref0": {
+          "final": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\final_set_2_ref0.wav",
+          "bass_stdout": "Bass-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\bassout_set_2_ref0.wav | sub=0.0dB punch=0.0dB sat=0.0 trans=0.0 sat_lmid_trim=off (heuristic, not listening-verified) auto_clarity=off sidechain=off | 44100Hz 2ch",
+          "drum_stdout": "Drum-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\final_set_2_ref0.wav | punch=0.0dB trans=0.0 | 44100Hz 2ch",
+          "bass_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\bass_enhance.py --bass holdout\\_work\\set_2\\real_bass.wav --in-mix holdout\\_work\\set_2\\real_inmix.wav --out holdout\\_work\\set_2\\bassout_set_2_ref0.wav --sub-db 0.0 --punch-db 0 --sat 0.0 --trans 0",
+          "drum_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\drum_enhance.py --drums holdout\\_work\\set_2\\real_drums.wav --in-mix holdout\\_work\\set_2\\bassout_set_2_ref0.wav --out holdout\\_work\\set_2\\final_set_2_ref0.wav --punch-db 0.0 --trans 0.0",
+          "render_lufs": -7.829,
+          "error": null,
+          "file": "set_2_ref0.wav",
+          "knobs": {
+            "sub_db": 0.0,
+            "sat": 0.0,
+            "punch_db": 0.0,
+            "trans": 0.0,
+            "sidechain": 0.0,
+            "clarity": false,
+            "clarity_auth": 0.0
+          },
+          "match_gain_db": 0.0,
+          "lufs": -11.418,
+          "residual_lu": 0.0,
+          "sample_peak_dbfs": -3.699,
+          "true_peak_4x_dbtp": -3.672,
+          "clipping_samples": 0,
+          "duration_s": 9.16,
+          "samples": 403954,
+          "low_band_rms_db": -14.081,
+          "low_band_delta_db": 0.0,
+          "finite": true,
+          "length_ok": true,
+          "verified": true,
+          "dsp": {
+            "sidechain": {
+              "applied": false,
+              "note": "off"
+            },
+            "sat_lmid_trim": "off",
+            "auto_clarity": {
+              "applied": false
+            }
+          }
+        },
+        "final": {
+          "final": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\final_set_2_final.wav",
+          "bass_stdout": "Bass-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\bassout_set_2_final.wav | sub=2.0dB punch=0.0dB sat=0.2 trans=0.0 sat_lmid_trim=0.00dB (heuristic, not listening-verified) auto_clarity=(-0.0, 2.0)(auth=1.00) sidechain=on conf=0.58 duck_p95=1.59dB duck_max=1.69dB | 44100Hz 2ch",
+          "drum_stdout": "Drum-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\final_set_2_final.wav | punch=3.0dB trans=0.4 | 44100Hz 2ch",
+          "bass_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\bass_enhance.py --bass holdout\\_work\\set_2\\real_bass.wav --in-mix holdout\\_work\\set_2\\real_inmix.wav --out holdout\\_work\\set_2\\bassout_set_2_final.wav --sub-db 2.0 --punch-db 0 --sat 0.2 --trans 0 --sidechain-drums holdout\\_work\\set_2\\real_drums.wav --sidechain-amount 0.5 --auto-clarity --clarity-auth 1.0",
+          "drum_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\drum_enhance.py --drums holdout\\_work\\set_2\\real_drums.wav --in-mix holdout\\_work\\set_2\\bassout_set_2_final.wav --out holdout\\_work\\set_2\\final_set_2_final.wav --punch-db 3.0 --trans 0.4",
+          "render_lufs": -9.825,
+          "error": null,
+          "file": "set_2_final.wav",
+          "knobs": {
+            "sub_db": 2.0,
+            "sat": 0.2,
+            "punch_db": 3.0,
+            "trans": 0.4,
+            "sidechain": 0.5,
+            "clarity": true,
+            "clarity_auth": 1.0
+          },
+          "match_gain_db": 1.997,
+          "lufs": -11.418,
+          "residual_lu": 0.0,
+          "sample_peak_dbfs": -2.093,
+          "true_peak_4x_dbtp": -2.091,
+          "clipping_samples": 0,
+          "duration_s": 9.16,
+          "samples": 403954,
+          "low_band_rms_db": -13.888,
+          "low_band_delta_db": 0.193,
+          "finite": true,
+          "length_ok": true,
+          "verified": true,
+          "dsp": {
+            "sidechain": {
+              "applied": true,
+              "confidence": 0.58,
+              "duck_db_p95": 1.59,
+              "duck_db_max": 1.69
+            },
+            "sat_lmid_trim": "0.00dB",
+            "auto_clarity": {
+              "applied": true,
+              "mud_db": -0.0,
+              "clarity_db": 2.0,
+              "auth": 1.0
+            }
+          }
+        },
+        "old_default": {
+          "final": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\final_set_2_old_default.wav",
+          "bass_stdout": "Bass-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\bassout_set_2_old_default.wav | sub=6.0dB punch=0.0dB sat=0.3 trans=0.0 sat_lmid_trim=0.00dB (heuristic, not listening-verified) auto_clarity=(-0.0, 2.0)(auth=1.00) sidechain=on conf=0.58 duck_p95=1.59dB duck_max=1.69dB | 44100Hz 2ch",
+          "drum_stdout": "Drum-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\final_set_2_old_default.wav | punch=2.0dB trans=0.3 | 44100Hz 2ch",
+          "bass_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\bass_enhance.py --bass holdout\\_work\\set_2\\real_bass.wav --in-mix holdout\\_work\\set_2\\real_inmix.wav --out holdout\\_work\\set_2\\bassout_set_2_old_default.wav --sub-db 6.0 --punch-db 0 --sat 0.3 --trans 0 --sidechain-drums holdout\\_work\\set_2\\real_drums.wav --sidechain-amount 0.5 --auto-clarity --clarity-auth 1.0",
+          "drum_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\drum_enhance.py --drums holdout\\_work\\set_2\\real_drums.wav --in-mix holdout\\_work\\set_2\\bassout_set_2_old_default.wav --out holdout\\_work\\set_2\\final_set_2_old_default.wav --punch-db 2.0 --trans 0.3",
+          "render_lufs": -10.151,
+          "error": null,
+          "file": "set_2_old_default.wav",
+          "knobs": {
+            "sub_db": 6.0,
+            "sat": 0.3,
+            "punch_db": 2.0,
+            "trans": 0.3,
+            "sidechain": 0.5,
+            "clarity": true,
+            "clarity_auth": 1.0
+          },
+          "match_gain_db": 2.322,
+          "lufs": -11.418,
+          "residual_lu": 0.0,
+          "sample_peak_dbfs": -1.768,
+          "true_peak_4x_dbtp": -1.768,
+          "clipping_samples": 0,
+          "duration_s": 9.16,
+          "samples": 403954,
+          "low_band_rms_db": -13.355,
+          "low_band_delta_db": 0.726,
+          "finite": true,
+          "length_ok": true,
+          "verified": true,
+          "dsp": {
+            "sidechain": {
+              "applied": true,
+              "confidence": 0.58,
+              "duck_db_p95": 1.59,
+              "duck_db_max": 1.69
+            },
+            "sat_lmid_trim": "0.00dB",
+            "auto_clarity": {
+              "applied": true,
+              "mud_db": -0.0,
+              "clarity_db": 2.0,
+              "auth": 1.0
+            }
+          }
+        },
+        "strong": {
+          "final": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\final_set_2_strong.wav",
+          "bass_stdout": "Bass-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\bassout_set_2_strong.wav | sub=6.0dB punch=0.0dB sat=0.4 trans=0.0 sat_lmid_trim=0.00dB (heuristic, not listening-verified) auto_clarity=(-0.0, 2.0)(auth=1.00) sidechain=on conf=0.58 duck_p95=1.59dB duck_max=1.69dB | 44100Hz 2ch",
+          "drum_stdout": "Drum-enhanced mix done: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\final_set_2_strong.wav | punch=5.0dB trans=0.5 | 44100Hz 2ch",
+          "bass_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\bass_enhance.py --bass holdout\\_work\\set_2\\real_bass.wav --in-mix holdout\\_work\\set_2\\real_inmix.wav --out holdout\\_work\\set_2\\bassout_set_2_strong.wav --sub-db 6.0 --punch-db 0 --sat 0.4 --trans 0 --sidechain-drums holdout\\_work\\set_2\\real_drums.wav --sidechain-amount 0.5 --auto-clarity --clarity-auth 1.0",
+          "drum_cmd": "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe apollo_scripts\\drum_enhance.py --drums holdout\\_work\\set_2\\real_drums.wav --in-mix holdout\\_work\\set_2\\bassout_set_2_strong.wav --out holdout\\_work\\set_2\\final_set_2_strong.wav --punch-db 5.0 --trans 0.5",
+          "render_lufs": -10.918,
+          "error": null,
+          "file": "set_2_strong.wav",
+          "knobs": {
+            "sub_db": 6.0,
+            "sat": 0.4,
+            "punch_db": 5.0,
+            "trans": 0.5,
+            "sidechain": 0.5,
+            "clarity": true,
+            "clarity_auth": 1.0
+          },
+          "match_gain_db": 3.09,
+          "lufs": -11.418,
+          "residual_lu": -0.0,
+          "sample_peak_dbfs": -1.0,
+          "true_peak_4x_dbtp": -0.999,
+          "clipping_samples": 0,
+          "duration_s": 9.16,
+          "samples": 403954,
+          "low_band_rms_db": -13.329,
+          "low_band_delta_db": 0.751,
+          "finite": true,
+          "length_ok": true,
+          "verified": true,
+          "dsp": {
+            "sidechain": {
+              "applied": true,
+              "confidence": 0.58,
+              "duck_db_p95": 1.59,
+              "duck_db_max": 1.69
+            },
+            "sat_lmid_trim": "0.00dB",
+            "auto_clarity": {
+              "applied": true,
+              "mud_db": -0.0,
+              "clarity_db": 2.0,
+              "auth": 1.0
+            }
+          }
+        }
+      },
+      "source": {
+        "sr": 44100,
+        "channels": 2,
+        "duration_s": 9.16
+      },
+      "separation": {
+        "bass": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\real_bass.wav",
+        "drums": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\real_drums.wav",
+        "in_mix": "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\_work\\set_2\\real_inmix.wav",
+        "sr": 44100,
+        "duration_s": 9.16,
+        "n_samples": 403954,
+        "cached": true
+      },
+      "sr": 44100,
+      "duration_s": 9.16,
+      "n_samples": 403954,
+      "match": {
+        "ref_lufs_render": -7.8286719490077585,
+        "class_atten_db": 3.589749675279145,
+        "match_gains_db": {
+          "ref0": 0.0,
+          "final": 1.996517238573122,
+          "old_default": 2.322067671173813,
+          "strong": 3.089749806125492
+        },
+        "ref_lufs_matched": -11.418421624286903
+      },
+      "low_band_ref0_rms_db": -14.080567224073093,
+      "mastering": {
+        "cmd": [
+          "D:\\_3.AI\\audio_upscale\\UniverSR\\.venv\\Scripts\\python.exe",
+          "D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src\\core_decrypted.py",
+          "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\set_2_final.wav",
+          "D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\set_2_final_mastered.wav",
+          "--loudness",
+          "normal",
+          "--eq-profile",
+          "Neutral",
+          "--genre",
+          "Pop",
+          "--style-mode",
+          "styled",
+          "--style-blend",
+          "0.85"
+        ],
+        "cwd": "D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src",
+        "timeout_s": 600,
+        "seconds": 7.6,
+        "returncode": 0,
+        "stdout_tail": "\\dev_runtime\\Soren_src\\secured_genres\\Pop.secgnr\nAttempting to load model from: D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src\\model\\genre_model.joblib\nAttempting to load feature scaler from: D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src\\model\\genre_feature_scaler.joblib\nAttempting to load target scaler from: D:\\_3.AI\\audio_upscale\\SorenStudio\\dev_runtime\\Soren_src\\model\\genre_target_scaler.joblib\nNumerical features: 9\nGenre encoding: 10\nSpectrum mid: 10\nSpectrum side: 10\nTotal features: 39\nModel suggestions for Pop:\nRMS Mid: 0.4600\nRMS Side: 0.1323\nStereo Width: 0.7834\nInitial RMS - Mid: 0.3074, Side: 0.0849\nAfter guardrails - RMS Mid: 0.3842, RMS Side: 0.1062\nFinal RMS - Mid: 0.3842, Side: 0.1062\n--- Reference from Genre Metrics ---\nShape: (2, 8828928)\nMax amplitude: 1.2846\nLUFS: -9.82\nMid RMS: 0.3842\nSide RMS: 0.1062\nStereo Width: 0.0709\n-------------------\nFinalizing stereo image...\nInitial stereo width: 0.0492\nReference stereo width: 0.0709\nApplied 2.6% stereo width increase.\nInitial stereo width: 0.0492\nFinal stereo width: 0.0516\nStereo image finalization complete. Output max amplitude: 0.7958\nAudio processing time: 4.96 seconds\nSaving audio to: D:\\_3.AI\\audio_upscale\\SorenStudio\\holdout\\set_2_final_mastered.wav\nAudio shape: (2, 403954), max=0.9458748853504261, min=5.712434850206427e-09\nSaving with sample rate: 44100\nPCM24 readback True Peak (dBTP): -0.47\nAudio saving time: 0.16 seconds\nTotal Python processing time: 6.38 seconds\nMastering completed\n",
+        "sidecar": {
+          "style_mode": "styled",
+          "target_lufs": -9.199554764198625,
+          "input_lufs": -11.927469690060919,
+          "actual_lufs": -9.179119621897092,
+          "target_error_lu": 0.02043514060234841,
+          "target_signed_error_lu": -0.02043514060234841,
+          "target_met": true,
+          "target_status": "met",
+          "stop_reason": "target_met",
+          "dynamic_budget_limited": false,
+          "limiter_p95_budget_db": 6.0,
+          "limiter_peak_budget_db": 18.0,
+          "limiter_release_ms": 150.0,
+          "applied_gain_db": 2.9208694424004618,
+          "safety_trim_db": 0.0,
+          "true_peak_dbtp": -0.472853709282327,
+          "limiter": {
+            "input_peak": 1.020092722398951,
+            "input_peak_dbfs": 0.17279298417990463,
+            "drive_above_ceiling_db": 0.6727929841799046,
+            "max_gain_reduction_db": 0.672792984179905,
+            "active_fraction": 0.5087893671061556,
+            "gain_reduction_p50_db": 0.10246734957490775,
+            "gain_reduction_p95_db": 0.40352648404999286,
+            "output_peak": 0.9440608762859234
+          },
+          "iterations": 2,
+          "spectral_processing": true,
+          "engine": "soren_bounded_v2",
+          "style_blend": 0.85,
+          "style_strength": 0.85,
+          "strength_semantics": "processing_amount",
+          "style_processing": {
+            "style_strength": 0.85,
+            "rms_match_mid_db": 0.2125,
+            "rms_match_side_db": 0.2125,
+            "spectral_mid_min_db": -0.8925,
+            "spectral_mid_max_db": 0.37291941962680963,
+            "spectral_mid_high_vs_body_db": -0.2975,
+            "spectral_mid_darkening_guard_db": 0.4672558692318428,
+            "spectral_side_min_db": -0.6375,
+            "spectral_side_max_db": 0.5802911181982937,
+            "spectral_side_high_vs_body_db": -0.10024902450994039,
+            "spectral_side_darkening_guard_db": 0.0,
+            "level_correction_db": 0.2125,
+            "stereo_widening_db": 0.2187132940877025,
+            "style_width_change_db": 0.0701914617899947,
+            "dynamics": {
+              "profile": "Pop",
+              "ratio": 1.5524999999999998,
+              "attack_ms": 18.0,
+              "release_ms": 120.0,
+              "budget_db": 2.125,
+              "max_gain_reduction_db": 1.457051479905411,
+              "gain_reduction_p95_db": 1.054612886972359,
+              "saturation_drive": 0.1275
+            }
+          },
+          "loudness_option": "normal",
+          "loudness_target_source": null,
+          "input_protection": {
+            "input_true_peak_dbtp": -2.087705295747589,
+            "applied_gain_db": 0.0
+          }
+        },
+        "measured": {
+          "finite": true,
+          "sr": 44100,
+          "samples": 403954,
+          "duration_s": 9.16,
+          "integrated_lufs": -9.179,
+          "true_peak_4x_dbtp": -0.469,
+          "clipping_samples": 0,
+          "length_delta_samples_vs_ref0": 0
+        },
+        "measured_file": "set_2_final_mastered.wav"
+      }
+    }
+  },
+  "verification": {
+    "failures": []
+  },
+  "conclusion": {
+    "per_song_low_band_delta_db": {
+      "set_1": {
+        "final": 0.898,
+        "old_default": 0.952,
+        "strong": 1.637
+      },
+      "set_2": {
+        "final": 0.193,
+        "old_default": 0.726,
+        "strong": 0.751
+      }
+    },
+    "mean_deltas_db": {
+      "final": 0.55,
+      "old_default": 0.84,
+      "strong": 1.19
+    },
+    "sidechain_final": [
+      "set_2: conf=0.58 duck_p95=1.59dB duck_max=1.69dB"
+    ],
+    "checks": {
+      "final_low_band_modest": {
+        "rule": "0 ≤ mean(final Δ) ≤ 4.0 dB 且 mean(final Δ) < mean(old_default Δ)",
+        "mean_final_delta_db": 0.55,
+        "mean_old_default_delta_db": 0.84,
+        "pass": true
+      },
+      "final_below_old_default_each_song": {
+        "rule": "每曲 final Δ < old_default Δ",
+        "per_song": {
+          "set_1": {
+            "final": 0.898,
+            "old_default": 0.952,
+            "strong": 1.637
+          },
+          "set_2": {
+            "final": 0.193,
+            "old_default": 0.726,
+            "strong": 0.751
+          }
+        },
+        "pass": true
+      },
+      "strong_expresses_intent": {
+        "rule": "mean(strong Δ) − mean(final Δ) ≥ 1.0 dB",
+        "mean_strong_delta_db": 1.19,
+        "mean_final_delta_db": 0.55,
+        "pass": false
+      },
+      "no_clipping": {
+        "clipping_samples_total": 0,
+        "pass": true
+      },
+      "no_length_drift_variants": {
+        "max_abs_drift_samples": 0,
+        "pass": true
+      },
+      "mastering_sidecars_ok": {
+        "pass": true
+      }
+    },
+    "engineering_gate": "FAIL",
+    "listening_gate": "pending — 需对留出集渲染做人工听音（偏好/损伤）确认"
+  }
+}
