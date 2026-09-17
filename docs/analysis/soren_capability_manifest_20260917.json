@@ -1,0 +1,270 @@
+{
+  "manifest": "soren_capability_manifest",
+  "spec_item": "P4-01 验证风格、参考、响度、输出采样率、True Peak、限幅、dither 的真实控制方式",
+  "generated": "2026-09-17",
+  "app_version": "ShadowBuster v1.6.10",
+  "engine": {
+    "entry": "dev_runtime/Soren_src/core_decrypted.py (byte-identical to packaging/soren_core.py, filecmp verified)",
+    "styled_subengine": "dev_runtime/Soren_src/soren_original.py (byte-identical to packaging/soren_original.py, filecmp verified)",
+    "invocation": "[PYTHON, <soren_dir>/core_decrypted.py, input, output, --loudness X, --eq-profile Y, ...] with cwd=PYTHONPATH=soren_dir, exactly as studio_backend.stage_soren (studio_backend.py:952-968)",
+    "python_used_in_probe": "D:/_3.AI/audio_upscale/UniverSR/.venv/Scripts/python.exe",
+    "model_junction_resolves": true,
+    "profiles_junction_resolves": true,
+    "status_line": "all engine sources read; 9 subprocess probes executed"
+  },
+  "probe_setup": {
+    "tool": "tools/probe_soren_capabilities.py",
+    "raw_report": "D:/_3.AI/audio_upscale/_e2e_tmp/soren_capability_probe/soren_capability_probe_20260917_125235.json",
+    "input": {
+      "path": "D:/_3.AI/audio_upscale/_e2e_tmp/inference_samples/set_2/input.wav",
+      "duration_s": 9.16,
+      "samplerate": 44100,
+      "channels": 2,
+      "subtype": "PCM_16",
+      "integrated_lufs": -7.8287,
+      "true_peak_dbtp": -0.0818,
+      "meter": "repo audio_metrics.measure_audio (pyloudnorm-based, 4x resample_poly kaiser 8.6 TP)"
+    },
+    "reference": {
+      "path": "D:/_3.AI/audio_upscale/_e2e_tmp/pop_ref.wav",
+      "duration_s": 200.2,
+      "subtype": "PCM_16",
+      "integrated_lufs": -11.7584,
+      "true_peak_dbtp": 0.0127
+    },
+    "measurement_note": "Output TP measured two ways: repo audio_metrics (4x resample_poly, kaiser 8.6, padtype=line) and the engine's own sidecar true_peak_dbtp (4x resample_poly default kaiser-5.0 window, float64, post-dither, plus a PCM24 readback gate inside master_audio). Repo measure reads slightly lower (~0.1-0.7 dB difference); both are quoted."
+  },
+  "probe_results": [
+    {
+      "run": "1_baseline_off_normal",
+      "args": "--style-mode off --loudness normal",
+      "measured_lufs": -9.198,
+      "predicted_target_lufs": -9.1996,
+      "target_error_lu": 0.002,
+      "true_peak_dbtp_repo": -1.291,
+      "true_peak_dbtp_engine_sidecar": -0.617,
+      "limiter_release_ms": 150.0,
+      "target_status": "met",
+      "stop_reason": "target_met",
+      "output_subtype": "PCM_24",
+      "limiter_max_gain_reduction_db": 0.0
+    },
+    {
+      "run": "2_styled_pop_blend085",
+      "args": "--style-mode styled --genre Pop --style-blend 0.85 --loudness normal",
+      "measured_lufs": -9.199,
+      "predicted_target_lufs": -9.1996,
+      "target_error_lu": 0.001,
+      "true_peak_dbtp_repo": -0.466,
+      "true_peak_dbtp_engine_sidecar": -0.471,
+      "limiter_release_ms": 150.0,
+      "target_status": "met",
+      "output_subtype": "PCM_24",
+      "limiter_max_gain_reduction_db": 0.24,
+      "sidecar_style_processing": {
+        "rms_match_mid_db": 0.2125,
+        "spectral_mid_min_db": -0.8925,
+        "spectral_mid_max_db": 0.4118,
+        "level_correction_db": 0.117,
+        "stereo_widening_db": 0.2187,
+        "style_width_change_db": 0.0371
+      },
+      "input_protection": {"input_true_peak_dbtp": 0.7245, "applied_gain_db": -0.8245}
+    },
+    {
+      "run": "3_styled_pop_blend035",
+      "args": "--style-mode styled --genre Pop --style-blend 0.35 --loudness normal",
+      "measured_lufs": -9.198,
+      "predicted_target_lufs": -9.1996,
+      "target_error_lu": 0.002,
+      "true_peak_dbtp_repo": -0.886,
+      "true_peak_dbtp_engine_sidecar": -0.694,
+      "limiter_release_ms": 150.0,
+      "target_status": "met",
+      "output_subtype": "PCM_24",
+      "limiter_max_gain_reduction_db": 0.0,
+      "sidecar_style_processing": {
+        "rms_match_mid_db": 0.0875,
+        "spectral_mid_min_db": -0.3675,
+        "spectral_mid_max_db": 0.1696,
+        "level_correction_db": 0.049,
+        "stereo_widening_db": 0.0907,
+        "style_width_change_db": 0.0155
+      }
+    },
+    {
+      "run": "4_eqonly_bright",
+      "args": "--style-mode eq_only --eq-profile Bright --loudness normal",
+      "measured_lufs": -9.198,
+      "predicted_target_lufs": -9.1996,
+      "target_error_lu": 0.002,
+      "true_peak_dbtp_repo": -0.762,
+      "true_peak_dbtp_engine_sidecar": -0.757,
+      "limiter_release_ms": 150.0,
+      "target_status": "met",
+      "output_subtype": "PCM_24",
+      "limiter_max_gain_reduction_db": 0.0,
+      "sidecar_eq_profile": "Bright"
+    },
+    {
+      "run": "5_off_soft",
+      "args": "--style-mode off --loudness soft",
+      "measured_lufs": -12.298,
+      "predicted_target_lufs": -12.2996,
+      "target_error_lu": 0.002,
+      "true_peak_dbtp_repo": -4.391,
+      "true_peak_dbtp_engine_sidecar": -3.717,
+      "limiter_release_ms": 150.0,
+      "target_status": "met",
+      "output_subtype": "PCM_24",
+      "limiter_max_gain_reduction_db": 0.0
+    },
+    {
+      "run": "6_off_loud",
+      "args": "--style-mode off --loudness loud",
+      "measured_lufs": -7.081,
+      "predicted_target_lufs": -6.6996,
+      "target_error_lu": -0.381,
+      "true_peak_dbtp_repo": -0.405,
+      "true_peak_dbtp_engine_sidecar": -0.42,
+      "limiter_release_ms": 80.0,
+      "target_status": "below_target",
+      "stop_reason": "dynamic_budget",
+      "dynamic_budget_limited": true,
+      "output_subtype": "PCM_24",
+      "limiter_max_gain_reduction_db": 8.82,
+      "limiter_p95_gain_reduction_db": 7.99,
+      "limiter_p95_budget_db": 8.0,
+      "safety_trim_db": -0.0361,
+      "iterations": 13
+    },
+    {
+      "run": "7_reference_styled_blend085",
+      "args": "--reference pop_ref.wav --style-mode styled --style-blend 0.85 --loudness normal",
+      "measured_lufs": -11.757,
+      "predicted_target_lufs": -11.7584,
+      "predicted_target_basis": "measured reference LUFS (-11.7584) + normal offset (0.0)",
+      "target_error_lu": 0.002,
+      "true_peak_dbtp_repo": -3.008,
+      "true_peak_dbtp_engine_sidecar": -3.001,
+      "limiter_release_ms": 150.0,
+      "target_status": "met",
+      "output_subtype": "PCM_24",
+      "limiter_max_gain_reduction_db": 0.0
+    },
+    {
+      "run": "8_styled_orchestral_blend085",
+      "args": "--style-mode styled --genre Orchestral --style-blend 0.85 --loudness normal",
+      "measured_lufs": -19.877,
+      "predicted_target_lufs": -19.8783,
+      "target_error_lu": 0.001,
+      "true_peak_dbtp_repo": -11.187,
+      "true_peak_dbtp_engine_sidecar": -11.196,
+      "limiter_release_ms": 150.0,
+      "target_status": "met",
+      "output_subtype": "PCM_24",
+      "limiter_max_gain_reduction_db": 0.0
+    },
+    {
+      "run": "9_invalid_genre_orchestra",
+      "args": "--style-mode styled --genre Orchestra --style-blend 0.85 --loudness normal",
+      "result": "FAILED rc=1 after 1.3 s",
+      "error_tail": "FileNotFoundError: [Errno 2] No such file or directory: 'D:\\\\_3.AI\\\\audio_upscale\\\\SorenStudio\\\\dev_runtime\\\\Soren_src\\\\profiles\\\\Orchestra_profile.json' (core_decrypted.py:1463 -> :813)",
+      "finding": "genre names must exactly match profiles/<Genre>_profile.json; the profile is Orchestral_profile.json, so 'Orchestra' is rejected before any audio processing"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "style_mode dispatch (styled / off / eq_only)",
+      "status": "confirmed_by_probe",
+      "evidence": "All three modes ran successfully: off (run 1/5/6, no spectral processing, sidecar spectral_processing=false), eq_only+Bright (run 4, spectral_processing=true, 2.5 s runtime), styled+Pop (run 2/3, spectral_processing=true). Dispatch code: core_decrypted.py:1012-1024 (process_audio -> process_original_styled for styled, process_transparent for off/eq_only).",
+      "notes": "All modes end in the same final stage process_transparent (loudness binary search + lookahead limiter + TP trim + dither), so loudness/TP behavior is identical across modes; only spectral content differs. The long legacy styled pipeline at core_decrypted.py:1027-1273 is dead code (unreachable after the dispatch returns)."
+    },
+    {
+      "name": "style_blend semantics (processing amount, not dry/wet)",
+      "status": "confirmed_by_probe",
+      "evidence": "Blend 0.85 vs 0.35 (runs 2 vs 3) at identical loudness preset: every per-processor amount in the sidecar scaled linearly with strength — rms_match_mid_db 0.2125 (=0.25*0.85) vs 0.0875 (=0.25*0.35); spectral_mid_min_db -0.8925 (=-1.05*0.85) vs -0.3675 (=-1.05*0.35); stereo_widening_db 0.2187 vs 0.0907; output TP -0.466 vs -0.886 dBTP. Integrated LUFS identical (-9.199 vs -9.198, both on target).",
+      "notes": "Code: soren_original.py:253-254 (max_correction_db=0.25*strength), :325-326 (limit=(0.75/1.25)*strength, curve=clip(smoothed*0.2*strength)), :380 (gradual gain clip 0.25*strength), :438 (max_adjustment=0.03*style_strength), :704-705 (ratio/budget scaled by strength), :719 (saturation=drive*strength). CLI.md:20 claim '处理强度而非波形比例' is confirmed; there is no dry/wet waveform crossfade anywhere in the live path."
+    },
+    {
+      "name": "reference vs genre precedence",
+      "status": "confirmed_by_probe",
+      "evidence": "Run 7 (--reference without --genre) succeeded with target_lufs=-11.7584 in the sidecar, which equals the measured LUFS of pop_ref.wav (-11.7584) plus the normal offset (0.0). Genre profile Pop (-9.20) was NOT used. Code: core_decrypted.py:1551-1556 (CLI: --reference wins over --genre), :1470-1479 (reference loaded, genre_profile=None), :994-997 (styled: requested_lufs = loudness_target_lufs({'lufs': reference_lufs}, option)).",
+      "notes": "YES, the reference file sets the LUFS target: target = measured reference integrated LUFS + loudness preset offset (soft -3.10 / dynamic -1.94 / normal 0.0 / loud +2.50). The loudness preset therefore still applies in reference mode. The spectral style target becomes the reference audio itself."
+    },
+    {
+      "name": "loudness target mapping (preset offsets + genre profile base)",
+      "status": "confirmed_by_probe",
+      "evidence": "Measured integrated LUFS vs profile-JSON prediction (Pop base -9.1996): normal -9.198 (err +0.002), soft -12.298 (err +0.002, pred -12.2996), loud -7.081 (pred -6.6996, err -0.381, status below_target / stop_reason dynamic_budget). Orchestral base -19.8783 measured -19.877 (err +0.001). Reference mode measured exactly on ref-LUFS target (-11.757 vs -11.7584).",
+      "notes": "Offsets code: core_decrypted.py:834-845 {soft:-3.10, dynamic:-1.94, normal:0.0, loud:+2.50} added to profiles/<Genre>_profile.json 'lufs' (Pop -9.19955, EDM -9.60822, Rock -9.41723, Dance -10.32722, Hiphop -11.63703, Ambient -13.88485, Chillout -13.51356, Orchestral -19.87833, Speech -16.49618, Piano -17.21594; verified by reading the JSONs). The 'loud' undershoot is by design: process_transparent caps the limiter drive by p95 budget 8 dB / peak budget 20 dB (core_decrypted.py:883-890) and keeps the safest candidate when the target is unreachable; the sidecar marks dynamic_budget_limited=true and target_status=below_target (GUI surfaces 未达标). Consistent with docs/CLI.md:26."
+    },
+    {
+      "name": "output sample rate / bit depth / subtype / duration",
+      "status": "confirmed_by_probe",
+      "evidence": "All 8 successful runs: PCM_24, 44100 Hz, 2 channels, duration 9.160 s == input (no trimming/padding). Engine write: core_decrypted.py:112 sf.write(..., subtype='PCM_24'); sample-rate gate: core_decrypted.py:1435-1439 raises ValueError if input sr != 44100 ('Soren requires 44100 Hz input').",
+      "notes": "Output sr always equals input sr; the engine only accepts 44.1 kHz. Upstream resampling to 44.1k is the backend's job (studio_backend per docs/CLI.md:20)."
+    },
+    {
+      "name": "true peak ceiling (-0.4 dBTP)",
+      "status": "confirmed_by_probe",
+      "evidence": "Max measured TP across all runs: -0.405 dBTP (repo meter) / -0.420 (engine sidecar) in run 6 (loud, pinned at ceiling); styled Pop 0.85: -0.466 / -0.471. No run exceeded -0.4 dBTP by either meter. Zero clipping samples (|x|>=0.99999) in any output. Engine enforcement: core_decrypted.py:70 (true_peak_ceiling_db=-0.4), :904-905 + :939-941 (post-dither TP check, RuntimeError above ceiling), :1493-1504 (PCM24 readback re-measure + hard gate before sidecar write).",
+      "notes": "styled outputs intentionally sit close to (but never above) -0.4 dBTP when the material needs drive; quiet targets (soft / Orchestral / reference) land far below because no upward normalization beyond the loudness target is applied. There is no contradiction with repo docs; the -0.4 dBTP ceiling holds in all modes (master_audio's per-mode output_ceiling_db at :1499 resolves to -0.4 for both styled and the Config default)."
+    },
+    {
+      "name": "limiter characteristics (linked lookahead limiter)",
+      "status": "confirmed_by_probe",
+      "evidence": "Sidecar limiter stats: run 6 (loud): release 80.0 ms, max gain reduction 8.82 dB, p95 7.99 dB (budget 8.0), active_fraction 1.0, 13 binary-search iterations, safety_trim -0.036 dB; all other runs: release 150.0 ms, max GR <= 0.24 dB. Code: core_decrypted.py:752-802 (linked_lookahead_limiter: linked channels, 5 ms lookahead, attack 1 ms, ceiling -0.5 dBFS at 4x oversampled domain 176.4 kHz, RuntimeError if output exceeds ceiling), :886-887 (release=min(150,80) when loudness_option=='loud').",
+      "notes": "release 150 ms for soft/dynamic/normal, 80 ms for loud — matches docs/CLI.md:20. Legacy multi-stage limiter (core_decrypted.py:62-65, :805-807) and soren_original multi_stage_limiter (:603-638) are dead code; the live path always uses linked_lookahead_limiter. Stereo image is preserved via linked (max across channels) detection."
+    },
+    {
+      "name": "dither at 24-bit (TPDF)",
+      "status": "confirmed_by_code",
+      "evidence": "core_decrypted.py:114-120 apply_dither: 'Apply standard two-LSB peak-to-peak TPDF dither before PCM quantization' — noise=(rng.random(shape)-rng.random(shape))*lsb with lsb=1/2^23. Applied in process_transparent:938 (result = core.apply_dither(result)) AFTER the TP safety trim, then TP re-verified at :939-941; also at :1248 in the dead legacy path. Final quantization happens only in sf.write subtype='PCM_24' (:112).",
+      "notes": "Dither is applied for every mode (off/eq_only/styled all pass through process_transparent). It is TPDF at 2-LSB peak-to-peak, 24-bit LSB scale, generated with numpy default_rng (unseeded, not deterministic). Not directly verifiable from the written file without bit-level noise-floor analysis; code path is unambiguous. Matches docs/CLI.md:89 (PCM24 输出含 TPDF dither)."
+    },
+    {
+      "name": "upstream-delta flag (--upstream-delta)",
+      "status": "confirmed_by_code",
+      "evidence": "core_decrypted.py:1528-1546 (CLI arg, JSON file requiring keys freqs/mid_db/side_db/rms_mid/rms_side, loaded into config.upstream_delta), :984-987 (copied onto original_config in styled mode). soren_original.py:312-315 (reference spectrum shaped by 10^(interp(freqs, ud.mid_db|side_db)/20) before computing the matching curve), :756-759 (reference mid/side RMS scaled by ud.rms_mid/rms_side).",
+      "notes": "Styled matching target = genre curve x upstream spectral delta (M/S separated), and the delta's broadband M/S RMS ratios rescale the reference level so upstream-established balance is not re-matched away. Probe did not exercise this flag (code-level evidence per spec); studio_backend builds the delta JSON in-pipeline (studio_backend.py:963-964, 982-989)."
+    },
+    {
+      "name": "eq_profile handling (--eq-profile Neutral/Warm/Bright/Fusion)",
+      "status": "confirmed_by_probe",
+      "evidence": "Run 4 (eq_only + Bright) succeeded: sidecar eq_profile=Bright, spectral_processing=true, output measurably different from run 1 (TP -0.762 vs -1.291 dBTP) at identical loudness target. In styled runs the same canonical curves apply after frequency matching (soren_original.py:775-776).",
+      "notes": "Curves defined once in soren_original.py:944-972 apply_eq_style (Neutral=no-op; Warm: mid +1.5 dB shelf <150 Hz; Bright: mid +1.0 dB bell @3.2k + +1.5 dB shelf >9k, side -0.7 dB @250 + +1.5 dB shelf >8k; Fusion: +0.8/+0.8 mid, -0.26/+0.8 side), all minimum-phase RBJ biquads. eq_only reuses the identical function via core_decrypted.py:1421-1424 load_soren_original_module, so eq_only can never drift from styled. eq_only ignores style-blend (CLI.md:20 confirmed). Loudness target in eq_only/off always comes from the genre profile (defaults to Pop when --genre omitted with --style-mode off, core_decrypted.py:1459)."
+    },
+    {
+      "name": "lowpass cutoff flag (--lowpass-cutoff)",
+      "status": "confirmed_by_code",
+      "evidence": "core_decrypted.py:1525-1550 (CLI: --lowpass-cutoff float, default None -> disabled; sets config.original_lowpass_override and config.lowpass_cutoff), :988-990 (styled: original_config.lowpass_cutoff=override, explicit_lowpass=True), soren_original.py:778-779 (only if explicit_lowpass: apply_lowpass_filter = butter(10, cutoff) at the 4x domain, cutoff relative to oversampled Nyquist).",
+      "notes": "Disabled by default: styled runs apply NO lowpass unless --lowpass-cutoff is passed (soren_original Config lowpass_cutoff=18000 is inert without the explicit flag). Not probed in the matrix (budget); code path is a single conditional. stage_soren forwards --lowpass-cutoff only when truthy (studio_backend.py:961-962)."
+    },
+    {
+      "name": "genre name validation",
+      "status": "confirmed_by_probe",
+      "evidence": "Run 9 (--genre Orchestra) failed rc=1 in 1.3 s with FileNotFoundError for profiles/Orchestra_profile.json (core_decrypted.py:1463 -> :813).",
+      "notes": "Valid genre set = {Pop, Rock, EDM, Dance, Hiphop, Ambient, Chillout, Orchestral, Piano, Speech} (profile files present; also DYNAMIC_PROFILES keys in soren_original.py:674-686 include 'Reference' but no such profile JSON exists — 'Reference' is only the fallback when neither genre nor reference is resolvable in apply_style_dynamics). No fuzzy matching, no retry; failure happens before any DSP, so it fails fast and clean."
+    },
+    {
+      "name": "styled input protection (pre-gain to -0.1 dBTP)",
+      "status": "confirmed_by_probe",
+      "evidence": "Runs 2/3/7/8 sidecar input_protection: input_true_peak_dbtp=+0.7245, applied_gain_db=-0.8245. Code: core_decrypted.py:969-974 — gain_db = min(0, -0.1 - max(true_peak_4x, sample_peak_db)).",
+      "notes": "Only attenuation, never boost; protects the soren_original pipeline from inter-sample-peak overload before its bounded processing."
+    },
+    {
+      "name": "loudness met precision",
+      "status": "confirmed_by_probe",
+      "evidence": "Every 'met' run: |error| <= 0.002 LU by repo meter and <= 0.0017 LU by the engine's own meter (sidecar target_signed_error_lu). Convergence gate is 0.1 LU (core_decrypted.py:912) and met threshold 0.2 LU (:944).",
+      "notes": "For this material the search converged on the first or third iteration (except loud: 13). loud on dense material is the only observed miss, and it is reported honestly in the sidecar."
+    }
+  ],
+  "contradictions_with_repo_docs": [],
+  "known_limitations": [
+    "Probe matrix covers one 9.2 s stereo 44.1k PCM16 input and one 200 s Pop reference; behavior on mono, silent, or non-44.1k input is code-derived only (mono/near-mono skip branches: soren_original.py:270-273, core_decrypted.py:280-283, :518-520; silent input rejected: core_decrypted.py:970-971, :878-879; non-44.1k rejected: :1435-1439).",
+    "--lowpass-cutoff and --upstream-delta were verified at code level only, not probed (matrix budget).",
+    "TP measurement method differs between repo meter (kaiser 8.6) and engine (default resample_poly window); differences up to ~0.7 dB were observed on this material (run 1: -1.291 vs -0.617). The engine's own readback gate is the binding one for its -0.4 dBTP guarantee; repo-measured TP was still <= -0.405 dBTP in the worst case.",
+    "The engine's CLI --preview flag (30 s truncation, core_decrypted.py:1446-1454) exists but is never sent by stage_soren; not probed.",
+    "Legacy styled pipeline (core_decrypted.py:1027-1273) and legacy limiters are dead code kept in the shipped file; they do not affect behavior but inflate the source."
+  ]
+}
