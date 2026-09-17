@@ -144,6 +144,108 @@ def _json_numbers(values):
     return [float(v) if np.isfinite(v) else None for v in values]
 
 
+# ── 人声有界压缩（opt-in，amount=0 精确恒等）───────────────────────────
+# 设计约束：宽带动态增益（不改频谱 → 空气感不受频谱损失）；增益衰减有硬上限；
+# 包络有限斜率（attack 15ms / release 150ms），不逐样本抽动；阈值取活动窗口
+# 电平的 P55（只压更响的部分，不抬安静的句子）；立体声联动同一曲线。
+VOCAL_COMP_MAX_GR_DB = 4.5
+VOCAL_COMP_ATTACK_S = 0.015
+VOCAL_COMP_RELEASE_S = 0.150
+
+
+def apply_vocal_compression(vocals, sr, amount, report=None):
+    """Bounded broadband vocal compression; returns input exactly when amount == 0.
+
+    Threshold sits at the P55 of active window levels, so only the louder
+    portion above the median gets reduced. The reduction is a single linked
+    gain curve applied to both channels — spectral content (including air)
+    is untouched by design.
+    """
+    v = _audio(vocals, "vocals")
+    sr = _rate(sr)
+    amount = finite_range(amount, "vocal-comp-amount", 0.0, 1.0)
+    if amount == 0:
+        if report is not None:
+            report.update({"applied": False, "amount": 0.0})
+        return v
+    centers, rms = mid_rms_windows(v, sr)
+    level_db = 20 * np.log10(np.maximum(rms, 1e-9))
+    active = rms > 1e-6
+    if not active.any():
+        if report is not None:
+            report.update({"applied": False, "reason": "silence", "amount": float(amount)})
+        return v
+    threshold_db = float(np.percentile(level_db[active], 55))
+    over = np.clip(level_db - threshold_db, 0, None)
+    # 0.4 ≈ 2.2:1 表观压缩比；amount 线性缩放强度与上限。
+    gr_db = np.minimum(over * 0.4 * amount, VOCAL_COMP_MAX_GR_DB * amount)
+    gr_db[~active] = 0.0
+    # 有限斜率包络（attack/release 一阶），插值到样本；立体声共用同一曲线。
+    sample_gr = np.interp(np.arange(len(v)) / sr, centers, gr_db,
+                          left=gr_db[0] if len(gr_db) else 0.0, right=0.0)
+    pole_a = -np.expm1(-1.0 / (sr * VOCAL_COMP_ATTACK_S))
+    pole_r = -np.expm1(-1.0 / (sr * VOCAL_COMP_RELEASE_S))
+    smoothed = np.empty_like(sample_gr)
+    state = 0.0
+    for i, target in enumerate(sample_gr):
+        pole = pole_a if target > state else pole_r
+        state += pole * (target - state)
+        smoothed[i] = state
+    out = v * (10 ** (-smoothed / 20.0))[:, None]
+    if not np.isfinite(out).all():
+        raise RuntimeError("vocal compression produced non-finite samples")
+    if report is not None:
+        report.update({"applied": True, "amount": float(amount),
+                       "threshold_db": threshold_db,
+                       "max_gr_db": float(VOCAL_COMP_MAX_GR_DB * amount),
+                       "gr_p50_db": float(np.percentile(smoothed, 50)),
+                       "gr_p95_db": float(np.percentile(smoothed, 95)),
+                       "gr_max_db": float(smoothed.max()),
+                       "attack_s": VOCAL_COMP_ATTACK_S, "release_s": VOCAL_COMP_RELEASE_S,
+                       "scope": "broadband linked gain on vocal stem; spectrum untouched"})
+    return out
+
+
+# ── 人声空气 EQ（只加不削；与母带 8kHz 高架联动）───────────────────────
+# 母带链（soren_original.high_shelf_gain_db_mid）在 8kHz 以上对人声 Mid 有
+# −1.5dB 的固定收敛。空气补偿 = 该衰减的镜像（只补到不超过原空气感，不额外
+# 增益超过 cap）；显式传入的 air_db 覆盖镜像值。任何路径都不会削减人声高频。
+VOCAL_AIR_FC = 11000.0
+VOCAL_AIR_MAX_DB = 2.0
+
+
+def apply_vocal_air(vocals, sr, air_db, report=None):
+    """High-shelf air lift on the vocal stem; boost-only by contract."""
+    v = _audio(vocals, "vocals")
+    sr = _rate(sr)
+    air_db = finite_range(air_db, "vocal-air-db", 0.0, 6.0)
+    if air_db == 0:
+        if report is not None:
+            report.update({"applied": False, "air_db": 0.0})
+        return v
+    shelf = _air_shelf(v, sr, VOCAL_AIR_FC, air_db)
+    if not np.isfinite(shelf).all():
+        raise RuntimeError("vocal air EQ produced non-finite samples")
+    if report is not None:
+        report.update({"applied": True, "air_db": float(air_db),
+                       "fc_hz": VOCAL_AIR_FC, "boost_only": True})
+    return shelf
+
+
+def _air_shelf(x, sr, fc, gain_db, q=0.7071):
+    """high-shelf：模拟原型 + 双线性 + filtfilt（与 stem_enhance 同设计族，
+    任意 G>0 恒稳定；filtfilt 幅频取平方，单次按 gain_db/2 设计）。"""
+    if gain_db == 0.0:
+        return np.asarray(x, dtype=np.float64).copy()
+    G = 10 ** (gain_db / 40.0)
+    w0 = 2.0 * sr * np.tan(np.pi * fc / sr)
+    g4 = G ** 0.25
+    num = [np.sqrt(G), g4 * w0 / q, w0 * w0]
+    den = [1.0 / np.sqrt(G), w0 / (g4 * q), w0 * w0]
+    b, a = signal.bilinear(num, den, fs=sr)
+    return signal.filtfilt(b, a, np.asarray(x, dtype=np.float64), axis=0, padlen=0)
+
+
 def _spatial(audio):
     mid = _mid(audio)
     side = (audio[:, 0] - audio[:, -1]) * 0.5
@@ -204,11 +306,16 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
                                  reference_mix=None, reference_vocals=None,
                                  frame_seconds=FRAME_SECONDS, hop_seconds=HOP_SECONDS,
                                  vocal_scale=1.0, return_report=False,
-                                 balance_target_db=None, balance_mode=None):
+                                 balance_target_db=None, balance_mode=None,
+                                 comp_amount=0.0, air_db=None):
     """Return unnormalized audio; reports measure estimated sources before mastering.
 
     vocal_scale follows ONLY global attenuation upstream. Separation leakage and
     unscaled stem deltas remain part of the accompaniment residual estimate.
+    comp_amount: bounded broadband vocal compression (0 = off, exact).
+    air_db: boost-only high-shelf air lift; None = off (exact). The caller is
+    responsible for any mastering-EQ coordination (UI mapping mirrors the
+    mastering high-shelf cut so vocal air survives the final shelf).
     """
     mix = _audio(in_mix, "in-mix")
     raw_v = _audio(vocals, "vocals")
@@ -221,6 +328,18 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
     if reference_vocals is not None and reference_mix is None:
         raise ValueError("reference-vocals requires reference-mix")
     v = raw_v * scale
+    comp_report = {"applied": False}
+    air_report = {"applied": False}
+    extra_delta = None
+    comp_amount = finite_range(comp_amount, "vocal-comp-amount", 0.0, 1.0)
+    air_value = 0.0 if air_db is None else finite_range(
+        float(air_db), "vocal-air-db", 0.0, 6.0)
+    if comp_amount > 0:
+        v = apply_vocal_compression(v, sr, comp_amount, report=comp_report)
+    if air_value > 0:
+        v = apply_vocal_air(v, sr, air_value, report=air_report)
+    if comp_amount > 0 or air_value > 0:
+        extra_delta = v - raw_v * scale
     metrics = None
     auto_metrics = None
     sample_db = np.full(len(mix), user)
@@ -288,13 +407,18 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
     else:
         # Standalone callers without a reference retain the legacy full-stem gain.
         delta = v * np.expm1(user * np.log(10) / 20)
-    out = mix.copy() if (user == 0 and auto_metrics is None) else mix + delta
+    if extra_delta is not None:
+        delta = delta + extra_delta
+    out = mix.copy() if (user == 0 and auto_metrics is None and extra_delta is None) \
+        else mix + delta
     if not np.isfinite(out).all():
         raise ValueError("non-finite control output")
     if not return_report:
         return out
     report = {"schema_version": 1, "mode": "auto_fixed_target" if auto_metrics is not None else ("mid_ratio" if metrics is not None else "legacy_stem_gain"),
-              "target_offset_db": user, "fixed_baseline_db": target_db, "vocal_scale": scale, "bypass": user == 0 and target_db is None,
+              "target_offset_db": user, "fixed_baseline_db": target_db, "vocal_scale": scale,
+              "bypass": user == 0 and target_db is None and extra_delta is None,
+              "comp": comp_report, "air": air_report,
               "sample_rate": sr, "frames": len(mix), "channels": mix.shape[1],
               "evaluation_endpoint": "pre_master", "source_model": "vocals plus accompaniment residual estimate",
               "actual_gain_min_db": float(sample_db.min()), "actual_gain_max_db": float(sample_db.max()),
@@ -369,6 +493,11 @@ def main():
     ap.add_argument("--reference-mix", type=Path)
     ap.add_argument("--reference-vocals", type=Path)
     ap.add_argument("--report-json", type=Path)
+    ap.add_argument("--vocal-comp-amount", type=float, default=0.0,
+                    help="bounded broadband vocal compression 0-1 (0=off, exact)")
+    ap.add_argument("--vocal-air-db", type=float, default=None,
+                    help="boost-only high-shelf air lift dB (e.g. mirror of the "
+                         "mastering 8k high-shelf cut); omit to disable")
     args = ap.parse_args()
     vocals, sr = sf.read(args.vocals, always_2d=True)
     mix, sr2 = sf.read(args.in_mix, always_2d=True)
@@ -386,15 +515,20 @@ def main():
         out, report = apply_mid_prominence_control(
             mix, vocals, sr, args.vocal_gain_db, ref_mix, ref_vocals,
             vocal_scale=args.vocal_scale, return_report=True, balance_target_db=args.balance_target_db,
-            balance_mode=args.balance_mode)
+            balance_mode=args.balance_mode, comp_amount=args.vocal_comp_amount,
+            air_db=args.vocal_air_db)
     except ValueError as exc:
         ap.error(str(exc))
     peak = float(np.abs(out).max())
     ceiling = 10 ** (-0.5 / 20)
     auto_mode = args.balance_target_db is not None or args.balance_mode == REFERENCE_MODE
-    scale = 1.0 if auto_mode else (min(1.0, ceiling / peak) if peak and args.vocal_gain_db != 0 else 1.0)
+    vocal_touched = args.vocal_gain_db != 0 or args.vocal_comp_amount > 0 or \
+        (args.vocal_air_db is not None and args.vocal_air_db > 0)
+    scale = 1.0 if auto_mode else (min(1.0, ceiling / peak) if peak and vocal_touched else 1.0)
     out *= scale
-    if args.vocal_gain_db == 0 and not auto_mode:
+    bypass = args.vocal_gain_db == 0 and not auto_mode and \
+        args.vocal_comp_amount == 0 and (args.vocal_air_db is None or args.vocal_air_db == 0)
+    if bypass:
         if args.in_mix.resolve() != args.out.resolve():
             shutil.copyfile(args.in_mix, args.out)
     else:
@@ -410,7 +544,15 @@ def main():
                    "true_peak_4x": float(max(np.abs(written).max(), np.abs(oversampled).max()))})
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-    print(f"Vocal control: mode={report['mode']} algorithm={report.get('algorithm', 'compatible')} fixed_gain={report.get('fixed_vocal_mid_gain_db')} target={args.vocal_gain_db:+.1f}dB | global scale={scale:.8f} | {report_path}")
+    comp_txt = (f"comp=on(amount={args.vocal_comp_amount}, "
+                f"gr_p95={report['comp'].get('gr_p95_db', 0):.2f}dB, "
+                f"gr_max={report['comp'].get('gr_max_db', 0):.2f}dB)"
+                if report['comp'].get('applied') else "comp=off")
+    air_txt = (f"air=on(+{report['air'].get('air_db', 0):.2f}dB@{report['air'].get('fc_hz', 0):.0f}Hz)"
+               if report['air'].get('applied') else "air=off")
+    print(f"Vocal control: mode={report['mode']} algorithm={report.get('algorithm', 'compatible')} "
+          f"fixed_gain={report.get('fixed_vocal_mid_gain_db')} target={args.vocal_gain_db:+.1f}dB | "
+          f"{comp_txt} {air_txt} | global scale={scale:.8f} | {report_path}")
 
 
 if __name__ == "__main__":

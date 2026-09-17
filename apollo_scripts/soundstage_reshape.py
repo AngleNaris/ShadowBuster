@@ -19,6 +19,8 @@ from scipy import signal, ndimage
 
 from audio_validation import validate_audio, validate_audio_pair, finite_range
 from stage_metadata import write_report
+from noise_profile import (NOISE_MODES, adaptive_denoise, constrain_noise_delta,
+                           validate_noise_options)
 
 SR = 44_100
 
@@ -110,7 +112,8 @@ def _spectral_denoise(x, sr, fc=10000.0, amount=0.2, thr_ratio=1.5):
     nperseg = min(4096, len(x))
     if nperseg < 2:
         return x.copy()
-    noverlap = min(3072, nperseg - 1)
+    # 短输入限制重叠比例：noverlap=nperseg-1 会让 hop=1、帧数随样本数线性膨胀。
+    noverlap = min(3072, nperseg * 3 // 4, nperseg - 1)
     hop = nperseg - noverlap
     channels = [
         x[:, c] for c in range(x.shape[1])
@@ -233,6 +236,9 @@ def constrain_width_delta(mix, delta, sr):
 
     Caps are analysis-domain budgets, not perceptual width units. Reconstruction
     can change window energies slightly; existing over-wide content is retained.
+    The returned delta is side-only by construction: any mid component of the
+    input delta is discarded, and bands whose existing mix side is silent
+    admit no new width.
     """
     n = len(mix)
     report = {'bands': [], 'analysis': '4096 Hann / 75% overlap'}
@@ -324,10 +330,15 @@ def main():
                     help="broadband=纯side增益（默认，音色最保真）| shelf3k | shelf-air | dynamic")
     ap.add_argument("--side-gain-db", type=float, default=None,
                     help="宽度上限 dB：覆盖模式预设的 side 增益（other=设定值，drums=一半）")
-    ap.add_argument("--wet", type=float, default=1.0, help="干湿比 0-1：缩放全部处理差值，0=与输入逐样本一致")
+    ap.add_argument("--wet", type=float, default=1.0, help="拓宽干湿比 0-1；0=不拓宽，降噪仍由独立 amount 控制")
     ap.add_argument("--other-denoise-amount", type=float, default=0.0,
                     help="other 轨 ≥fc 噪声地板降噪量 0-1（Audition 降噪量语义，贴地板 -amount*100%%）")
     ap.add_argument("--other-denoise-fc", type=float, default=10000.0)
+    ap.add_argument("--noise-mode", choices=NOISE_MODES, default="other",
+                    help="other=兼容降噪；adaptive_all=对可用分轨做置信度降噪")
+    ap.add_argument("--noise-low-hz", type=float, default=8000.0)
+    ap.add_argument("--noise-high-hz", type=float, default=20000.0)
+    ap.add_argument("--noise-max-attenuation-db", type=float, default=6.0)
     ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
@@ -340,6 +351,13 @@ def main():
         ap.error("--other-denoise-amount must be finite and within [0, 1]")
     if not np.isfinite(args.other_denoise_fc) or not 0.0 < args.other_denoise_fc < SR / 2.0:
         ap.error(f"--other-denoise-fc must be finite and within (0, {SR / 2:.0f})")
+
+    if args.noise_mode == "adaptive_all":
+        try:
+            validate_noise_options(SR, args.other_denoise_amount, args.noise_low_hz,
+                                   args.noise_high_hz, args.noise_max_attenuation_db)
+        except ValueError as exc:
+            ap.error(str(exc))
 
     in_mix = args.in_mix.resolve()
     stem_dir = Path(args.stems_dir).resolve()
@@ -357,6 +375,8 @@ def main():
     out = mix.copy()
     width_delta = np.zeros_like(mix)
     denoise_delta = np.zeros_like(mix)
+    noise_report = {"mode": args.noise_mode, "amount": args.other_denoise_amount,
+                    "stems": {}, "applied": False}
     wet = args.wet
     for name, (db, fc, gain) in params.items():
         stem, s_sr = sf.read(stem_dir / f"{name}.wav", always_2d=True, dtype="float64")
@@ -377,13 +397,48 @@ def main():
         delta = _protect_widen_delta(delta, sr)
         width_delta += delta
         processed = stem + delta
-        if name == "other" and args.other_denoise_amount > 0:
+        if args.noise_mode == "other" and name == "other" and args.other_denoise_amount > 0:
             cleaned = _spectral_denoise(processed, sr, args.other_denoise_fc,
                                        args.other_denoise_amount)
             denoise_delta += cleaned - processed
             print(f"  other: ≥{args.other_denoise_fc:.0f}Hz 噪声地板降噪 {args.other_denoise_amount*100:.0f}%")
-        print(f"  {name}: shelf +{db}dB@{fc:.0f}Hz, side gain +{gain}dB"
-              + ("  [动态门]" if args.mode == "dynamic" and db > 0 else ""))
+        if args.mode == "dynamic" and db > 0:
+            # 动态分支不施加静态 side 增益，打印不得谎报已生效的参数。
+            print(f"  {name}: 动态门 side shelf +{db}dB@{fc:.0f}Hz"
+                  "（包络控制；静态 side 增益在此模式不适用）")
+        else:
+            print(f"  {name}: shelf +{db}dB@{fc:.0f}Hz, side gain +{gain}dB")
+    if args.noise_mode == "adaptive_all":
+        for name in ("vocals", "drums", "bass", "other", "guitar", "piano"):
+            path = stem_dir / f"{name}.wav"
+            if not path.is_file():
+                noise_report["stems"][name] = {"status": "unavailable", "applied": False,
+                                                "reason": "missing_stem"}
+                continue
+            if args.other_denoise_amount == 0:
+                noise_report["stems"][name] = {"status": "not_applied", "applied": False,
+                                                "reason": "disabled"}
+                continue
+            stem, s_sr = sf.read(path, always_2d=True, dtype="float64")
+            validate_audio_pair(stem, mix, s_sr, primary_name=name,
+                                secondary_name="in-mix", require_sr=sr)
+            stats = {}
+            # 人声轨参与降噪（AI 人声的嘶声烙在人声内容里，分离后主要落在
+            # vocals 轨），但最大衰减减半：气声/齿音由瞬态与谐波保护负责，
+            # 稳定嘶声仍会被处理，真空气最多损失 cap/2，不设排除性豁免。
+            cap = args.noise_max_attenuation_db * (0.5 if name == "vocals" else 1.0)
+            cleaned = adaptive_denoise(stem, sr, args.other_denoise_amount,
+                                       args.noise_low_hz, args.noise_high_hz,
+                                       cap, report=stats)
+            denoise_delta += cleaned - stem
+            noise_report["stems"][name] = stats
+        denoise_delta, noise_report["mix_budget"] = constrain_noise_delta(
+            mix, denoise_delta, sr, args.noise_low_hz, args.noise_high_hz,
+            args.noise_max_attenuation_db * args.other_denoise_amount)
+        noise_report["applied"] = noise_report["mix_budget"]["applied"]
+    else:
+        noise_report.update(applied=bool(np.any(denoise_delta)),
+                            reason="legacy_other" if args.other_denoise_amount else "disabled")
     base = mix + denoise_delta
     accepted, budget = constrain_width_delta(base, width_delta, sr)
     out = base + accepted
@@ -403,7 +458,8 @@ def main():
     sf.write(args.out_wav, out.astype(np.float32), sr, subtype="FLOAT")
     if args.report_json:
         write_report(args.report_json, stage="reshape", scale=float(scale) if peak > 0.999 else 1.0,
-                     input_path=args.in_mix, output_path=args.out_wav)
+                     input_path=args.in_mix, output_path=args.out_wav,
+                     extra={"noise": noise_report, "width": budget})
     print(f"  输出: {args.out_wav}")
 
     print("宽度报告:")

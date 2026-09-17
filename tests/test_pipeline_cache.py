@@ -62,18 +62,19 @@ def test_pipeline_reuses_real_stage_call_sites(tmp_path, monkeypatch):
     import studio_backend as backend
     src=tmp_path/'song.wav';src.write_bytes(b'original')
     calls=[]
-    def stage_demucs(input_wav, out_dir, progress=None, cancel=None, device=None):
+    def ffmpeg_convert(src, dst, sr=44100):
+        Path(dst).write_bytes(b'44k')
+    def stage_demucs(input_wav, out_dir, model="htdemucs", progress=None, cancel=None, device=None):
         calls.append('demucs')
-        d=Path(out_dir)/'htdemucs'/Path(input_wav).stem
-        d.mkdir(parents=True);(d/'bass.wav').write_bytes(b'stem')
     def stage_soren(input_wav, out_wav, **kwargs):
         calls.append('soren');Path(out_wav).write_bytes(Path(input_wav).read_bytes()+kwargs['loudness'].encode())
+    monkeypatch.setattr(backend,'ffmpeg_convert',ffmpeg_convert)
     monkeypatch.setattr(backend,'stage_demucs',stage_demucs)
     monkeypatch.setattr(backend,'stage_soren',stage_soren)
     monkeypatch.setattr(backend, '_ensure_dev_runtime', lambda: tmp_path / 'runtime')
     bypass=['lew','bass','drums','reshape','vocals']
     backend.run_pipeline(src,tmp_path/'out',bypass=bypass)
     backend.run_pipeline(src,tmp_path/'out',bypass=bypass)
-    assert calls==['demucs','soren']
+    assert calls==['soren']
     backend.run_pipeline(src,tmp_path/'out',bypass=bypass,loudness='loud')
-    assert calls==['demucs','soren','soren']
+    assert calls==['soren','soren']

@@ -12,8 +12,9 @@
 |---|---|---|
 | ShadowBuster.exe (+PySide6/QtWebEngine) | UI + 桥接 | ~350–500 MB |
 | runtime/env/ | 便携推理解释器（torch CPU + demucs + librosa 等） | ~2 GB |
-| runtime/Apollo/ | lew_upscale.py、bass/drum/声场 DSP、look2hear/、ckpts/ | ~1 GB（模型） |
+| runtime/Apollo/ | lew_upscale.py、bass/drum/声场/噪声/可选分轨 DSP（含 noise_profile.py、stem_enhance.py）、look2hear/、ckpts/ | ~1 GB（模型） |
 | runtime/Soren_src/ | core_decrypted.py、soren_original.py、model/、profiles/、secured_genres/ | ~1 GB（模型） |
+| runtime/hf_home/ | demucs htdemucs + htdemucs_6s（HF 量化权重，构建期预置，离线可用） | ~140 MB |
 | runtime/ffmpeg/bin/ | ffmpeg.exe（后端自动探测） | ~80 MB |
 
 - v1.5.0 起安装包为 CPU 瘦身运行时（整包约 1 GB），CUDA torch 环境改为应用内“设置 → GPU 环境”按需下载（`build_gpu_env.ps1` 产出分卷与清单，`gpu_env.py` 负责校验、续传、解压与原子切换，安装到**应用安装目录** `runtime-gpu\env`；v1.6.x 旧版安装在 `%LOCALAPPDATA%\ShadowBuster\runtime-gpu\env` 的环境仍被检测识别，无需重新下载）。安装器为 **per-user**（`PrivilegesRequired=lowest`，无需管理员，默认装到 `%LOCALAPPDATA%\Programs\ShadowBuster`），应用目录对当前用户可写，GPU 环境可就地安装；用户自选受限目录（如 Program Files）时会被检测并提示不可写。
@@ -52,8 +53,8 @@ powershell -File packaging\build_gpu_env.ps1
 
 | 位置 | 字段 |
 |---|---|
-| `studio_backend.py:17` | `APP_VERSION`（单一来源） |
-| `packaging/installer.iss:14` | `MyAppVersion`（由 `tests/test_app_version.py` 校验一致） |
+| `studio_backend.py:19` | `APP_VERSION`（单一来源） |
+| `packaging/installer.iss:21` | `MyAppVersion`（由 `tests/test_app_version.py` 校验一致） |
 | `tests/test_gpu_release_reuse.py` | `APP_VERSION` 断言 |
 | `packaging/release-audit/release-notes-<ver>.md` | 大小 + SHA-256 + GPU 环境是否上传 |
 

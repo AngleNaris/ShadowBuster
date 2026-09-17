@@ -29,12 +29,51 @@ def main(argv=None):
     parser.add_argument('--overwrite', action='store_true')
     for flag, low, high, default in [('sub-db',0,12,6),('punch-db',0,10,2),('sat',0,1,.3),('trans',0,1,.3),('space-wet',0,1,.6),('space-denoise',0,1,.2),('space-width-db',0,12,6),('vocal-gain-db',-6,6,0),('guidance',0,2,1.5)]:
         parser.add_argument('--'+flag, type=bounded(low, high), default=default)
+    parser.add_argument('--vocal-comp-amount', type=bounded(0, 1), default=0.0,
+                        help='bounded broadband vocal compression 0-1 (0=off, exact)')
+    parser.add_argument('--vocal-air-db', type=bounded(0, 3), default=None,
+                        help='boost-only vocal air high-shelf dB (0-3); omit to disable')
     parser.add_argument('--bass-auto-clarity', action='store_true')
+    parser.add_argument('--sidechain-amount', type=bounded(0, 1), default=0.0,
+                        help='Kick/Bass 低频侧链强度，默认关闭')
+    parser.add_argument('--sidechain-attack-ms', type=bounded(1, 50), default=5.0)
+    parser.add_argument('--sidechain-release-ms', type=bounded(20, 500), default=150.0)
+    parser.add_argument('--sidechain-max-duck-db', type=bounded(0, 12), default=6.0)
+    parser.add_argument('--noise-mode', choices=['other', 'adaptive_all'], default='other',
+                        help='Stage3 opt-in noise denoise mode: other=legacy other-stem '
+                             'denoise (default), adaptive_all=confidence-gated adaptive '
+                             'high-band denoise on available stems')
+    parser.add_argument('--noise-low-hz', type=bounded(8000, 20000), default=8000.0,
+                        help='adaptive_all noise band lower edge (Hz)')
+    parser.add_argument('--noise-high-hz', type=bounded(8000, 22000), default=20000.0,
+                        help='adaptive_all noise band upper edge (Hz)')
+    parser.add_argument('--noise-max-attenuation-db', type=bounded(0, 6), default=6.0,
+                        help='adaptive_all maximum attenuation cap (dB)')
+    parser.add_argument('--demucs-model', choices=['htdemucs', 'htdemucs_6s'], default='htdemucs',
+                        help='Separation model: htdemucs=4-stem (default, unchanged '
+                             'behavior); htdemucs_6s=six-stem opt-in that also outputs '
+                             'guitar/piano, routes a guitar enhancer and a synth group '
+                             '(other+piano merged) enhancer')
+    for prefix in ('guitar', 'synth'):
+        parser.add_argument(f'--{prefix}-gain-db', type=bounded(-6, 6), default=0.0,
+                            help=f'opt-in six-stem {prefix} gain (dB), 0=neutral')
+        parser.add_argument(f'--{prefix}-mud-cut-db', type=bounded(0, 6), default=0.0,
+                            help=f'opt-in six-stem {prefix} low-mid mud cut (dB), 0=neutral')
+        parser.add_argument(f'--{prefix}-presence-db', type=bounded(0, 6), default=0.0,
+                            help=f'opt-in six-stem {prefix} presence shelf (dB), 0=neutral')
+        parser.add_argument(f'--{prefix}-harsh-cut-db', type=bounded(0, 6), default=0.0,
+                            help=f'opt-in six-stem {prefix} high harshness shelf cut (dB), 0=neutral')
+        parser.add_argument(f'--{prefix}-width-db', type=bounded(0, 6), default=0.0,
+                            help=f'opt-in six-stem {prefix} side width (dB), 0=neutral')
     parser.add_argument('--quality', type=int, choices=[0,1,2], default=1)
     parser.add_argument('--genre', default='Pop')
     parser.add_argument('--loudness', choices=['soft','dynamic','normal','loud'], default='normal')
     parser.add_argument('--eq-profile', default='Neutral')
     parser.add_argument('--style-mode', choices=['styled','off','eq_only'], default='off')
+    parser.add_argument('--style-blend', type=bounded(0,1), default=0.85,
+                        help='styled processing intensity 0-1: 0=no style processing, '
+                             '1=full style; ignored by off/eq_only; 100%% is no longer '
+                             'bit-identical to the legacy release')
     parser.add_argument('--reference')
     parser.add_argument('--lowpass-cutoff', type=bounded(20,22000))
     parser.add_argument('--bypass', default='')
@@ -49,6 +88,11 @@ def main(argv=None):
         report = {'version': backend.APP_VERSION, 'status': 'error', 'outputs': [], 'error': None}
         code = 1
         try:
+            # 自适应降噪为 opt-in：显式给的无效频带在任何处理开始前拒绝。
+            if opts.noise_mode == 'adaptive_all' and \
+                    not opts.noise_low_hz < opts.noise_high_hz:
+                raise ValueError('adaptive_all requires --noise-low-hz < --noise-high-hz '
+                                 f'(got {opts.noise_low_hz:g} >= {opts.noise_high_hz:g})')
             if opts.result_json and opts.result_json.exists():
                 raise ValueError('Result JSON already exists; choose a new path')
             inputs = [Path(p).resolve() for p in opts.input]
@@ -69,8 +113,17 @@ def main(argv=None):
             kwargs['bypass'] = [p.strip() for p in opts.bypass.split(',') if p.strip()]
             kwargs['cache_enabled'] = not kwargs.pop('no_cache')
             kwargs['device'] = 'cpu' if opts.cpu else backend.auto_device()
-            results = backend.run_batch(inputs, opts.output, **kwargs)
-            report['outputs'] = [{'input': i, 'output': o, 'error': e} for i,o,e in results]
+            # 输出目录与输入一致地解析为绝对路径：阶段子进程（Lew 等）的
+            # 工作目录不在应用根，相对路径会在子进程里指错位置。
+            results = backend.run_batch(inputs, str(Path(opts.output).resolve()), **kwargs)
+            report['outputs'] = []
+            for i, o, e in results:
+                item = {'input': i, 'output': o, 'error': e}
+                if e is None:
+                    quality = backend.read_quality_report(o)
+                    item['quality_report'] = str(backend.quality_report_path(o)) if quality else None
+                    item['quality'] = backend.quality_summary(quality)
+                report['outputs'].append(item)
             code = 1 if any(e for _,_,e in results) else 0
             report['status'] = 'error' if code else 'success'
         except Exception as exc:

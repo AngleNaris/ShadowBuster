@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=48">
+<link rel="stylesheet" href="style.css?v=54">
 </head>
 <body>
 
@@ -29,18 +29,24 @@
   <!-- ═══ 无障碍实时播报（视觉提示改为红框后，仍向读屏播报）═══ -->
   <div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
-  <!-- ═══ 顶栏：品牌居中，点击 logo 打开设置 ═══ -->
+  <!-- ═══ 顶栏：品牌左对齐（点击开设置）+ 右侧视图切换 ═══ -->
   <header class="topbar">
     <button class="brand" id="btn-settings" type="button" title="设置" aria-label="设置" aria-haspopup="dialog">
       <img class="brand-mark" src="shadowbuster.svg" alt="" aria-hidden="true">
       <span class="brand-name">SHADOWBUSTER</span>
     </button>
+    <nav class="topbar-nav" aria-label="视图切换">
+      <button class="tab-btn" id="tab-process" type="button" aria-pressed="true">效果器</button>
+      <button class="tab-btn" id="tab-preview" type="button" aria-pressed="false">预览</button>
+      <button class="tab-btn" id="tab-report" type="button" aria-pressed="false">报告</button>
+    </nav>
   </header>
 
   <!-- ═══ 可滚动内容区：高度不足时出现滚动条，底部 BUSTER 按钮始终固定 ═══ -->
   <main class="content" id="content">
 
-  <!-- ═══ 待处理队列（独立列）═══ -->
+
+  <!-- ═══ 待处理队列（文件 UI：常驻，不随 TAB 切换）═══ -->
   <section class="queue hdw" aria-label="待处理队列" data-need="请先添加要处理的歌曲">
     <div class="queue-head">
       <span class="queue-title">待处理</span>
@@ -60,7 +66,8 @@
       </button>
     </div>
   </section>
-
+  <!-- ═══ 处理视图（TAB 默认页）═══ -->
+  <div id="pane-process">
   <!-- ═══ 输出 / 参考音频 ═══ -->
   <section class="files hdw" aria-label="输出设置">
     <div class="file-card" id="output-card" tabindex="0" role="button" aria-label="输出目录">
@@ -108,6 +115,13 @@
           <label class="knob-label">人声</label>
           <output class="knob-value" id="val-vocal">0.0 dB</output>
         </div>
+        <div class="knob-wrap">
+          <div class="knob" id="knob-guitar" tabindex="0" role="slider" aria-label="吉他增强（需要六轨分层）" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" data-min="0" data-max="1" data-step="0.05" data-default="0">
+            <div class="knob-tick" aria-hidden="true"></div>
+          </div>
+          <label class="knob-label">吉他</label>
+          <output class="knob-value" id="val-guitar">0%</output>
+        </div>
       </div>
     </div>
 
@@ -131,7 +145,7 @@
           <output class="knob-value" id="val-sub">+6 dB</output>
         </div>
         <div class="knob-wrap">
-          <div class="knob" id="knob-punch" tabindex="0" role="slider" aria-label="鼓身 60-120Hz" aria-valuemin="0" aria-valuemax="10" aria-valuenow="2" data-min="0" data-max="10" data-step="1" data-default="2">
+          <div class="knob" id="knob-punch" tabindex="0" role="slider" aria-label="鼓身 60-120Hz（含 Kick/Bass 有界让位）" aria-valuemin="0" aria-valuemax="10" aria-valuenow="2" data-min="0" data-max="10" data-step="1" data-default="2">
             <div class="knob-tick" aria-hidden="true"></div>
           </div>
           <label class="knob-label">鼓身</label>
@@ -150,15 +164,6 @@
           </div>
           <label class="knob-label">谐波饱和</label>
           <output class="knob-value" id="val-sat">30%</output>
-        </div>
-        <div class="knob-wrap">
-          <span class="opt-slot">
-            <button class="rack-bypass rack-bypass--hardware" id="opt-bass-clarity" type="button" role="switch" aria-checked="false" aria-labelledby="label-bass-clarity" title="低频自动清晰（默认关）">
-              <span class="bp-track"><span class="bp-dot"></span></span>
-            </button>
-          </span>
-          <span class="knob-label" id="label-bass-clarity">自动清晰</span>
-          <output class="knob-value" id="val-bass-clarity">关</output>
         </div>
       </div>
     </div>
@@ -248,6 +253,16 @@
             <button type="button" class="seg-btn" data-eq="Fusion" aria-pressed="false">融合</button>
           </div>
         </div>
+        <div class="field">
+          <div class="fader-meta">
+            <span class="fader-label" id="label-blend">风格强度</span>
+            <output class="fader-value" id="val-blend">85%</output>
+          </div>
+          <div class="fader" id="fader-blend" tabindex="0" role="slider" aria-labelledby="label-blend" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0.85" aria-valuetext="85%" data-min="0" data-max="1" data-step="0.05" data-default="0.85">
+            <span class="fader-fill" aria-hidden="true"></span>
+            <span class="fader-cap" aria-hidden="true"></span>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -261,6 +276,81 @@
       <div class="stage" data-stage="3"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">鼓增强</span></div>
       <div class="stage" data-stage="4"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">声场·人声</span></div>
       <div class="stage" data-stage="5"><span class="stage-dot" aria-hidden="true"></span><span class="stage-name">母带</span></div>
+    </div>
+  </section>
+
+  </div><!-- /pane-process -->
+
+  <!-- ═══ 预览视图（内嵌 pane，随顶栏 TAB 切换）═══ -->
+  <section class="pane-view" id="pane-preview" hidden aria-label="参数预览">
+    <div class="pane-head">
+      <span class="pane-title">预览</span>
+      <button class="icon-btn rack-help" data-help="preview" title="预览 参数说明" aria-label="预览 参数说明" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
+      </button>
+      <button class="icon-btn pane-close" id="preview-close" title="返回效果器" aria-label="返回效果器">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="square"/></svg>
+      </button>
+    </div>
+    <div class="pane-body">
+      <div class="spec-panel">
+        <div class="spec-transport">
+          <button class="btn btn-ghost spec-btn" id="pv-play" disabled title="播放/暂停（空格）">▶</button>
+          <span class="spec-name" id="pv-file-label">未选择文件</span>
+          <span class="spec-track" id="pv-track-label">原始</span>
+          <span class="pv-dim" id="pv-range">未选择片段</span>
+          <span class="pv-dim" id="pv-clock">0.0 s</span>
+          <span class="pv-dim" id="pv-duration">—</span>
+        </div>
+        <div class="spec-stack">
+          <div class="spec-lane" id="pv-lane-src" data-track="src"><span class="spec-tag">原始</span>
+            <canvas id="pv-spec-src" height="140"></canvas></div>
+          <div class="spec-lane" id="pv-lane-out" data-track="out"><span class="spec-tag">预览</span>
+            <canvas id="pv-spec-out" height="140"></canvas></div>
+          <p class="pv-hint" id="pv-hint">点频谱定位播放 · 拖两侧边缘调范围 · 点左侧标签切换原始/预览 · 空格播放</p>
+        </div>
+      </div>
+      <div class="pv-progress" id="pv-progress" hidden><div class="gpu-progress-fill" id="pv-progress-fill"></div></div>
+      <div class="quality-grid" id="pv-metrics" hidden>
+        <div class="q-cell"><span class="q-label">实测响度</span><span class="q-value" id="pv-lufs">—</span></div>
+        <div class="q-cell"><span class="q-label">真峰值 4x</span><span class="q-value" id="pv-tp">—</span></div>
+        <div class="q-cell"><span class="q-label">动态 LRA</span><span class="q-value" id="pv-lra">—</span></div>
+        <div class="q-cell"><span class="q-label">峰值因数</span><span class="q-value" id="pv-crest">—</span></div>
+        <div class="q-cell"><span class="q-label">采样峰值</span><span class="q-value" id="pv-sp">—</span></div>
+        <div class="q-cell"><span class="q-label">限制器 P95</span><span class="q-value" id="pv-plim">—</span></div>
+        <div class="q-cell"><span class="q-label">削波样本</span><span class="q-value" id="pv-clip">—</span></div>
+        <div class="q-cell"><span class="q-label">整体状态</span><span class="q-value" id="pv-overall">—</span></div>
+      </div>
+      <audio id="pv-audio-src" preload="none" hidden></audio>
+      <audio id="pv-audio-out" preload="none" hidden></audio>
+    </div>
+  </section>
+
+  <section class="pane-view" id="pane-report" hidden aria-label="处理报告">
+    <div class="pane-head">
+      <span class="pane-title">报告</span>
+      <button class="icon-btn rack-help" data-help="report" title="报告 参数说明" aria-label="报告 参数说明" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 17h-2v-2h2v2Zm2.1-6.5c-.7.7-1.1 1.1-1.1 2.5h-2c0-1.9.9-2.9 1.8-3.7.8-.7 1.2-1.1 1.2-2A2 2 0 0 0 12 7a2 2 0 0 0-2 2H8a4 4 0 1 1 7.1 2.5Z" fill="currentColor"/></svg>
+      </button>
+      <button class="icon-btn pane-close" id="report-close" title="返回效果器" aria-label="返回效果器">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="square"/></svg>
+      </button>
+    </div>
+    <div class="pane-body">
+      <div class="rp-file-line">
+        <span class="fader-label">当前文件</span>
+        <span class="rp-file-name" id="rp-file-label">未选择文件</span>
+        <span class="pv-dim" id="rp-hint">处理完成后自动显示该文件的报告</span>
+      </div>
+      <div class="rp-cards" id="rp-cards"></div>
+      <div class="rp-grid">
+        <figure class="rp-fig"><figcaption>频段能量差异（成品 − 原始，dB）</figcaption>
+          <canvas id="rp-bands" height="190"></canvas></figure>
+        <figure class="rp-fig"><figcaption>声场与宽度</figcaption>
+          <canvas id="rp-width" height="190"></canvas></figure>
+      </div>
+      <div class="rp-config" id="rp-config"></div>
+      <div class="rp-constraints" id="rp-constraints"></div>
     </div>
   </section>
 
@@ -393,6 +483,6 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="app.js?v=46"></script>
+<script src="app.js?v=51"></script>
 </body>
 </html>

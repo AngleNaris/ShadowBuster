@@ -24,8 +24,9 @@
 #   2) 【可重定位】不用 venv！venv 的 pyvenv.cfg 硬编码构建机解释器绝对路径，
 #      拷到陌生机器起不来。改用 python-build-standalone 整目录拷贝 +
 #      pip --target 安装 site-packages，装到哪都能跑。
-#   3) 【离线优先】demucs 的 htdemucs 权重预置进 runtime\torch_home\hub\checkpoints\，
-#      后端已把 TORCH_HOME 指向这里，安装后全程不联网、用户无需下载任何模型。
+#   3) 【离线优先】demucs 的 htdemucs / htdemucs_6s 权重（HF Hub diffq 量化格式）
+#      构建期预置进 runtime\hf_home\hub\，后端已把 HF_HOME 指向这里，
+#      安装后全程不联网、用户无需下载任何模型。
 #   4) 【依赖完备】按开发 venv 的版本精确复刻全部推理依赖（Soren 要
 #      librosa/scipy/numba/statsmodels/pyloudnorm/cryptography，
 #      look2hear 要 pytorch_lightning/omegaconf/rich/torch-complex 等）。
@@ -144,6 +145,8 @@ Assert-NonEmptyFile "$srcApollo\lew_upscale.py" "Lew 入口"
 Assert-NonEmptyFile "$appApollo\bass_enhance.py" "BASS 入口"
 Assert-NonEmptyFile "$appApollo\drum_enhance.py" "Drum 入口"
 Assert-NonEmptyFile "$appApollo\soundstage_reshape.py" "声场重塑入口"
+Assert-NonEmptyFile "$appApollo\noise_profile.py" "高频噪声分析入口"
+Assert-NonEmptyFile "$appApollo\stem_enhance.py" "可选分轨增强入口"
 Assert-NonEmptyFile "$appApollo\vocal_adjust.py" "人声入口"
 Assert-TreeHasNonEmptyFile "$srcApollo\look2hear" "look2hear 源码"
 Assert-TreeHasNonEmptyFile "$srcApollo\ckpts" "Apollo checkpoint"
@@ -160,7 +163,7 @@ New-Item -ItemType Directory -Force -Path "$stage\Apollo", "$stage\Soren_src", "
 
 Write-Host "[1/5] 拷贝 Apollo 工具链 ..."
 Copy-Item "$srcApollo\lew_upscale.py", "$srcApollo\low_punch.py" "$stage\Apollo\" -ErrorAction SilentlyContinue
-Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApollo\soundstage_reshape.py", "$appApollo\vocal_adjust.py", "$appApollo\audio_validation.py", "$appApollo\stage_metadata.py", "$appApollo\vocal_config.py" "$stage\Apollo\" -ErrorAction Stop
+Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApollo\soundstage_reshape.py", "$appApollo\noise_profile.py", "$appApollo\stem_enhance.py", "$appApollo\vocal_adjust.py", "$appApollo\audio_validation.py", "$appApollo\stage_metadata.py", "$appApollo\vocal_config.py" "$stage\Apollo\" -ErrorAction Stop
 Copy-Item "$srcApollo\look2hear" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 
@@ -247,6 +250,10 @@ $env:HF_HOME = $hfHome
 & "$stage\env\python.exe" -m demucs --two-stems bass -n htdemucs -o "$seed\_out" "$seed.wav"
 $demucsRc = $LASTEXITCODE
 if ($demucsRc -ne 0) { throw "Demucs 权重预置失败(exit=$demucsRc)" }
+# 六轨 opt-in 模型（htdemucs_6s，HF 量化 ~53MB）同样预置进 hf_home，安装后离线可用。
+& "$stage\env\python.exe" -m demucs --two-stems bass -n htdemucs_6s -o "$seed\_out6" "$seed.wav"
+$demucsRc = $LASTEXITCODE
+if ($demucsRc -ne 0) { throw "Demucs 六轨权重预置失败(exit=$demucsRc)" }
 
 # Hugging Face snapshots normally contain symbolic links into blobs. Inno and
 # target machines cannot be assumed to preserve them, so materialize links as
@@ -275,8 +282,11 @@ if ($modelFiles.Count -eq 0) { throw "Demucs 模型缓存缺失或为空: $hfHom
 $env:HF_HUB_OFFLINE = "1"
 & "$stage\env\python.exe" -c "from demucs.pretrained import get_model; m=get_model('htdemucs'); print('offline htdemucs models', len(m.models))"
 $offlineModelRc = $LASTEXITCODE
-Remove-Item Env:\HF_HUB_OFFLINE -ErrorAction SilentlyContinue
 if ($offlineModelRc -ne 0) { throw "Demucs 离线模型加载失败(exit=$offlineModelRc)" }
+& "$stage\env\python.exe" -c "from demucs.pretrained import get_model; m=get_model('htdemucs_6s'); print('offline htdemucs_6s sources', list(m.sources))"
+$offlineModelRc = $LASTEXITCODE
+Remove-Item Env:\HF_HUB_OFFLINE -ErrorAction SilentlyContinue
+if ($offlineModelRc -ne 0) { throw "Demucs 六轨离线模型加载失败(exit=$offlineModelRc)" }
 
 # 发布前静态自检：关键依赖可导入，ffmpeg / 模型存在，关键源与 stage 完全一致。
 Write-Host "  [5a] 验证运行时依赖与关键文件 ..."
@@ -306,6 +316,8 @@ Assert-SameFile "$srcApollo\lew_upscale.py" "$stage\Apollo\lew_upscale.py" "Lew 
 Assert-SameFile "$appApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BASS 入口"
 Assert-SameFile "$appApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
 Assert-SameFile "$appApollo\soundstage_reshape.py" "$stage\Apollo\soundstage_reshape.py" "声场重塑入口"
+Assert-SameFile "$appApollo\noise_profile.py" "$stage\Apollo\noise_profile.py" "高频噪声分析入口"
+Assert-SameFile "$appApollo\stem_enhance.py" "$stage\Apollo\stem_enhance.py" "可选分轨增强入口"
 Assert-SameFile "$appApollo\vocal_adjust.py" "$stage\Apollo\vocal_adjust.py" "人声入口"
 Assert-SameFile "$appApollo\audio_validation.py" "$stage\Apollo\audio_validation.py" "音频校验"
 Assert-SameFile "$appApollo\stage_metadata.py" "$stage\Apollo\stage_metadata.py" "阶段 metadata"
@@ -325,11 +337,12 @@ $manifestPath = "$stage\critical-manifest.sha256"
 $manifestRoots = @(
     "$stage\env\python.exe", "$site\numpy", "$site\numpy.libs",
     "$stage\Apollo\lew_upscale.py", "$stage\Apollo\bass_enhance.py",
-    "$stage\Apollo\drum_enhance.py", "$stage\Apollo\soundstage_reshape.py",
+    "$stage\Apollo\drum_enhance.py", "$stage\Apollo\soundstage_reshape.py", "$stage\Apollo\noise_profile.py",
+    "$stage\Apollo\stem_enhance.py",
     "$stage\Apollo\vocal_adjust.py",
     "$stage\Apollo\look2hear", "$stage\Apollo\ckpts",
-    "$stage\Soren_src\core_decrypted.py", "$stage\Soren_src\test_model.py",
-    "$stage\Soren_src\model",
+    "$stage\Soren_src\core_decrypted.py", "$stage\Soren_src\soren_original.py",
+    "$stage\Soren_src\test_model.py", "$stage\Soren_src\model",
     "$stage\Soren_src\profiles", "$stage\Soren_src\secured_genres",
     "$stage\ffmpeg\bin\ffmpeg.exe", "$stage\torch_home", "$stage\hf_home"
 )

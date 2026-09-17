@@ -7,6 +7,8 @@
   const state = {
     processing: false,
     files: [],
+    selectedFile: null,
+    view: "process",
     output: "",
     reference: "",
     eq: "Neutral",
@@ -46,6 +48,11 @@
         processBtn.style.setProperty("--btn-progress", "100%");
         setFileStatus(fi, succeeded ? "done" : "fail");
       });
+      // 质量摘要：逐文件 JSON 报告（守卫连接，旧后端 / 静态预览不崩）
+      if (api.qualitySummary) api.qualitySummary.connect((raw) => onQualitySummary(raw));
+    if (api.previewPeaks) api.previewPeaks.connect((raw) => onPreviewPeaks(raw));
+    if (api.previewDone) api.previewDone.connect((raw) => onPreviewDone(raw));
+    if (api.previewFailed) api.previewFailed.connect((msg) => onPreviewFailed(String(msg)));
       // logLine 不再渲染（UI 禁止显示任何日志）
       api.done.connect((path, ok, fail, errText) => {
         fx.setActive(false);
@@ -714,6 +721,7 @@
   const getTrans = bindKnob($("knob-trans"), $("val-trans"), (v) => Math.round(v * 100) + "%", "trans");
   const getSpace = bindFader($("fader-space"), $("val-space"), (v) => Math.round(v * 100) + "%", "space");
   const getDenoise = bindFader($("fader-denoise"), $("val-denoise"), (v) => Math.round(v * 100) + "%", "denoise");
+  const getGuitar = bindKnob($("knob-guitar"), $("val-guitar"), (v) => Math.round(v * 100) + "%", "guitar");
 
   /* ─── 面板 bypass 开关：关闭 = 该面板对应阶段全部跳过，状态持久化 ─── */
   const BYPASS_CONTROLS = {
@@ -752,25 +760,6 @@
     return Object.entries(bypassState).filter(([, on]) => !on).map(([stage]) => stage);
   }
 
-  /* ─── 低频自动清晰 opt-in 开关：默认关闭，状态持久化 ───
-     复用 rack-bypass 拨杆契约（role="switch" + aria-checked + bp-track/bp-dot），
-     仅绑定领域行为；不参与 bypass 列表。读数列显示 开/关，不单靠颜色反馈。 */
-  const getBassClarity = (() => {
-    const btn = $("opt-bass-clarity");
-    const val = $("val-bass-clarity");
-    let enabled = loadValue("bass_auto_clarity", "0") === "1";
-    function render() {
-      btn.setAttribute("aria-checked", enabled ? "true" : "false");
-      val.textContent = enabled ? "开" : "关";
-    }
-    render();
-    btn.addEventListener("click", () => {
-      enabled = !enabled;
-      saveValue("bass_auto_clarity", enabled ? "1" : "0");
-      render();
-    });
-    return () => enabled;
-  })();
 
   /* ─── 自定义下拉组件（非原生，同一契约）─── */
   function buildDropdown(ddId, options, initial, onChange, storeKey) {
@@ -902,6 +891,10 @@
     { v: "normal", label: "标准" }, { v: "loud", label: "响亮" },
   ], "normal", () => {}, "loudness");
 
+  // style_blend 保留存储/API 名称；数值控制 styled 处理力度，而非干湿波形比例。
+  const getBlend = bindFader($("fader-blend"), $("val-blend"),
+    (v) => Math.round(v * 100) + "%", "style_blend");
+
   /* ─── EQ 分段 ─── */
   state.eq = loadValue("eq", "Neutral");
   const eqBtns = document.querySelectorAll(".seg-btn[data-eq]");
@@ -959,25 +952,37 @@
       item.setAttribute("role", "listitem");
       item.setAttribute("aria-label", `${name}，${FILE_STATUS_LABELS[status]}`);
       if (status === "processing") item.setAttribute("aria-current", "true");
+      const selected = state.selectedFile === f;
+      if (selected) item.classList.add("selected");
       item.innerHTML = `<span class="fi-status" aria-hidden="true"></span>` +
         `<span class="fi-name" title="${escapeHtml(f)}">${escapeHtml(name)}</span>` +
         `<button class="fi-x" aria-label="移除" title="移除">` +
         `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="square"/></svg>` +
         `</button>`;
+      item.addEventListener("click", (ev) => {
+        if (ev.target.closest(".fi-x")) return;    // 移除按钮不触发选中
+        if (state.selectedFile !== f) {
+          state.selectedFile = f;
+          renderFileList();
+        }
+      });
       item.querySelector(".fi-x").addEventListener("click", () => {
         if (state.processing) return;
         item.classList.add("leaving");
         setTimeout(() => {
           state.files.splice(i, 1);
           state.fileStatuses.splice(i, 1);
+          if (state.selectedFile === f) state.selectedFile = state.files[0] || null;
           renderFileList();
         }, 150);
       });
       fileListEl.appendChild(item);
     });
     $("queue-count").textContent = `${state.files.length} 首`;
+    refreshPreviewFiles();
     if (state.files.length) {
-      clearNeed(document.querySelector(".queue"));
+      const queueCard = document.querySelector(".queue");
+      if (queueCard) clearNeed(queueCard);
     }
   }
   function addPaths(paths) {
@@ -985,6 +990,7 @@
     const additions = paths.filter((p) => !state.files.includes(p));
     if (!additions.length) return;
     state.files.push(...additions);
+    state.selectedFile = additions[additions.length - 1];
     state.fileStatuses.push(...additions.map(() => "pending"));
     renderFileList();
   }
@@ -996,9 +1002,158 @@
   $("btn-clear").addEventListener("click", () => {
     if (state.processing) return;
     state.files = [];
+    state.selectedFile = null;
     state.fileStatuses = [];
     renderFileList();
   });
+
+  /* ─── 输出质量摘要：逐文件实测报告，显式选择查看 ───
+     桥接契约（main.py qualitySummary 信号，JSON 字符串）：
+     { ...summary, input, output, filename }；失败载荷可带 overall:"unavailable" 与 error。
+     面板常驻占位（等待测量 / 未可用），不隐藏避免布局跳变；状态一律中文。
+     数值只取后端实测：缺失 / null / NaN / 非有限值一律显示“不可判定”，
+     不做外推、不虚构达标；全旁路时同样只报告实测，不代后端下处理结论。
+     文件名来自磁盘且长度不定：只经 textContent / title / option.textContent，
+     绝不进 innerHTML 或模板拼接。 */
+  const QUALITY_TP_LIMIT_DBTP = -0.4;   // 与 audio_metrics.assess_quality 的真峰值判定上限一致
+  const QUALITY_STATUS_TEXT = { pass: "达标", warn: "有警告", fail: "未达标", unavailable: "未可用" };
+  const QUALITY_FMT = {
+    lufs: (n) => `${n.toFixed(1)} LUFS`,
+    lu: (n) => `${n.toFixed(1)} LU`,
+    db: (n) => `${n.toFixed(1)} dB`,
+    dbtp: (n) => `${n.toFixed(1)} dBTP`,
+    corr: (n) => n.toFixed(2),            // 相关性至少 2 位小数
+    count: (n) => String(Math.round(n)),
+  };
+  const QUALITY_CELLS = [
+    { id: "q-lufs", fmt: "lufs", value: (p) => p.integrated_lufs ?? qualityMetric(p, "integrated_lufs") },
+    { id: "q-target", fmt: "lufs", value: (p) => p.target_lufs ?? qualityMastering(p, "target_lufs") },
+    { id: "q-delta", fmt: "lu", value: qualityLoudnessDelta },
+    { id: "q-tp", fmt: "dbtp", value: (p) => p.true_peak_4x_dbtp ?? qualityMetric(p, "true_peak_4x_dbtp") },
+    { id: "q-headroom", fmt: "db", value: qualityPeakHeadroom },
+    { id: "q-sp", fmt: "db", value: (p) => p.sample_peak_dbfs ?? qualityMetric(p, "sample_peak_dbfs") },
+    { id: "q-lra", fmt: "lu", value: (p) => p.lra_lu ?? qualityMetric(p, "lra_lu") },
+    { id: "q-crest", fmt: "db", value: (p) => p.crest_factor_db ?? qualityMetric(p, "crest_factor_db") },
+    { id: "q-corr", fmt: "corr", value: (p) => p.stereo_correlation ?? qualityMetric(p, "stereo_correlation") },
+    { id: "q-mono", fmt: "db", value: (p) => p.mono_fold_down_loss_db ?? qualityMetric(p, "mono_fold_down_loss_db") },
+    { id: "q-plim", fmt: "db", value: (p) => p.limiter_p95_db ?? qualityMastering(p, "gain_reduction_p95_db")
+        ?? (qualityMastering(p, "limiter") || {}).gain_reduction_p95_db },
+    { id: "q-clip", fmt: "count", value: (p) => p.clipping_samples ?? qualityMetric(p, "clipping_samples") },
+  ];
+  let qualityReports = [];        // 到达顺序：{ key, name, payload }
+  let qualitySelectedKey = null;  // 当前展示的报告键；null = 尚未选择
+  let qualitySeq = 0;
+
+  function qualityMetric(payload, key) {
+    const m = payload?.output?.metrics;
+    return m ? m[key] : undefined;
+  }
+  function qualityMastering(payload, key) {
+    const m = payload?.mastering;
+    return m && typeof m === "object" ? m[key] : undefined;
+  }
+  // 只有有限数值（或数字字符串）参与展示；null / NaN / ±Inf / 布尔 / 数组 / 对象 → 不可判定
+  function qualityNumber(value) {
+    const t = typeof value;
+    if (t === "number") return Number.isFinite(value) ? value : null;
+    if (t === "string" && value.trim() !== "") {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  }
+  function qualityLoudnessDelta(p) {
+    const err = qualityNumber(qualityMastering(p, "target_error_lu"));
+    if (err !== null) return err;
+    const target = qualityNumber(p.target_lufs ?? qualityMastering(p, "target_lufs"));
+    const measured = qualityNumber(p.integrated_lufs ?? qualityMetric(p, "integrated_lufs"));
+    return target !== null && measured !== null ? measured - target : null;
+  }
+  function qualityPeakHeadroom(p) {
+    const tp = qualityNumber(p.true_peak_4x_dbtp ?? qualityMetric(p, "true_peak_4x_dbtp"));
+    return tp !== null ? QUALITY_TP_LIMIT_DBTP - tp : null;
+  }
+  function qualityBaseName(path) {
+    return String(path ?? "").replace(/\\/g, "/").split("/").pop();
+  }
+  function qualityReportName(payload) {
+    const f = typeof payload.filename === "string" ? payload.filename : "";
+    return qualityBaseName(f)
+      || qualityBaseName(payload.output?.path)
+      || qualityBaseName(payload.input?.path);
+  }
+  function qualityStatusText(payload) {
+    if (!payload) return "等待测量";
+    const overall = payload.overall;
+    return Object.hasOwn(QUALITY_STATUS_TEXT, overall) ? QUALITY_STATUS_TEXT[overall] : "不可判定";
+  }
+  function qualityOption(value, label, selected) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    opt.selected = selected;
+    return opt;
+  }
+  function renderQuality() {
+    const select = $("quality-file-select");
+    const fileEl = $("quality-file");
+    const overallEl = $("quality-overall");
+    const errEl = $("quality-error");
+    if (!select || !fileEl || !overallEl) return;
+    const current = qualityReports.find((r) => r.key === qualitySelectedKey) || null;
+    // 选择器：原生 select 紧凑变体（与 dd-trigger 同规格）；选项只走 textContent
+    select.innerHTML = "";
+    select.disabled = qualityReports.length === 0;
+    if (!qualityReports.length) {
+      select.appendChild(qualityOption("", "等待测量", false));
+    } else {
+      qualityReports.forEach((r) => {
+        select.appendChild(qualityOption(r.key, r.name || "未知文件", r.key === qualitySelectedKey));
+      });
+    }
+    // 文件名独立成行：完整名保存在 DOM 文本与 title 里，超长仅由 CSS 截断
+    const shownName = current ? (current.name || "未知文件") : "";
+    fileEl.textContent = shownName || "—";
+    fileEl.title = shownName;
+    overallEl.textContent = qualityStatusText(current?.payload);
+    QUALITY_CELLS.forEach((cell) => {
+      const el = $(cell.id);
+      if (!el) return;
+      const n = current ? qualityNumber(cell.value(current.payload)) : null;
+      el.textContent = current ? (n === null ? "不可判定" : QUALITY_FMT[cell.fmt](n)) : "—";
+    });
+    if (errEl) {
+      const errText = current && typeof current.payload.error === "string" ? current.payload.error : "";
+      errEl.textContent = errText;
+      errEl.hidden = !errText;
+    }
+  }
+  function onQualitySummary(raw) {
+    let payload = null;
+    try { payload = JSON.parse(raw); } catch (e) { return; }   // 坏报文：忽略，面板保持原状
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+    const name = qualityReportName(payload);
+    const key = name
+      || String(payload.output?.path || "")
+      || String(payload.input?.path || "")
+      || `__report_${++qualitySeq}`;   // 完全无名：唯一键入列，绝不静默覆盖上一份
+    const report = { key, name, payload };
+    const at = qualityReports.findIndex((r) => r.key === key);
+    if (at >= 0) qualityReports[at] = report;   // 同一文件重复上报：原位更新（缓存回放）
+    else qualityReports.push(report);
+    // 不做“最后到达即展示”的覆盖：仅在没有可展示对象时选中第一份，
+    // 之后展示对象只随用户显式选择变化，批处理中后续报告只进选择列表。
+    if (!qualitySelectedKey) qualitySelectedKey = key;
+    renderQuality();
+  }
+  function clearQualityReports() {
+    qualityReports = [];
+    qualitySelectedKey = null;
+    renderQuality();
+  }
+  // 输出检查面板已并入报告页：质量模块仅保留载荷存储/取值函数，
+  // 不再绑定已移除的 quality-file-select 等展示元素（避免加载期 TypeError）。
+  renderQuality();   // 初始占位：元素缺失时内部守卫直接返回
 
   /* ─── 输出 / 参考音频 ─── */
   state.output = loadValue("output", "");
@@ -1223,13 +1378,31 @@
       api.cancel();
       processLabel.textContent = "停止中…";
       processBtn.disabled = true;
+    } else if (state.view === "preview") {
+      startPreviewRender();
     } else {
       startProcess();
     }
   });
 
+  function collectParams() {
+    // 面板参数快照：正式批处理与预览渲染共用同一份（保证预览=成品语义）。
+    return {
+      quality: getQuality(), guidance: getGuidance(),
+      sub: getSub(), sat: getSat(), punch: getPunch(), trans: getTrans(),
+      space: getSpace(), denoise: getDenoise(), guitar: getGuitar(),
+      space_width: getWidth(), vocal: getVocal(),
+      bypass: activeBypassList(),
+      genre: state.reference ? "" : (getGenre() === "none" ? "Pop" : getGenre()),
+      style_mode: !state.reference && getGenre() === "none"
+        ? (state.eq === "Neutral" ? "off" : "eq_only") : "styled",
+      style_blend: getBlend(),
+      loudness: getLoudness(), eq: state.eq,
+    };
+  }
+
   async function startProcess() {
-    // 缺失提示改为控件红框：无歌曲 → 队列红框；无输出目录 → 输出输入框红框
+    // 缺失提示改为控件红框：无歌曲 → BUSTER 红框并打开文件弹窗；无输出目录 → 输出框红框
     if (!state.files.length) { markNeed(document.querySelector(".queue")); return; }
     if (!state.output) { markNeed($("output-path")); return; }
     clearNeed(document.querySelector(".queue"));
@@ -1240,6 +1413,7 @@
     state.currentFileIndex = -1;
     state.fileStatuses = state.files.map(() => "pending");
     renderFileList();
+    clearQualityReports();   // 新批次：清空上一批的逐文件质量报告
     fx.setActive(true);
     setProcessing();
     document.querySelectorAll(".stage").forEach((s) => s.classList.remove("active", "done", "error"));
@@ -1249,16 +1423,7 @@
         files: state.files,
         output: state.output,
         reference: state.reference,
-        quality: getQuality(), guidance: getGuidance(),
-        sub: getSub(), sat: getSat(), punch: getPunch(), trans: getTrans(),
-        bass_auto_clarity: getBassClarity(),
-        space: getSpace(), denoise: getDenoise(),
-        space_width: getWidth(), vocal: getVocal(),
-        bypass: activeBypassList(),
-        genre: state.reference ? "" : (getGenre() === "none" ? "Pop" : getGenre()),
-        style_mode: !state.reference && getGenre() === "none"
-          ? (state.eq === "Neutral" ? "off" : "eq_only") : "styled",
-        loudness: getLoudness(), eq: state.eq,
+        ...collectParams(),
       });
     } catch (e) {
       fx.setActive(false);
@@ -1271,7 +1436,7 @@
     lew: {
       title: "高频 · 怎么调",
       html:
-        "<h3>质量档</h3><p><b>先用标准</b>。快速处理更快；精细处理更慢，不一定更好听。</p>" +
+        "<h3>质量档</h3><p><b>先用标准</b>。快速处理更快；<b>精细</b>会改用更细的六轨分层（吉他和合成器/键盘分开处理），时长接近；如果设备里没有六轨组件，会自动用回四轨。</p>" +
         "<h3>重建引导</h3><p>调高会加入更多修复后的细节。声音变尖或不自然时，<b>往回调一点</b>。</p>" +
         "<h3>人声</h3><p><b>听不清歌词就调高</b>，歌声太突出就调低。保持 0，会尽量保留原曲中歌声与伴奏的关系。</p>" +
         "<h3>操作</h3><p>上下拖动旋钮，或用滚轮调节。<b>双击恢复默认值</b>。</p>",
@@ -1280,10 +1445,11 @@
       title: "低频 · 怎么调",
       html:
         "<h3>Sub 提升</h3><p>让低音更深、更有分量。<b>轰头、发闷就调低</b>。</p>" +
-        "<h3>鼓身</h3><p>让鼓声更厚、更有力。鼓声盖过歌声时，<b>调低一点</b>。</p>" +
+        "<h3>鼓身</h3><p>让鼓声更厚、更有力；<b>同时让低音在鼓点瞬间轻轻让位</b>（有硬上限，不会挖空低音，调到 0 则完全关闭）。鼓声盖过歌声时，调低一点。</p>" +
         "<h3>瞬态</h3><p>让每一下鼓点更清楚。敲击声太硬、太刺耳时，调低。</p>" +
         "<h3>谐波饱和</h3><p>让低音更饱满、更容易听见。<b>太多可能变粗糙</b>，先保持默认。</p>" +
-        "<h3>自动清晰（默认关）</h3><p>低音发闷时可以打开。它会在增强前做小幅调整，<b>不好听就关掉</b>；不会改动 Sub 提升的数值。</p>" +
+        "<h3>自动清晰</h3><p><b>默认始终开启</b>：检测到低音发闷时，在增强前自动做小幅收敛（最多 ±2dB），通透或单薄的音色不会被改动，也不影响 Sub 提升的数值。</p>" +
+        "<h3>吉他</h3><p>让吉他更清楚、更亮、少一点浑浊（自动使用<b>六轨分层</b>）。<b>0% 完全不处理</b>；往右增强，太亮或发刺就回调。</p>" +
         "<h3>操作</h3><p><b>一次只调一项</b>，处理完成后用播放器比较，再调下一项。双击旋钮恢复默认值。</p>",
     },
     space: {
@@ -1291,7 +1457,7 @@
       html:
         "<h3>宽度</h3><p>让声音向左右展开。<b>向右拖更宽，向左拖更集中</b>。</p>" +
         "<h3>声场</h3><p>控制展开效果有多明显。<b>0% 不增加宽度</b>；声音散了、不够有力时，往回调。</p>" +
-        "<h3>高频降噪</h3><p>减轻背景里的沙沙声。<b>细节变少就调低</b>，不是越高越好。</p>" +
+        "<h3>高频降噪</h3><p>减轻背景里的沙沙声：只对<b>确认是稳定嘶声</b>的部分做小幅度处理，所以<b>没有嘶声的歌几乎不会有变化</b>；细节变少就调低，不是越高越好。</p>" +
         "<h3>面板开关</h3><p>关闭后，<b>展开效果和降噪都停用</b>，原来的设置会保留。</p>" +
         "<h3>操作</h3><p>左右拖动调节，双击恢复默认值。<b>比较成品时建议戴耳机</b>。</p>",
     },
@@ -1301,13 +1467,30 @@
         "<h3>流派</h3><p>给整首歌选择一种声音风格。拿不准就选<b>无风格</b>；选了参考音频，会以参考为准。</p>" +
         "<h3>响度</h3><p>轻柔更舒缓，标准适合日常，响亮更满、更响。<b>更响不等于更好听</b>。</p>" +
         "<h3>EQ 风格</h3><p><b>平直</b>：少改音色；<b>温暖</b>：更厚；<b>明亮</b>：更亮；<b>融合</b>：尝试更融合的整体音色。</p>" +
+        "<h3>风格强度</h3><p>控制流派母带的处理力度，主要改变压缩、瞬态与密度。<b>它不是干湿混合</b>，调低不会把两条不同相位的波形相加；音色和声场只做有限修正。拿不准就保持默认。</p>" +
         "<h3>怎么选</h3><p><b>先保持默认，再按喜好微调</b>。关闭面板可跳过这一步。</p>",
     },
+    preview: {
+      title: "预览 · 怎么用",
+      html:
+        "<h3>选择</h3><p>点击上方待处理列表<b>选中歌曲</b>；频谱会给出默认片段，<b>拖动片段两侧边缘</b>即可调整范围（不限大小）。</p>" +
+        "<h3>渲染</h3><p>点底部 <b>PREVIEW</b>，用当前面板参数渲染该片段。<b>首次</b>要跑完整链路；之后同片段调参数只重算后段，很快。</p>" +
+        "<h3>试听</h3><p><b>空格</b>播放/暂停；<b>点击频谱任意位置</b>定位播放进度；<b>点左侧轨道标签</b>在原始/预览之间切换对比，播放头始终同步。</p>" +
+        "<h3>提示</h3><p>渲染结果与正式成品<b>同一套处理</b>；调好后回效果器页直接 BUSTER 即可。</p>",
+    },
+    report: {
+      title: "报告 · 怎么看",
+      html:
+        "<h3>指标卡片</h3><p><b>原始 → 成品</b> 的核心指标对比，数据来自成品旁的质量报告，处理完成后自动显示。</p>" +
+        "<h3>频段差异</h3><p>各频段成品相对原始的能量差（dB）：<b>正=更多，负=更少</b>。</p>" +
+        "<h3>声场与宽度</h3><p>立体声相关性与 Side/Mid 宽度的前后对比。处理不会刻意收窄声场，微小变化来自有界预算与响度处理。</p>" +
+        "<h3>约束</h3><p>底部列表是硬约束检查（削波/真峰值/频带预算等），pass 表示安全边界内。</p>",
+    },
   };
-  /* 试听说明：所有帮助面板共用一段固定文案，防止任何“实时试听”误导。
-     文案保持一句、加粗、口语化。 */
+  /* 试听说明：所有帮助面板共用一段固定文案。正式批处理不做实时试听；
+     片段级快速试听走顶部「预览」视图。文案保持一句、加粗、口语化。 */
   const AUDITION_NOTE =
-    "<h3>试听</h3><p><b>本软件不提供试听。处理完成后，请用播放器打开成品比较。</b></p>";
+    "<h3>试听</h3><p><b>正式批处理不提供实时试听；快速试听片段请用顶部「预览」。处理完成后，请用播放器打开成品比较。</b></p>";
   const helpDialog = $("help-dialog");
   const helpTitle = $("help-title");
   const helpBody = $("help-body");
@@ -1800,4 +1983,589 @@
 
   document.addEventListener("dragover", (e) => e.preventDefault());
   document.addEventListener("drop", (e) => e.preventDefault());
+
+
+/* ═══════════════ 视图切换 / 文件弹窗 / 预览 / 报告 ═══════════════ */
+
+function openOverlay(which) {
+  // 三页切换：效果器（默认）/ 预览 / 报告。文件 UI（待处理队列）始终显示在上方。
+  state.view = which;
+  const tabs = [["process", "tab-process", "pane-process"],
+                ["preview", "tab-preview", "pane-preview"],
+                ["report", "tab-report", "pane-report"]];
+  tabs.forEach(([name, tabId, paneId]) => {
+    const active = name === which;
+    $(paneId).hidden = !active;
+    $(tabId).setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  // 底部主按钮随视图切换：效果器=BUSTER!，预览=PREVIEW（渲染入口），
+  // 报告页无动作（隐藏）。批处理进行中一律回到 停止 展示。
+  const dock = document.querySelector(".dock");
+  dock.hidden = which === "report";
+  if (!state.processing) {
+    if (which === "preview") {
+      processLabel.textContent = pv.busy ? "渲染中…" : "PREVIEW";
+      processBtn.disabled = pv.busy || !pv.sel;
+    } else {
+      processLabel.textContent = "BUSTER!";
+      processBtn.disabled = false;
+    }
+  }
+  $("content").scrollTo(0, 0);
+}
+function closeOverlays() { openOverlay("process"); }
+
+$("tab-process").addEventListener("click", () => openOverlay("process"));
+$("tab-preview").addEventListener("click", () => openOverlay("preview"));
+$("tab-report").addEventListener("click", () => openOverlay("report"));
+$("preview-close").addEventListener("click", () => openOverlay("process"));
+$("report-close").addEventListener("click", () => openOverlay("process"));
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("pane-preview").hidden || !$("pane-report").hidden) openOverlay("process");
+});
+
+/* ─── 预览：频谱选段 + 渲染 + 播放（DAW 式） ─── */
+const pv = { file: null, duration: 0, spec: null, specOut: null, sel: null,
+             busy: false, dragAnchor: null, peaksReq: 0,
+             track: "src", playing: false, lastT: 0, previewPath: null };
+
+function refreshPreviewFiles() {
+  // 选中文件驱动预览：跟随待处理列表的点击选择。
+  const f = state.selectedFile;
+  const label = $("pv-file-label");
+  if (label) label.textContent = f ? f.replace(/\\/g, "/").split("/").pop() : "未选择文件";
+  if (f !== pv.file) {
+    pv.file = f;
+    pv.duration = 0; pv.spec = null; pv.sel = null;
+    pv.track = "src"; pv.playing = false; pv.lastT = 0; pv.previewPath = null;
+    $("pv-duration").textContent = "—";
+    $("pv-range").textContent = "未选择片段";
+    $("pv-play").disabled = true;
+    $("pv-track-label").textContent = "原始";
+    $("pv-hint").hidden = false;
+    $("pv-audio-src").removeAttribute("src");
+    $("pv-audio-out").removeAttribute("src");
+    drawSpecs();
+    if (f) loadPreviewPeaks(f);
+  }
+}
+function fileUrl(path) {
+  return "file:///" + encodeURI(String(path).replace(/\\/g, "/"));
+}
+function onPreviewPeaks(raw) {
+  let p = null;
+  try { p = JSON.parse(raw); } catch (e) { return; }
+  if (!p || !p.spec) return;
+  pv.duration = Number(p.duration) || 0;
+  pv.spec = p.spec;
+  $("pv-duration").textContent = `${pv.duration.toFixed(1)} s`;
+  $("pv-hint").hidden = true;
+  if (!pv.sel) setRange(0, Math.min(30, pv.duration));
+  drawSpecs();
+}
+function onPreviewFailed(msg) {
+  pv.busy = false;
+  $("pv-progress").hidden = true;
+  $("btn-process").disabled = false;
+  if (state.view === "preview") processLabel.textContent = "PREVIEW";
+  announce(`预览失败：${msg}`);
+}
+function onPreviewDone(raw) {
+  let p = null;
+  try { p = JSON.parse(raw); } catch (e) { return; }
+  pv.busy = false;
+  $("pv-progress").hidden = true;
+  $("btn-process").disabled = false;
+  if (state.view === "preview") processLabel.textContent = "PREVIEW";
+  pv.specOut = p.spec || null;
+  pv.previewPath = p.output;
+  $("pv-play").disabled = false;
+  const q = p.quality || {};
+  const m = p.metrics || {};
+  const cell = (id, v, fmt) => {
+    const n = typeof v === "number" && Number.isFinite(v) ? v : null;
+    $(id).textContent = n === null ? "—" : fmt(n);
+  };
+  cell("pv-lufs", q.integrated_lufs, (v) => v.toFixed(1) + " LUFS");
+  cell("pv-tp", q.true_peak_4x_dbtp, (v) => v.toFixed(1) + " dBTP");
+  cell("pv-lra", q.lra_lu, (v) => v.toFixed(1) + " LU");
+  cell("pv-crest", q.crest_factor_db, (v) => v.toFixed(1) + " dB");
+  cell("pv-sp", m.sample_peak_dbfs, (v) => v.toFixed(1) + " dBFS");
+  cell("pv-plim", q.limiter_p95_db ?? (p.mastering?.limiter?.gain_reduction_p95_db),
+       (v) => v.toFixed(2) + " dB");
+  cell("pv-clip", m.clipping_samples, (v) => String(v));
+  $("pv-overall").textContent = q.overall ? String(q.overall) : "—";
+  $("pv-metrics").hidden = false;
+  (p.notices || []).forEach((n) => announce(String(n)));
+  drawSpecs();
+}
+
+/* 颜色映射：dB 强度（0=静音）→ 深底 → 主题紫 → 亮白 */
+function specColor(v) {
+  const t = Math.max(0, Math.min(1, v / 255));
+  if (t < 0.45) {
+    const k = t / 0.45;
+    return [20 + k * 69, 18 + k * 37, 24 + k * 65];        // 底色 → 深紫
+  }
+  if (t < 0.8) {
+    const k = (t - 0.45) / 0.35;
+    return [89 + k * 20, 55 + k * 30, 89 + k * 95];         // 深紫 → 亮紫
+  }
+  const k = (t - 0.8) / 0.2;
+  return [109 + k * 121, 85 + k * 75, 184 + k * 43];        // 亮紫 → 近白
+}
+function drawSpec(canvas, spec, t0, t1, opts) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth * dpr, h = 140 * dpr;
+  if (!w) return;
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#141218";
+  ctx.fillRect(0, 0, w, h);
+  if (!spec || !spec.w) return;
+  const off = document.createElement("canvas");
+  off.width = spec.w; off.height = spec.h;
+  const octx = off.getContext("2d");
+  const img = octx.createImageData(spec.w, spec.h);
+  const d = spec.data;
+  for (let x = 0; x < spec.w; x++) {
+    for (let y = 0; y < spec.h; y++) {
+      const v = d[y * spec.w + x];
+      const [r, g, b] = specColor(v);
+      const row = spec.h - 1 - y;               // 低频在底部
+      const o = (row * spec.w + x) * 4;
+      img.data[o] = r; img.data[o + 1] = g; img.data[o + 2] = b; img.data[o + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  const span = t1 - t0;
+  ctx.imageSmoothingEnabled = true;
+  if (spec.w && spec.duration) {
+    // 按时间窗切片绘制：源轨整曲、预览轨只覆盖其片段时长
+    const sx = (t0 / spec.duration) * spec.w;
+    const sw = Math.max(1, ((t1 - t0) / spec.duration) * spec.w);
+    ctx.drawImage(off, sx, 0, sw, spec.h, 0, 0, w, h);
+  } else {
+    ctx.drawImage(off, 0, 0, w, h);
+  }
+  if (opts && opts.sel) {
+    const x0 = ((opts.sel[0] - t0) / span) * w;
+    const x1 = ((opts.sel[1] - t0) / span) * w;
+    ctx.fillStyle = "rgba(230,224,233,0.10)";
+    ctx.fillRect(x0, 0, x1 - x0, h);
+    ctx.fillStyle = "#e6e0e9";
+    ctx.fillRect(x0, 0, 3 * dpr, h);
+    ctx.fillRect(x1 - 3 * dpr, 0, 3 * dpr, h);
+  }
+  if (opts && opts.playhead != null && opts.playhead >= t0 && opts.playhead <= t1) {
+    const x = ((opts.playhead - t0) / span) * w;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(x, 0, 1.5 * dpr, h);
+  }
+}
+function pvCurrentT() {
+  if (pv.playing) {
+    const t = pv.track === "src" ? $("pv-audio-src").currentTime
+            : (pv.sel ? pv.sel[0] : 0) + ($("pv-audio-out").currentTime || 0);
+    if (t) pv.lastT = t;
+  }
+  return pv.lastT;
+}
+function updateTransport() {
+  $("pv-play").textContent = pv.playing ? "⏸" : "▶";
+  $("pv-track-label").textContent = pv.track === "src" ? "原始" : "预览";
+  $("pv-lane-src").classList.toggle("active", pv.track === "src");
+  $("pv-lane-out").classList.toggle("active", pv.track === "out");
+}
+function pvPlayPause() {
+  if (!pv.file || !pv.sel) return;
+  const src = $("pv-audio-src"), out = $("pv-audio-out");
+  if (pv.playing) {
+    src.pause(); out.pause();
+    pv.playing = false; pv.lastT = pvCurrentT();
+  } else {
+    const T = pv.lastT || pv.sel[0];
+    if (pv.track === "src") {
+      if (!src.src) src.src = fileUrl(pv.file);
+      src.currentTime = Math.min(Math.max(T, 0), pv.duration || T);
+      src.play().catch(() => announce("音频播放失败"));
+    } else {
+      if (!out.src) out.src = fileUrl(pv.previewPath || "");
+      out.currentTime = Math.max(0, T - pv.sel[0]);
+      out.play().catch(() => announce("音频播放失败"));
+    }
+    pv.playing = true;
+  }
+  updateTransport();
+}
+function pvSelectTrack(track) {
+  if (pv.track === track) return;
+  if (track === "out" && !pv.previewPath) {
+    announce("预览尚未渲染：先点底部 PREVIEW 生成预览，再切换试听");
+    return;
+  }
+  const wasPlaying = pv.playing;
+  const T = pvCurrentT();
+  pv.track = track;
+  $("pv-audio-src").pause();
+  $("pv-audio-out").pause();
+  if (wasPlaying) {
+    if (track === "src") {
+      const s = $("pv-audio-src");
+      if (!s.src) s.src = fileUrl(pv.file);
+      s.currentTime = Math.min(Math.max(T, 0), pv.duration || T);
+      s.play().catch(() => announce("音频播放失败"));
+    } else {
+      const o = $("pv-audio-out");
+      if (!o.src) o.src = fileUrl(pv.previewPath);
+      o.currentTime = Math.max(0, T - pv.sel[0]);
+      o.play().catch(() => announce("音频播放失败"));
+    }
+  } else {
+    pv.lastT = T;
+  }
+  updateTransport();
+  drawSpecs();
+}
+function drawSpecs() {
+  const T = pvCurrentT();
+  drawSpec($("pv-spec-src"), pv.spec, 0, pv.duration || 1,
+           { sel: pv.sel, playhead: T });
+  drawSpec($("pv-spec-out"), pv.specOut || null,
+           pv.sel ? pv.sel[0] : 0, pv.sel ? pv.sel[1] : (pv.duration || 1),
+           { playhead: pv.sel ? Math.min(Math.max(T, pv.sel[0]), pv.sel[1]) : null });
+  $("pv-clock").textContent = `${T.toFixed(1)} s`;
+}
+function pvSeek(t) {
+  pv.lastT = Math.max(0, Math.min(t, pv.duration || t));
+  const src = $("pv-audio-src"), out = $("pv-audio-out");
+  if (pv.track === "src") {
+    if (src.src) src.currentTime = Math.min(Math.max(pv.lastT, 0), pv.duration || 0);
+  } else if (out.src && pv.sel) {
+    out.currentTime = Math.max(0, Math.min(pv.lastT - pv.sel[0], pv.sel[1] - pv.sel[0]));
+  }
+  drawSpecs();
+}
+function setRange(lo, hi) {
+  lo = Math.max(0, Math.min(lo, pv.duration - 0.2));
+  hi = Math.max(lo + 0.2, Math.min(hi, pv.duration));
+  pv.sel = [Number(lo.toFixed(2)), Number(hi.toFixed(2))];
+  $("pv-range").textContent =
+    `${pv.sel[0].toFixed(1)}s – ${pv.sel[1].toFixed(1)}s（${(pv.sel[1] - pv.sel[0]).toFixed(1)}s）`;
+  drawSpecs();
+}
+(() => {
+  const wave = $("pv-spec-src");
+  const EDGE_PX = 8;
+  let mode = null, edge = null, downX = null;
+  const timeAt = (e) => {
+    const rect = wave.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    return frac * pv.duration;
+  };
+  const nearEdge = (e) => {
+    if (!pv.sel) return null;
+    const rect = wave.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const w = rect.width;
+    if (Math.abs(x - (pv.sel[0] / pv.duration) * w) <= EDGE_PX) return "lo";
+    if (Math.abs(x - (pv.sel[1] / pv.duration) * w) <= EDGE_PX) return "hi";
+    return null;
+  };
+  wave.addEventListener("pointerdown", (e) => {
+    if (!pv.duration || pv.busy) return;
+    const t = timeAt(e);
+    edge = nearEdge(e);
+    if (edge) {
+      mode = "edge";
+      wave.setPointerCapture(e.pointerId);
+      if (edge === "lo") setRange(t, pv.sel[1]); else setRange(pv.sel[0], t);
+    } else {
+      mode = "seek";
+      pvSeek(t);
+    }
+  });
+  wave.addEventListener("pointermove", (e) => {
+    if (mode === null) {
+      wave.style.cursor = nearEdge(e) ? "ew-resize" : "text";
+      return;
+    }
+    const t = timeAt(e);
+    if (mode === "edge") {
+      if (edge === "lo") setRange(Math.min(t, pv.sel[1] - 0.2), pv.sel[1]);
+      else setRange(pv.sel[0], Math.max(t, pv.sel[0] + 0.2));
+    } else {
+      pvSeek(t);
+    }
+  });
+  const end = () => { mode = null; edge = null; };
+  wave.addEventListener("pointerup", end);
+  wave.addEventListener("pointercancel", end);
+  window.addEventListener("resize", drawSpecs);
+  setInterval(() => {
+    if (!$("pane-preview").hidden) drawSpecs();
+  }, 120);
+})();
+// 点击预览轨（下 lane）定位：绝对时间 = 片段起点 + 片段内比例
+$("pv-lane-out").addEventListener("pointerdown", (e) => {
+  if (!pv.specOut || !pv.sel) return;
+  const rect = $("pv-spec-out").getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  pvSeek(pv.sel[0] + frac * (pv.sel[1] - pv.sel[0]));
+});
+// 轨道切换：点击左侧标签（原始/预览）
+$("pv-lane-src").querySelector(".spec-tag").addEventListener("click", (e) => {
+  e.stopPropagation();
+  pvSelectTrack("src");
+});
+$("pv-lane-out").querySelector(".spec-tag").addEventListener("click", (e) => {
+  e.stopPropagation();
+  pvSelectTrack("out");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || $("pane-preview").hidden) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") return;
+  e.preventDefault();
+  pvPlayPause();
+});
+function loadPreviewPeaks(path) {
+  pv.file = path;
+  const req = ++pv.peaksReq;
+  api.previewLoad(path);
+  setTimeout(() => {
+    if (req === pv.peaksReq && !pv.spec) announce("频谱读取中…（大文件可能需要几秒）");
+  }, 600);
+}
+function startPreviewRender() {
+  if (pv.busy || !pv.file || !pv.sel) return;
+  pv.busy = true;
+  $("btn-process").disabled = true;
+  processLabel.textContent = "渲染中…";
+  $("pv-progress").hidden = false;
+  $("pv-progress-fill").style.width = "8%";
+  announce("预览渲染中：首次渲染需跑完整链路，之后同片段调参数会快很多");
+  api.previewRender(pv.file, pv.sel[0], pv.sel[1], collectParams());
+}
+
+/* ─── 报告：前后指标卡片 + 频段/声场图表（数据来自质量报告） ─── */
+function openReportPane() {
+  openOverlay("report");
+  renderReport();
+}
+function selectedReport() {
+  const sel = state.selectedFile;
+  if (!sel) return null;
+  // 归一化匹配：去掉目录/扩展名/_shadowbuster 后缀并忽略大小写——
+  // 质量摘要的上报名是输入文件名，磁盘扫描名是输出文件名，两者都能命中。
+  const norm = (p) => String(p).replace(/\\/g, "/").split("/").pop()
+      .replace(/\.wav$/i, "").replace(/_shadowbuster$/i, "").toLowerCase();
+  const target = norm(sel);
+  let entry = qualityReports.find((r) => norm(r.name) === target
+      || norm(r.payload && r.payload.filename) === target
+      || norm(r.payload && r.payload.output && r.payload.output.path) === target);
+  if (entry) return entry.payload;
+  if (!state.output) return null;
+  try {
+    const scan = JSON.parse(api.reportsScan(state.output) || "{}");
+    const hit = (scan.reports || []).find((r) => norm(r.name) === target);
+    if (hit) {
+      const payload = JSON.parse(api.reportLoad(hit.path));
+      const report = { key: hit.name, name: hit.name, payload };
+      qualityReports.push(report);
+      return payload;
+    }
+  } catch (e) { /* 扫描失败按无报告处理 */ }
+  return null;
+}
+function fmtDb(v) { return v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)} dB`; }
+function renderReport() {
+  const sel = state.selectedFile;
+  $("rp-file-label").textContent =
+    sel ? sel.replace(/\\/g, "/").split("/").pop() : "未选择文件";
+  const p = selectedReport();
+  const cards = $("rp-cards");
+  cards.innerHTML = "";
+  if (!p) {
+    const empty = document.createElement("div");
+    empty.className = "rc-row";
+    let note = sel
+      ? "该文件尚未处理（或输出目录里没有它的质量报告）。处理完成后这里会自动显示前后对比。"
+      : "先在上方待处理列表点击选择一首歌。";
+    try {
+      if (sel && state.output) {
+        const scan = JSON.parse(api.reportsScan(state.output) || "{}");
+        const n = (scan.reports || []).length;
+        if (n > 0) note += `（输出目录里有 ${n} 份报告，但没有属于当前文件的）`;
+      }
+    } catch (e) {}
+    cards.appendChild(empty);
+    bandDiffCanvas($("rp-bands"), [], []);
+    widthCanvas($("rp-width"), null);
+    $("rp-config").textContent = "";
+    $("rp-constraints").innerHTML = "";
+    return;
+  }
+  const inM = (p.input && p.input.metrics) || {};
+  const outM = (p.output && p.output.metrics) || {};
+  const mas = p.mastering || {};
+  const cardsDef = [
+    ["实测响度", inM.integrated_lufs, outM.integrated_lufs, (v) => `${v.toFixed(1)} LUFS`],
+    ["目标响度", null, mas.target_lufs, (v) => `${v.toFixed(1)} LUFS`],
+    ["真峰值", inM.true_peak_4x_dbtp, outM.true_peak_4x_dbtp, (v) => `${v.toFixed(1)} dBTP`],
+    ["动态 LRA", inM.lra_lu, outM.lra_lu, (v) => `${v.toFixed(1)} LU`],
+    ["峰值因数", inM.crest_factor_db, outM.crest_factor_db, (v) => `${v.toFixed(1)} dB`],
+    ["采样峰值", inM.sample_peak_dbfs, outM.sample_peak_dbfs, (v) => `${v.toFixed(1)} dBFS`],
+    ["立体声相关性", inM.stereo_correlation, outM.stereo_correlation,
+     (v) => v.toFixed(2)],
+    ["单声道损失", inM.mono_fold_down_loss_db, outM.mono_fold_down_loss_db,
+     (v) => `${v.toFixed(2)} dB`],
+    ["限制器 P95", null, (mas.limiter || {}).gain_reduction_p95_db,
+     (v) => `${v.toFixed(2)} dB`],
+    ["削波样本", inM.clipping_samples, outM.clipping_samples, (v) => String(v)],
+  ];
+  cardsDef.forEach(([label, before, after, fmt]) => {
+    const card = document.createElement("div");
+    card.className = "metric-card";
+    const title = document.createElement("span");
+    title.className = "mc-label";
+    title.textContent = label;
+    const vals = document.createElement("span");
+    vals.className = "mc-vals";
+    const b = (before == null || !Number.isFinite(Number(before))) ? "—" : fmt(Number(before));
+    const a = (after == null || !Number.isFinite(Number(after))) ? "—" : fmt(Number(after));
+    vals.textContent = `${b} → ${a}`;
+    card.appendChild(title);
+    card.appendChild(vals);
+    cards.appendChild(card);
+  });
+  let labels, diffs;
+  const cmp = p.compare || null;
+  if (cmp && Array.isArray(cmp.centers) && cmp.centers.length) {
+    labels = cmp.centers.map(String);
+    diffs = cmp.centers.map((_, i) => {
+      const a = cmp.input_db[i], b = cmp.output_db[i];
+      return a == null || b == null ? 0 : b - a;
+    });
+  } else {
+    labels = Object.keys(inM.band_energies || {});
+    diffs = labels.map((k) => {
+      const a = inM.band_energies[k] && inM.band_energies[k].relative_energy_db;
+      const b = outM.band_energies[k] && outM.band_energies[k].relative_energy_db;
+      return a == null || b == null ? 0 : b - a;
+    });
+  }
+  bandDiffCanvas($("rp-bands"), labels, diffs);
+  widthCanvas($("rp-width"), {
+    corr: [inM.stereo_correlation, outM.stereo_correlation],
+    sideMid: [inM.side_mid, outM.side_mid],
+    lowSideMid: [inM.low_band_side_mid, outM.low_band_side_mid],
+  });
+  const cfgRows = [];
+  const pr = p.processing || {};
+  ["demucs_model", "noise_mode", "noise_low_hz", "noise_high_hz", "loudness",
+   "eq_profile", "style_mode", "style_blend", "vocal_comp_amount",
+   "vocal_air_db", "output_subtype"].forEach((k) => {
+    if (pr[k] !== undefined) cfgRows.push(`${k} = ${pr[k]}`);
+  });
+  if (pr.stems) cfgRows.push(`stems = ${JSON.stringify(pr.stems)}`);
+  $("rp-config").textContent = cfgRows.join("  ·  ") || "—";
+  const cons = $("rp-constraints");
+  cons.innerHTML = "";
+  Object.entries((p.quality && p.quality.constraints) || {}).forEach(([name, c]) => {
+    const row = document.createElement("div");
+    row.className = "rc-row";
+    const st = document.createElement("span");
+    st.className = `rc-status rc-${c.status || "unknown"}`;
+    st.textContent = c.status || "unknown";
+    const body = document.createElement("span");
+    body.textContent = `${name}${c.reason ? ` — ${c.reason}` : ""}`;
+    row.appendChild(st); row.appendChild(body);
+    cons.appendChild(row);
+  });
+}
+function widthCanvas(canvas, w) {
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth * dpr, h = canvas.height * dpr;
+  canvas.width = width; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, h);
+  ctx.font = `${11 * dpr}px sans-serif`;
+  if (!w) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text-faint") || "#6b6378";
+    ctx.fillText("处理完成后显示", 10 * dpr, h / 2);
+    return;
+  }
+  const rows = [
+    ["立体声相关性（0–1，越高越开阔一致）", w.corr, (v) => v.toFixed(3), false],
+    ["整体宽度 Side/Mid（dB，越高越宽）", w.sideMid, (v) => `${v.toFixed(2)} dB`, true],
+    ["低频宽度 Side/Mid（dB，越高越宽）", w.lowSideMid, (v) => `${v.toFixed(2)} dB`, true],
+  ];
+  rows.forEach(([label, pair, fmt, dB], i) => {
+    const y = (i + 0.7) * (h / rows.length);
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text") || "#e6e0e9";
+    ctx.fillText(label, 10 * dpr, y - 8 * dpr);
+    const [before, after] = pair.map((v) => (v == null || !Number.isFinite(Number(v))) ? null : Number(v));
+    const lo = Math.min(before ?? 0, after ?? 0), hi = Math.max(before ?? 1, after ?? 1);
+    const span = Math.max(0.001, hi - lo);
+    const barY = y + 4 * dpr, barH = 8 * dpr, barW = width - 20 * dpr;
+    ctx.fillStyle = "#35323f";
+    ctx.fillRect(10 * dpr, barY, barW, barH);
+    const draw = (v, color) => {
+      if (v == null) return;
+      const k = (v - lo) / span;
+      ctx.fillStyle = color;
+      ctx.fillRect(10 * dpr, barY, Math.max(2 * dpr, barW * (dB ? Math.abs(k) : k)), barH);
+      ctx.fillText(fmt(v), 10 * dpr + Math.max(2 * dpr, barW * Math.abs(k)) + 6 * dpr,
+                   barY + barH);
+    };
+    draw(before, "#3d6fb4");
+    draw(after, "#6d55b8");
+  });
+}
+function bandDiffCanvas(canvas, labels, values) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth * dpr, h = canvas.height * dpr;
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  if (!values.length) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text-faint") || "#6b6378";
+    ctx.fillText("处理完成后显示", 10 * dpr, h / 2);
+    return;
+  }
+  const maxAbs = Math.max(0.5, ...values.map((v) => Math.abs(v)));
+  const mid = h / 2;
+  const bw = w / values.length;
+  const stride = Math.max(1, Math.ceil(values.length / 14));
+  ctx.font = `${11 * dpr}px sans-serif`;
+  ctx.textAlign = "center";
+  values.forEach((v, i) => {
+    const x = i * bw + bw * 0.2, width = bw * 0.6;
+    const bh = (Math.abs(v) / maxAbs) * (h * 0.42);
+    ctx.fillStyle = v >= 0 ? "#6d55b8" : "#3d6fb4";
+    ctx.fillRect(x, v >= 0 ? mid - bh : mid, width, bh);
+    if (i % stride === 0) {
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text-dim") || "#9a91a8";
+      ctx.fillText(labels[i], x + width / 2, h - 4 * dpr);
+    }
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text") || "#e6e0e9";
+    if (Math.abs(v) / maxAbs > 0.12 || i % stride === 0) {
+      ctx.fillText(`${v >= 0 ? "+" : ""}${v.toFixed(2)}`, x + width / 2,
+                   v >= 0 ? mid - bh - 5 * dpr : mid + bh + 13 * dpr);
+    }
+  });
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text-faint") || "#6b6378";
+  ctx.fillRect(0, mid, w, 1);
+}
+$("rp-file-label") && setInterval(() => {
+  if (!$("pane-report").hidden) renderReport();
+}, 1500);
+
+window.addEventListener("resize", () => {
+  if (!$("pane-report").hidden) renderReport();
+  if (!$("pane-preview").hidden) drawSpecs();
+});
+
 })();

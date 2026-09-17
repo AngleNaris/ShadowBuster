@@ -58,7 +58,11 @@ def test_cli_refuses_existing_output(tmp_path):
         run.assert_not_called()
 
 
-def test_mastering_sidecars_stay_private_and_routing(tmp_path):
+def test_mastering_sidecar_routing(tmp_path):
+    """路由契约：母带在工作目录进行，统计旁车随成品复制为 <最终wav>.mastering.json。
+
+    （v1.6.9 起旁车不再只留在工作目录；旧契约 `not out.glob('*.json')` 已由
+    tests/test_mastering_reports.py 的新旁车行为取代。）"""
     source=tmp_path/'input.wav'; source.write_bytes(b'audio')
     out=tmp_path/'out'; out.mkdir()
     old=out/'input_shadowbuster.wav.mastering'; old.write_bytes(b'old')
@@ -75,4 +79,4 @@ def test_mastering_sidecars_stay_private_and_routing(tmp_path):
     assert d.call_args.kwargs['punch_db']==4
     assert Path(result).read_bytes()==b'mastered'
     assert old.read_bytes()==b'old'
-    assert not list(out.glob('*.json'))
+    assert (out/'input_shadowbuster.wav.mastering.json').read_bytes()==b'{}'

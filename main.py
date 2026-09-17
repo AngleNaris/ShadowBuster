@@ -9,6 +9,7 @@ if __name__ == "__main__" and any(arg in sys.argv[1:] for arg in ("--cli", "--he
     from processing_cli import main as cli_main
     raise SystemExit(cli_main())
 
+import shutil
 import threading
 import traceback
 import uuid
@@ -28,6 +29,176 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile, QWebEnginePage
 
 import studio_backend as backend
+
+
+def map_ui_params(params, six_stem_available=None):
+    """UI 旋钮 → 处理语义的固定映射（不新增旋钮；面向非专业用户）。
+
+    - 高频降噪 fader > 0 → noise_mode="adaptive_all"（Stage3 跨分轨置信度降噪：
+      只在高置信度识别到稳定嘶声时衰减，无嘶声的歌几乎不动；六轨运行同时覆盖
+      guitar/synth 组）。fader=0 → 兼容路径 other。显式隐藏参数 noise_mode 优先。
+    - 鼓身 punch（0–10）同时驱动 Kick/Bass 有界让位：amount = 0.5×punch/10
+      （默认鼓身 2 → 0.1；上限 6dB、仅 20–180Hz，不会挖空低音）。
+      显式隐藏参数 sidechain_amount 优先；attack/release/max_duck 固定默认。
+    - 人声压缩默认 0.4（有界宽带、空气感不受频谱损失）；人声空气高架默认
+      镜像补偿母带 8kHz 高架衰减（只补不削，封顶 2dB）——"无论如何不丢
+      人声空气感"。显式隐藏参数 vocal_comp_amount / vocal_air_db 优先。
+    - 吉他推子（声场面板，0–1，0=中性）：presence/mud/harsh/小幅电平联动；
+      非零时需要六轨，权重缺失则明确提示回退（吉他调整不生效）。
+      显式隐藏参数 guitar_*/synth_* 分项优先。
+    返回 (mapping, notices)；mapping 可直接 ** 解包进 run_batch。
+    """
+    def explicit(key):
+        value = params.get(key)
+        return None if value is None else float(value)
+
+    def with_default(key, default):
+        value = explicit(key)
+        return default if value is None else value
+
+    denoise = float(params.get("denoise", 0.0) or 0.0)
+    punch = float(params.get("punch", 2.0) or 0.0)
+    guitar = float(params.get("guitar", 0.0) or 0.0)
+    try:
+        quality = int(params.get("quality", 1))
+    except (TypeError, ValueError):
+        quality = 1
+
+    noise_mode = params.get("noise_mode") or (
+        "adaptive_all" if denoise > 0 else "other")
+    sidechain_amount = explicit("sidechain_amount")
+    if sidechain_amount is None:
+        sidechain_amount = round(0.5 * (punch / 10.0), 4)
+
+    # 人声压缩默认随 UI 启用（有界、空气感不受频谱损失）；空气高架镜像补偿
+    # 母带 8kHz 高架衰减（SOREN_HIGH_SHELF_MID_DB），只补不削、封顶 2dB。
+    vocal_comp_amount = with_default("vocal_comp_amount", 0.4)
+    vocal_air_db = with_default(
+        "vocal_air_db", min(2.0, round(-backend.SOREN_HIGH_SHELF_MID_DB, 4)))
+    # 自动清晰恒开（发闷必然有害；有界 ±2dB 且有置信度门控）。显式 False 优先。
+    bass_auto_clarity = params.get("bass_auto_clarity")
+    bass_auto_clarity = True if bass_auto_clarity is None else bool(bass_auto_clarity)
+
+    # 吉他推子（0–1，0=中性）：更清楚（presence）+ 少浑浊（mud）+ 少毛刺
+    # （harsh）+ 电平小幅跟随；非零时需要六轨分离（权重缺失则明确提示回退）。
+    needs_six_stem = quality == 2 or guitar > 0
+    demucs_model = params.get("demucs_model")
+    notices = []
+    if not demucs_model:
+        if needs_six_stem:
+            available = backend.six_stem_weights_available() if six_stem_available is None \
+                else bool(six_stem_available())
+            if available:
+                demucs_model = "htdemucs_6s"
+            else:
+                demucs_model = "htdemucs"
+                notices.append("六轨权重未预置，精细档回退四轨分离"
+                               + ("，吉他调整本次不生效" if guitar > 0 else ""))
+        else:
+            demucs_model = "htdemucs"
+
+    mapping = {
+        "noise_mode": noise_mode,
+        "noise_low_hz": with_default("noise_low_hz", 8000.0),
+        "noise_high_hz": with_default("noise_high_hz", 20000.0),
+        "noise_max_attenuation_db": with_default("noise_max_attenuation_db", 6.0),
+        "sidechain_amount": sidechain_amount,
+        "sidechain_attack_ms": with_default("sidechain_attack_ms", 5.0),
+        "sidechain_release_ms": with_default("sidechain_release_ms", 150.0),
+        "sidechain_max_duck_db": with_default("sidechain_max_duck_db", 6.0),
+        "demucs_model": demucs_model,
+        "vocal_comp_amount": vocal_comp_amount,
+        "vocal_air_db": vocal_air_db,
+        "bass_auto_clarity": bass_auto_clarity,
+    }
+    if guitar > 0:
+        mapping.update(guitar_gain_db=round(1.5 * guitar - 0.75, 4),
+                       guitar_mud_cut_db=round(2.5 * guitar, 4),
+                       guitar_presence_db=round(4.0 * guitar, 4),
+                       guitar_harsh_cut_db=round(1.5 * guitar, 4),
+                       guitar_width_db=0.0)
+    # 显式隐藏参数一律覆盖映射值（含 guitar/synth 各分项）。
+    for key in ("guitar_gain_db", "guitar_mud_cut_db", "guitar_presence_db",
+                "guitar_harsh_cut_db", "guitar_width_db",
+                "synth_gain_db", "synth_mud_cut_db", "synth_presence_db",
+                "synth_harsh_cut_db", "synth_width_db"):
+        if params.get(key) is not None:
+            mapping[key] = float(params[key])
+    return mapping, notices
+
+
+def _preview_cleanup(base):
+    """删除预览临时目录（仅预览工作区，绝不触碰缓存/成品）。"""
+    if base is not None:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _spectrogram_payload(path, time_frames=800, freq_bins=160):
+    """整文件频谱图显示数据：单声道下混 STFT 幅度 → dB 整数（-90..0）。
+
+    仅用于界面显示，不参与任何音频处理；时间轴均匀分桶覆盖整曲。
+    """
+    import json as _json
+
+    import numpy as _np
+    import soundfile as _sf
+    data, sr = _sf.read(path, dtype="float32", always_2d=True)
+    mono = data.mean(axis=1) if data.ndim == 2 else data
+    n = len(mono)
+    win = 2048
+    hop = max(win // 2, n // max(1, time_frames))
+    starts = _np.arange(0, max(1, n - win + 1), hop)
+    if len(starts) > time_frames:
+        starts = _np.linspace(0, len(starts) - 1, time_frames).astype(int)
+    window = _np.hanning(win)
+    spec = _np.zeros((freq_bins, len(starts)), dtype=_np.float32)
+    for i, s0 in enumerate(starts):
+        frame = mono[s0:s0 + win] * window
+        mag = _np.abs(_np.fft.rfft(frame))[:freq_bins]
+        spec[:, i] = mag
+    db = 20.0 * _np.log10(spec + 1e-9)
+    # 自归一：以本文件最高频谱电平为 0 参考向下 90dB 映射，避免未归一 FFT
+    # 幅度整体饱和成一片亮色。
+    db = db - (float(db.max()) if db.size else 0.0)
+    db = _np.clip((db + 90.0) * (255.0 / 90.0), 0, 255).astype(int)
+    return {"w": int(len(starts)), "h": int(freq_bins),
+            "duration": round(n / sr, 3), "sr": int(sr),
+            "data": db.T.ravel().tolist()}
+
+
+def collect_pipeline_kwargs(params):
+    """面板参数 → run_pipeline kwargs（批处理与预览共用同一组装与映射）。"""
+    params = dict(params or {})
+    mapping, notices = map_ui_params(params)
+
+    def _stem_params(prefix):
+        return {f"{prefix}_{name}": float(params.get(f"{prefix}_{name}", 0.0) or 0.0)
+                for name in ("gain_db", "mud_cut_db", "presence_db",
+                             "harsh_cut_db", "width_db")}
+
+    kwargs = dict(
+        sub_db=float(params.get("sub", 6)),
+        sat=float(params.get("sat", 0.3)),
+        punch_db=float(params.get("punch", 2)),
+        trans=float(params.get("trans", 0.3)),
+        space_wet=float(params.get("space", 0.6)),
+        space_denoise=float(params.get("denoise", 0.2)),
+        space_width_db=float(params.get("space_width", 6)),
+        vocal_gain_db=float(params.get("vocal", 0)),
+        bypass=[b for b in (params.get("bypass") or []) if b],
+        quality=int(params.get("quality", 1)),
+        guidance=float(params.get("guidance", 1.5)),
+        genre=params.get("genre", "Pop"),
+        style_mode=params.get("style_mode", "styled"),
+        style_blend=float(params.get("style_blend", 0.85)),
+        loudness=params.get("loudness", "normal"),
+        eq_profile=params.get("eq", "Neutral"),
+        reference=params.get("reference") or None,
+        device=backend.auto_device(),
+    )
+    kwargs.update(mapping)
+    kwargs.update(_stem_params("synth"))
+    return kwargs, notices
 
 ROOT = Path(__file__).parent
 UI_INDEX = ROOT / "ui" / "index.html"
@@ -149,6 +320,11 @@ class Bridge(QObject):
     updateInfo = Signal(str)                 # 检查更新结果（JSON，后台线程回传）
     gpuStatus = Signal(str)                  # GPU 环境状态/进度（JSON，后台线程回传）
     cacheStatus = Signal(str)                # 处理缓存状态（JSON：info/cleared/busy/error）
+    qualitySummary = Signal(str)             # 单个输出的质量摘要（JSON）
+    previewPeaks = Signal(str)               # 预览波形峰值（JSON：duration/sr/peaks）
+    previewDone = Signal(str)                # 预览渲染完成（JSON：output/quality/notices）
+    previewFailed = Signal(str)              # 预览失败消息
+    previewProgress = Signal(float)          # 预览渲染总体进度 0..1
 
     def __init__(self, window):
         super().__init__()
@@ -158,6 +334,7 @@ class Bridge(QObject):
         self._gpu_cancel = threading.Event()
         self._gpu_thread = None
         self._gpu_lock = threading.Lock()
+        self._preview_thread = None
         # 缓存操作与批处理启动共用一把非阻塞闸门：任一方持有时另一方直接拒绝，
         # 避免清空/改容量与开始处理之间出现竞态（闸门本身不做长任务持有）。
         self._cache_gate = threading.Lock()
@@ -629,6 +806,138 @@ class Bridge(QObject):
     def cancel(self):
         self._cancel_flag.set()
 
+    # ── 报告：从输出目录扫描质量报告（跨会话可见，不依赖本次处理）──
+    @Slot(str, result=str)
+    def reportsScan(self, out_dir):
+        """列出输出目录下成品旁的质量报告（新→旧），供报告页选择。"""
+        import json as _json
+        items = []
+        try:
+            d = Path(out_dir)
+            if d.is_dir():
+                reports = sorted(d.glob("*.quality.json"),
+                                 key=lambda q: q.stat().st_mtime, reverse=True)
+                for q in reports[:60]:
+                    items.append({"name": q.name[: -len(".quality.json")],
+                                  "path": str(q)})
+        except (OSError, ValueError):
+            pass
+        return _json.dumps({"reports": items}, ensure_ascii=False)
+
+    @Slot(str, result=str)
+    def reportLoad(self, path):
+        """读取单份质量报告全文（同步；报告为本地小 JSON）。"""
+        import json as _json
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            return _json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    # ── 预览：波形峰值 + 片段快速渲染（与批处理互斥，GPU 锁保护）──
+    @Slot(str)
+    def previewLoad(self, path):
+        p = Path(path)
+        if not p.is_file():
+            self.previewFailed.emit("文件不存在，无法预览")
+            return
+        if self._preview_thread and self._preview_thread.is_alive():
+            return
+        self._preview_thread = threading.Thread(
+            target=self._preview_load_worker, args=(str(p),), daemon=True)
+        self._preview_thread.start()
+
+    def _preview_load_worker(self, path):
+        try:
+            import json as _json
+
+            import numpy as _np
+            import soundfile as _sf
+            info = _sf.info(path)
+            buckets = 1200
+            step = max(1, info.frames // buckets)
+            peaks = []
+            with _sf.SoundFile(path) as handle:
+                while handle.tell() < info.frames:
+                    data = handle.read(step, dtype="float32", always_2d=True)
+                    peaks.append(float(_np.max(_np.abs(data))) if data.size else 0.0)
+            payload = {"duration": round(info.frames / info.samplerate, 3),
+                       "sr": info.samplerate, "peaks": peaks,
+                       "spec": _spectrogram_payload(path)}
+            self.previewPeaks.emit(_json.dumps(payload))
+        except Exception as exc:
+            self.previewFailed.emit(f"读取波形失败: {exc}")
+
+    @Slot(str, float, float, "QVariantMap")
+    def previewRender(self, path, start, end, params):
+        if self._thread and self._thread.is_alive():
+            self.previewFailed.emit("批处理进行中，预览暂不可用")
+            return
+        if self._preview_thread and self._preview_thread.is_alive():
+            return
+        p = Path(path)
+        if not p.is_file() or not (0.0 <= start < end):
+            self.previewFailed.emit("预览参数无效")
+            return
+        self._cancel_flag.clear()
+        if not self._gpu_lock.acquire(blocking=False):
+            self.previewFailed.emit("处理资源被占用，请稍后再试")
+            return
+        self._preview_thread = threading.Thread(
+            target=self._preview_render_worker,
+            args=(str(p), float(start), float(end), dict(params or {})),
+            daemon=True)
+        self._preview_thread.start()
+
+    def _preview_render_worker(self, path, start, end, params):
+        base = None
+        try:
+            import json as _json
+            import shutil
+            import tempfile
+
+            import soundfile as _sf
+            kwargs, notices = collect_pipeline_kwargs(params)
+            base = Path(tempfile.mkdtemp(prefix="sb_preview_"))
+            stem = Path(path).stem + f"_pv{int(round(start))}_{int(round(end))}"
+            seg = base / (stem + ".wav")
+            info = _sf.info(path)
+            sr = info.samplerate
+            with _sf.SoundFile(path) as handle:
+                handle.seek(int(start * sr))
+                data = handle.read(min(int((end - start) * sr),
+                                       info.frames - int(start * sr)),
+                                   always_2d=True)
+            _sf.write(seg, data, sr, subtype="FLOAT")
+            kwargs["work_dir"] = base / "work"
+
+            def progress(stage_i, frac, label):
+                self.previewProgress.emit(min(1.0, (stage_i + max(0.0, min(1.0, frac))) / 6.0))
+                self.stageChanged.emit(stage_i, max(0.0, min(1.0, frac)), label)
+
+            kwargs["progress"] = progress
+            result = backend.run_pipeline(seg, base / "out", **kwargs)
+            report = backend.read_quality_report(result)
+            self.previewProgress.emit(0.95)
+            spec_out = _spectrogram_payload(result)
+            summary = backend.quality_summary(report) or {}
+            previews = ROOT / "webview_storage" / "preview"
+            previews.mkdir(parents=True, exist_ok=True)
+            final = previews / Path(result).name
+            shutil.move(str(result), str(final))
+            payload = {"output": str(final), "quality": summary,
+                       "mastering": report.get("mastering") or {},
+                       "metrics": (report.get("output") or {}).get("metrics") or {},
+                       "spec": spec_out, "notices": notices}
+            self.previewDone.emit(_json.dumps(payload, ensure_ascii=False))
+            self.previewProgress.emit(1.0)
+        except Exception as exc:
+            backend._tr(f"preview render failed: {exc!r}")
+            self.previewFailed.emit(f"预览渲染失败: {exc}")
+        finally:
+            _preview_cleanup(base)
+            if self._gpu_lock.locked():
+                self._gpu_lock.release()
+
     @Slot(str, result=bool)
     def copyText(self, text):
         clipboard = QApplication.clipboard()
@@ -681,45 +990,23 @@ class Bridge(QObject):
             def file_finished(fi, ftotal, fname, succeeded, error):
                 self.fileFinished.emit(fi, ftotal, fname, succeeded, error)
 
-            # 旋钮值直接使用界面显示的真实单位；比例参数由前端以 0–1 传入。
-            sub_db = float(params.get("sub", 6))
-            sat = float(params.get("sat", 0.3))
-            punch_db = float(params.get("punch", 2))
-            trans = float(params.get("trans", 0.3))
-            space_wet = float(params.get("space", 0.6))
-            space_denoise = float(params.get("denoise", 0.2))
-            space_width_db = float(params.get("space_width", 6))
-            vocal_gain_db = float(params.get("vocal", 0))
-            # bypass：面板开关关闭的阶段名集合
-            bypass = [b for b in (params.get("bypass") or []) if b]
-            bypass = [b for b in bypass
-                      if b in ("lew", "vocals", "bass", "drums", "reshape", "soren")]
-            # 低频自动清晰：opt-in 开关，默认关闭；由 run_batch 透传给 run_pipeline
-            bass_auto_clarity = bool(params.get("bass_auto_clarity", False))
+
+            def _stem_params(prefix):
+                # 六轨 opt-in 可选分轨控制：UI 本阶段无新控件，参数存在时原样
+                # 转发，缺省 0（中性）；范围校验在 run_pipeline 内做。
+                return {f"{prefix}_{name}": float(params.get(f"{prefix}_{name}", 0.0) or 0.0)
+                        for name in ("gain_db", "mud_cut_db", "presence_db",
+                                     "harsh_cut_db", "width_db")}
             self.logLine.emit(f"── 开始批处理（{len(files)} 个文件）──", "")
+            kwargs, mapping_notices = collect_pipeline_kwargs(params)
+            for notice in mapping_notices:
+                self.logLine.emit(notice, "")
             results = backend.run_batch(
                 files, params["output"],
-                sub_db=sub_db,
-                sat=sat,
-                punch_db=punch_db,
-                trans=trans,
-                space_wet=space_wet,
-                space_denoise=space_denoise,
-                space_width_db=space_width_db,
-                vocal_gain_db=vocal_gain_db,
-                bypass=bypass,
-                bass_auto_clarity=bass_auto_clarity,
-                quality=int(params.get("quality", 1)),
-                guidance=float(params.get("guidance", 1.5)),
-                genre=params.get("genre", "Pop"),
-                style_mode=params.get("style_mode", "styled"),
-                loudness=params.get("loudness", "normal"),
-                eq_profile=params.get("eq", "Neutral"),
-                reference=params.get("reference") or None,
-                device=backend.auto_device(),
                 progress=progress,
                 file_finished=file_finished,
                 cancel=lambda: self._cancel_flag.is_set(),
+                **kwargs,
             )
             ok = sum(1 for _, _, err in results if err is None)
             fail = len(results) - ok
@@ -730,6 +1017,22 @@ class Bridge(QObject):
                     err_lines.append(f"• {Path(src).name}: {err}")
                 else:
                     self.logLine.emit(f"✓ {Path(src).name} → {out}", "ok")
+                    try:
+                        import json as _json
+                        report = backend.read_quality_report(out)
+                        summary = backend.quality_summary(report) or {}
+                        # 发送完整报告（保留 output.metrics / mastering 嵌套结构）
+                        # 再叠加摘要平铺字段：界面取数函数同时读两层
+                        # （qualityMetric ← output.metrics，qualityMastering ←
+                        # mastering）；把 output 覆盖成字符串路径会让采样峰值/
+                        # 削波/目标响度全部退化为"无法判定"。
+                        # 注意：report["input"] 是含 metrics 的对象，绝不能被
+                        # 字符串路径覆盖（曾导致报告页"原始"值全部无法判定）。
+                        payload = {**report, **summary,
+                                   "filename": Path(src).name, "input_path": str(src)}
+                        self.qualitySummary.emit(_json.dumps(payload, ensure_ascii=False))
+                    except Exception:
+                        pass
             self.logLine.emit(f"── 完成：成功 {ok}/{len(results)} ──", "")
             err_text = "\n".join(err_lines)
             self.done.emit(str(Path(params["output"]).resolve()), ok, fail, err_text)
@@ -768,6 +1071,8 @@ class StudioWindow(QMainWindow):
 
         settings = self.view.settings()
         settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, True)
+        # 预览视图用 <audio> 播放本地临时 WAV：file:// 页面需要显式允许文件互访。
+        settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
         settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
         settings.setAttribute(QWebEngineSettings.ScrollAnimatorEnabled, True)
 
@@ -900,6 +1205,7 @@ _SINGLE_INSTANCE_KEY = "ShadowBuster.SingleInstance"
 def _another_instance_running():
     """单实例检测：尝试连接已有实例的命名服务。连上即说明已有实例在跑，
     给它发一个 raise 消息让它把主窗口带到前台，然后调用方退出本进程。"""
+    from PySide6.QtCore import QCoreApplication
     from PySide6.QtNetwork import QLocalSocket
     sock = QLocalSocket()
     sock.connectToServer(_SINGLE_INSTANCE_KEY)
@@ -910,7 +1216,15 @@ def _another_instance_running():
         # 对端收到 raise 后可能已断开，避免对已断开套接字调用 waitForBytesWritten
         if sock.state() == QLocalSocket.ConnectedState:
             sock.waitForBytesWritten(500)
-    sock.abort()
+    # 收尾必须优雅关闭并等真正断开：abort() 会直接丢弃写缓冲里未发出的数据；
+    # Windows 的异步写还要靠本进程事件循环转圈才能完成排空——只
+    # waitForDisconnected 会停在 ClosingState，socket 析构时消息随之丢失。
+    sock.disconnectFromServer()
+    for _ in range(100):
+        if sock.state() == QLocalSocket.UnconnectedState:
+            break
+        QCoreApplication.processEvents()
+        sock.waitForDisconnected(20)
     return connected
 
 

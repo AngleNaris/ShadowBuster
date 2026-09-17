@@ -210,6 +210,11 @@ class SoundstageDSPTests(unittest.TestCase):
         out = soundstage_reshape._spectral_denoise(short, self.sr, 10000.0, 0.2)
         self.assertEqual(out.shape, short.shape)
         self.assertTrue(np.isfinite(out).all())
+        # 3072 是旧实现 hop=1 病态路径的最坏样本数（nperseg=3072, noverlap=3071）
+        worst = self.x[:3072]
+        out = soundstage_reshape._spectral_denoise(worst, self.sr, 10000.0, 0.2)
+        self.assertEqual(out.shape, worst.shape)
+        self.assertTrue(np.isfinite(out).all())
 
     def test_spectral_denoise_rejects_invalid_amount(self):
         with self.assertRaises(ValueError):

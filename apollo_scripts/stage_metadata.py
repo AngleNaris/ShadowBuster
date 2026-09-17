@@ -14,18 +14,22 @@ def audio_metadata(path):
             "channels": int(info.channels), "size_bytes": int(st.st_size),
             "mtime_ns": int(st.st_mtime_ns)}
 
-def write_report(path, *, stage, scale, input_path, output_path):
+def write_report(path, *, stage, scale, input_path, output_path, extra=None):
     if not (isinstance(scale, (int, float)) and scale > 0 and scale <= 1):
         raise ValueError("scale must be finite and within (0, 1]")
     payload = {"schema_version": SCHEMA_VERSION, "stage": str(stage),
                "scale": float(scale), "input": audio_metadata(input_path),
                "output": audio_metadata(output_path)}
+    if extra is not None:
+        if not isinstance(extra, dict):
+            raise ValueError("extra must be a mapping")
+        payload["extra"] = extra
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=target.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, sort_keys=True)
+            json.dump(payload, f, ensure_ascii=False, sort_keys=True, allow_nan=False)
             f.write("\n")
         os.replace(tmp, target)
     finally:

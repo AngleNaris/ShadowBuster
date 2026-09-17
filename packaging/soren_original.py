@@ -75,6 +75,10 @@ class Config:
         self.eq_style = "Neutral"  # Default to "Neutral"
         self.use_loudest_parts = True
         self.loudness_threshold = 0.4
+        # Styled mastering strength: reference matching is deliberately capped,
+        # while dynamic density increases continuously with this value.
+        self.style_strength = 1.0
+        self.last_mastering_stats = {}
 
 def load_secured_audio(file_path, config):
     with open(file_path, 'rb') as f:
@@ -246,190 +250,137 @@ def calculate_improved_rms(audio, sample_rate, config):
     return final_rms
 
 def match_rms_ms(target_mid, target_side, reference_mid, reference_side, sample_rate, config):
+    strength = float(np.clip(getattr(config, "style_strength", 1.0), 0.0, 1.0))
+    max_correction_db = 0.25 * strength
+
     def match_rms(target, reference):
         target_rms = calculate_improved_rms(target, sample_rate, config)
         reference_rms = calculate_improved_rms(reference, sample_rate, config)
-        gain = reference_rms / target_rms
-        return target * gain
+        if target_rms <= config.epsilon or strength <= 0.0:
+            return target, 0.0
+        requested_db = 20.0 * np.log10(max(reference_rms, config.epsilon) / target_rms)
+        applied_db = float(np.clip(requested_db, -max_correction_db, max_correction_db))
+        return target * 10.0 ** (applied_db / 20.0), applied_db
 
-    # Calculate the RMS of the target side channel
     target_side_rms = calculate_improved_rms(target_side, sample_rate, config)
     target_mid_rms = calculate_improved_rms(target_mid, sample_rate, config)
+    mono_threshold = 0.01
 
-    # Define a threshold for considering the audio as "nearly mono"
-    mono_threshold = 0.01  # Adjust this value as needed
-
-    matched_mid = match_rms(target_mid, reference_mid)
-
-    if target_side_rms / target_mid_rms < mono_threshold:
+    matched_mid, mid_db = match_rms(target_mid, reference_mid)
+    if target_mid_rms <= config.epsilon or target_side_rms / target_mid_rms < mono_threshold:
         print("Detected nearly mono audio. Skipping side channel RMS matching.")
-        # Scale the side channel by the same factor as the mid channel
-        mid_scale_factor = np.max(np.abs(matched_mid)) / np.max(np.abs(target_mid))
-        matched_side = target_side * mid_scale_factor
+        matched_side = target_side * (10.0 ** (mid_db / 20.0))
+        side_db = mid_db
     else:
-        matched_side = match_rms(target_side, reference_side)
+        matched_side, side_db = match_rms(target_side, reference_side)
 
+    config.last_mastering_stats.update(rms_match_mid_db=float(mid_db), rms_match_side_db=float(side_db))
     return matched_mid, matched_side
 
 def frequency_dependent_mix(freq, low_freq=10, high_freq=100000):
     return 0.99 * (1 - np.exp(-freq/low_freq)) * np.exp(-freq/high_freq)
 
 def match_frequencies_ms(target_mid, target_side, reference_mid, reference_side, config):
-    def calculate_average_fft(*args, sample_rate, fft_size, config):
-        if len(args) == 1:
-            # Single audio input
-            audio = args[0]
-            mid = side = audio
-        elif len(args) == 2:
-            # Separate mid and side inputs
-            mid, side = args
-        else:
-            raise ValueError("Invalid number of arguments for calculate_average_fft")
+    strength = float(np.clip(config.style_strength, 0.0, 1.0))
+    if strength == 0.0:
+        return target_mid.copy(), target_side.copy()
 
-        if config.use_loudest_parts:
-            segment_length = sample_rate // 10  # 100ms segments
-            num_segments = len(mid) // segment_length
-            segments_mid = np.array_split(mid[:num_segments * segment_length], num_segments)
-            
-            # Calculate RMS based on mid channel only
-            segment_rms = np.sqrt(np.mean(np.square(segments_mid), axis=1))
-            
-            loud_mask = segment_rms > (config.loudness_threshold * np.max(segment_rms))
-            loud_segments_mid = [seg for seg, is_loud in zip(segments_mid, loud_mask) if is_loud]
-            
-            if len(loud_segments_mid) == 0:
-                print("No segments above threshold, using entire audio.")
-                return mid, side
-            else:
-                percentage_used = (len(loud_segments_mid) / len(segments_mid)) * 100
-                print(f"Using {percentage_used:.2f}% of the audio (threshold: {config.loudness_threshold})")
-            
-            # Use the same mask for side channel
-            segments_side = np.array_split(side[:num_segments * segment_length], num_segments)
-            loud_segments_side = [seg for seg, is_loud in zip(segments_side, loud_mask) if is_loud]
-            
-            mid = np.concatenate(loud_segments_mid)
-            side = np.concatenate(loud_segments_side)
+    def average_spectrum(audio):
+        size = min(config.fft_size, len(audio))
+        _, power = signal.welch(audio, fs=config.internal_sample_rate * config.oversampling_factor,
+                                nperseg=size, nfft=config.fft_size, noverlap=size // 2)
+        return np.sqrt(np.maximum(power, 0.0))
 
-        _, _, specs_mid = signal.stft(
-            mid,
-            sample_rate,
-            window="hann",
-            nperseg=fft_size,
-            noverlap=fft_size // 2,
-            boundary=None,
-            padded=False,
-        )
-        _, _, specs_side = signal.stft(
-            side,
-            sample_rate,
-            window="hann",
-            nperseg=fft_size,
-            noverlap=fft_size // 2,
-            boundary=None,
-            padded=False,
-        )
-        return np.abs(specs_mid).mean(axis=1), np.abs(specs_side).mean(axis=1)
+    analysis_rate = config.internal_sample_rate * config.oversampling_factor
+    freqs = np.fft.rfftfreq(config.fft_size, 1.0 / analysis_rate)
+    body_band = (freqs >= 250.0) & (freqs <= 2000.0)
+    high_band = (freqs >= 4000.0) & (freqs <= 16000.0)
+    curves = []
+    darkening_guard_dbs = []
+    for is_side, target, reference in ((False, target_mid, reference_mid),
+                                        (True, target_side, reference_side)):
+        target_fft, reference_fft = average_spectrum(target), average_spectrum(reference)
+        target_energy, reference_energy = np.linalg.norm(target_fft), np.linalg.norm(reference_fft)
+        if min(target_energy, reference_energy) < config.epsilon:
+            curves.append(np.zeros_like(freqs))
+            darkening_guard_dbs.append(0.0)
+            continue
+        target_fft /= target_energy
+        reference_fft /= reference_energy
+        reliable = ((reference_fft > reference_fft.max() * 1e-3) &
+                    (target_fft > target_fft.max() * 1e-3))
+        ud = getattr(config, "upstream_delta", None)
+        if ud:
+            shape = np.asarray(ud["side_db" if is_side else "mid_db"], dtype=np.float64)
+            reference_fft *= 10.0 ** (np.interp(freqs, ud["freqs"], shape) / 20.0)
+        requested = 20.0 * np.log10(np.maximum(reference_fft, 1e-12) /
+                                    np.maximum(target_fft, 1e-12))
+        # Fit broad trends only; a missing reference band must never become a cut.
+        centers = np.geomspace(30.0, min(20000.0, analysis_rate * 0.45), 32)
+        values = []
+        for center in centers:
+            band = (freqs >= center / 1.414) & (freqs <= center * 1.414) & reliable
+            values.append(float(np.median(requested[band])) if np.any(band) else 0.0)
+        smoothed = np.interp(freqs, centers, values)
+        limit = (0.75 if is_side else 1.25) * strength
+        curve_db = np.clip(smoothed * (0.2 * strength), -limit, limit)
+        bass_preservation = 1 - (1 - config.bass_preservation_blend) / (
+            1 + (freqs / config.bass_preservation_freq) ** 2)
+        curve_db *= bass_preservation
+        bandwidth = min(getattr(config, "reference_bandwidth_hz", analysis_rate * 0.45),
+                        analysis_rate * 0.45)
+        curve_db *= np.clip((bandwidth - freqs) / max(1.0, bandwidth * 0.15), 0.0, 1.0)
+        curve_db *= np.clip((freqs - 15.0) / 20.0, 0.0, 1.0)
+        # Bound reference-driven darkening even when it comes from a body boost
+        # rather than an explicit high-frequency cut.
+        darkening_guard_db = 0.0
+        if np.any(body_band) and np.any(high_band):
+            body_level = float(np.median(curve_db[body_band]))
+            high_level = float(np.median(curve_db[high_band]))
+            minimum_relative_high = -0.35 * strength
+            if high_level - body_level < minimum_relative_high:
+                correction = minimum_relative_high - (high_level - body_level)
+                body_weight = np.minimum(
+                    np.clip((freqs - 100.0) / 150.0, 0.0, 1.0),
+                    np.clip((4000.0 - freqs) / 2000.0, 0.0, 1.0),
+                )
+                curve_db -= correction * body_weight
+                curve_db = np.clip(curve_db, -limit, limit)
+                darkening_guard_db = float(correction)
+        curves.append(curve_db)
+        darkening_guard_dbs.append(darkening_guard_db)
 
-    def smooth_spectrum(spectrum, config):
-        fft_size = (len(spectrum) - 1) * 2
-        grid_linear = np.linspace(0, config.internal_sample_rate / 2, len(spectrum))
-        grid_logarithmic = np.logspace(
-            np.log10(4 * config.internal_sample_rate / fft_size),
-            np.log10(config.internal_sample_rate / 2),
-            (len(spectrum) - 1) * config.lin_log_oversampling + 1,
-        )
+    # Keep differential EQ small so reference matching cannot redraw the soundstage.
+    curves[1] = curves[0] + np.clip(curves[1] - curves[0], -0.3 * strength, 0.3 * strength)
+    curves[1] = np.clip(curves[1], -0.75 * strength, 0.75 * strength)
+    curves[0] = curves[1] + np.clip(curves[0] - curves[1], -0.3 * strength, 0.3 * strength)
+    outputs = []
+    for index, (name, audio, curve) in enumerate(
+            zip(("mid", "side"), (target_mid, target_side), curves)):
+        # Odd symmetric FIR + centered convolution retains sample alignment.
+        taps = signal.firwin2(config.fft_size + 1, freqs, 10.0 ** (curve / 20.0),
+                              fs=analysis_rate, window="hann")
+        outputs.append(signal.fftconvolve(audio, taps, mode="same"))
+        config.last_mastering_stats[f"spectral_{name}_min_db"] = float(curve.min())
+        config.last_mastering_stats[f"spectral_{name}_max_db"] = float(curve.max())
+        if np.any(body_band) and np.any(high_band):
+            config.last_mastering_stats[f"spectral_{name}_high_vs_body_db"] = float(
+                np.median(curve[high_band]) - np.median(curve[body_band]))
+        config.last_mastering_stats[f"spectral_{name}_darkening_guard_db"] = (
+            darkening_guard_dbs[index])
+    return tuple(outputs)
 
-        interpolator = interpolate.interp1d(grid_linear, spectrum, "cubic", bounds_error=False, fill_value="extrapolate")
-        spectrum_log = interpolator(grid_logarithmic)
-
-        spectrum_smoothed = lowess(
-            spectrum_log,
-            np.arange(len(spectrum_log)),
-            frac=config.lowess_frac,
-            it=config.lowess_it,
-            delta=config.lowess_delta * len(spectrum_log),
-        )[:, 1]
-
-        interpolator = interpolate.interp1d(
-            grid_logarithmic, spectrum_smoothed, "cubic", bounds_error=False, fill_value="extrapolate"
-        )
-        spectrum_filtered = interpolator(grid_linear)
-
-        spectrum_filtered[0] = 0
-        spectrum_filtered[1] = spectrum[1]
-
-        return spectrum_filtered
-
-    def get_fir(target_mid, target_side, reference_mid, reference_side, config, is_side=False):
-        target_fft_mid, target_fft_side = calculate_average_fft(
-            target_mid, target_side, 
-            sample_rate=config.internal_sample_rate * config.oversampling_factor, 
-            fft_size=config.fft_size, 
-            config=config
-        )
-        reference_fft_mid, reference_fft_side = calculate_average_fft(
-            reference_mid, reference_side, 
-            sample_rate=config.internal_sample_rate * config.oversampling_factor, 
-            fft_size=config.fft_size, 
-            config=config
-        )
-        
-        target_fft = target_fft_side if is_side else target_fft_mid
-        reference_fft = reference_fft_side if is_side else reference_fft_mid
-        
-        target_fft = np.maximum(target_fft, config.min_value)
-        matching_fft = reference_fft / target_fft
-        
-        max_boost_db = 2 if is_side else 4  # Further reduced max boost
-        matching_fft = np.clip(matching_fft, 10**(-max_boost_db/20), 10**(max_boost_db/20))
-        
-        matching_fft_filtered = smooth_spectrum(matching_fft, config)
-
-        # These are frequency-domain curves and must be applied before building
-        # the FIR. Applying a len(audio) curve to time-domain samples made the
-        # mastering strength depend on where a sound occurs in the song.
-        analysis_sample_rate = config.internal_sample_rate * config.oversampling_factor
-        freqs = np.linspace(0, analysis_sample_rate / 2, len(matching_fft_filtered))
-        mix = frequency_dependent_mix(freqs)
-        matching_fft_filtered = 1 + (matching_fft_filtered - 1) * mix
-
-        # Apply softer bass preservation
-        bass_freq = config.bass_preservation_freq
-        bass_blend = config.bass_preservation_blend
-        
-        # Create a gentler transition curve
-        freqs = np.linspace(0, config.internal_sample_rate/2, len(matching_fft))
-        bass_preservation = 1 - (1 - bass_blend) * (1 / (1 + (freqs / bass_freq)**2))
-        
-        # Apply the softer bass preservation
-        matching_fft = 1 + (matching_fft - 1) * bass_preservation
-        
-        fir = np.fft.irfft(matching_fft_filtered)
-        fir = np.fft.ifftshift(fir) * signal.windows.hann(len(fir))
-        
-        return fir
-
-    mid_fir = get_fir(target_mid, target_side, reference_mid, reference_side, config, is_side=False)
-    side_fir = get_fir(target_mid, target_side, reference_mid, reference_side, config, is_side=True)
-
-    result_mid = signal.fftconvolve(target_mid, mid_fir, mode="same")
-    result_side = signal.fftconvolve(target_side, side_fir, mode="same")
-
-    return result_mid, result_side
 
 def gradual_level_correction(target_mid, target_side, reference_mid, reference_side, config):
-    def apply_correction(target, reference):
-        target_rms = np.sqrt(np.mean(target**2) + config.epsilon)
-        reference_rms = np.sqrt(np.mean(reference**2) + config.epsilon)
-        gain = np.clip(reference_rms / target_rms, 0.5, 2.0)
-        return target * gain ** (1 / config.rms_correction_steps)
-
-    for step in range(config.rms_correction_steps):
-        target_mid = apply_correction(target_mid, reference_mid)
-        target_side = apply_correction(target_side, reference_side)
-
-    return target_mid, target_side
+    strength = float(np.clip(config.style_strength, 0.0, 1.0))
+    target_rms = np.sqrt(np.mean(target_mid**2 + target_side**2))
+    reference_rms = np.sqrt(np.mean(reference_mid**2 + reference_side**2))
+    requested = 20.0 * np.log10(max(reference_rms, config.epsilon) /
+                                max(target_rms, config.epsilon))
+    gain_db = float(np.clip(requested * 0.1 * strength, -0.25 * strength, 0.25 * strength))
+    config.last_mastering_stats["level_correction_db"] = gain_db
+    gain = 10.0 ** (gain_db / 20.0)
+    return target_mid * gain, target_side * gain
 
 def rms(audio):
     return np.sqrt(np.mean(np.square(audio)))
@@ -484,11 +435,13 @@ def finalize_stereo_image(target_mid, target_side, reference_mid, reference_side
         
         # Calculate width difference and apply adjustment with upper limit
         width_difference = reference_width - initial_width
-        max_adjustment = 0.15  # 15% maximum adjustment
+        max_adjustment = 0.03 * config.style_strength
+        config.last_mastering_stats["stereo_widening_db"] = 0.0
         
         if width_difference > 0:
             adjustment_factor = 1 + min(width_difference / initial_width, max_adjustment)
             adjusted_side = target_side * adjustment_factor
+            config.last_mastering_stats["stereo_widening_db"] = float(20 * np.log10(adjustment_factor))
             print(f"Applied {(adjustment_factor - 1) * 100:.1f}% stereo width increase.")
         else:
             print("No stereo width increase needed.")
@@ -717,230 +670,116 @@ def calculate_lufs(audio, sr):
     loudness = meter.integrated_loudness(audio)
     return loudness
 
-def process_audio(target, reference, step, config, genre_profile=None):
-    start_time = time.time()
-    print(f"Processing step {step}")
-    print(f"Input target shape: {target.shape}, max={np.max(np.abs(target))}, min={np.min(np.abs(target))}")
-    
-    log_audio_metrics(target, "Target (Before Processing)", config)
-    log_audio_metrics(reference, "Reference" if genre_profile is None else "Synthetic Reference", config)
-    
-    # Calculate and log initial LUFS
-    target_lufs = calculate_lufs(target, config.internal_sample_rate)
-    print(f"Target LUFS before processing: {target_lufs:.2f}")
+# ratio, attack ms, release ms, maximum gain reduction dB, saturation drive
+DYNAMIC_PROFILES = {
+    "Pop": (1.65, 18.0, 120.0, 2.5, 0.15),
+    "Rock": (1.55, 30.0, 100.0, 2.2, 0.22),
+    "EDM": (1.9, 12.0, 80.0, 3.0, 0.12),
+    "Dance": (1.8, 15.0, 100.0, 2.8, 0.12),
+    "Hiphop": (1.6, 28.0, 140.0, 2.5, 0.18),
+    "Ambient": (1.2, 45.0, 300.0, 1.0, 0.04),
+    "Chillout": (1.3, 35.0, 220.0, 1.5, 0.08),
+    "Piano": (1.15, 45.0, 250.0, 0.8, 0.0),
+    "Orchestral": (1.12, 55.0, 350.0, 0.7, 0.0),
+    "Speech": (1.75, 10.0, 180.0, 3.0, 0.04),
+    "Reference": (1.4, 25.0, 160.0, 2.0, 0.08),
+}
 
-    if genre_profile is None:
-        reference_lufs = calculate_lufs(reference, config.internal_sample_rate)
-        print(f"Reference LUFS: {reference_lufs:.2f}")
-    else:
-        synthetic_reference_lufs = calculate_lufs(reference, config.internal_sample_rate)
-        print(f"Synthetic Reference LUFS: {synthetic_reference_lufs:.2f}")
-        print(f"Genre profile LUFS: {genre_profile['lufs']:.2f}")
-    
-    def calculate_rms(audio):
-        return np.sqrt(np.mean(np.square(audio)))
 
-    # Calculate and log initial RMS values
-    target_rms = calculate_rms(target)
-    if genre_profile is None:
-        reference_rms = calculate_rms(reference)
-        print(f"Initial RMS - Reference: {reference_rms:.6f}, Target: {target_rms:.6f}")
-    else:
-        synthetic_reference_rms = calculate_rms(reference)
-        print(f"Initial RMS - Synthetic Reference: {synthetic_reference_rms:.6f}, Target: {target_rms:.6f}")
-        print(f"Genre Profile Initial RMS: {genre_profile['initial_rms']:.6f}")
+@numba.jit(nopython=True)
+def _smooth_style_reduction(required, attack_coeff, release_coeff):
+    gain_db = np.empty_like(required)
+    envelope = 0.0
+    for index in range(required.size):
+        coeff = attack_coeff if required[index] > envelope else release_coeff
+        envelope = coeff * envelope + (1.0 - coeff) * required[index]
+        gain_db[index] = envelope
+    return gain_db
 
-    # Store the initial loudness ratio
-    initial_loudness_ratio = 1.0
-    if config.loudness_option == "dynamic":
-        initial_loudness_ratio = 0.80
-        print("Applying dynamic loudness: reducing volume by 20%")
-    elif config.loudness_option == "soft":
-        initial_loudness_ratio = 0.70
-        print("Applying soft loudness: reducing volume by 30%")
-    elif config.loudness_option == "loud":
-        initial_loudness_ratio = 1.20
-        print("Applying loud loudness: increasing volume by 20%")
-    else:
-        print("Applying normal loudness: no adjustment")
 
-    # Apply initial loudness adjustment
-    target *= initial_loudness_ratio
-
-    # Recalculate RMS and LUFS after loudness adjustment
-    if config.loudness_option != "normal":
-        target_rms = calculate_rms(target)
-        target_lufs = calculate_lufs(target, config.internal_sample_rate)
-        print(f"After loudness adjustment - Target RMS: {target_rms:.6f}, Target LUFS: {target_lufs:.2f}")
-    
-    # Ensure input audio is in 64-bit float precision
-    target = target.astype(np.float64)
-    reference = reference.astype(np.float64)
-    
-    # Oversample
-    target = oversample(target, config.oversampling_factor)
-    reference = oversample(reference, config.oversampling_factor)
-    
-    oversampled_rate = config.internal_sample_rate * config.oversampling_factor
-    print(f"After oversampling: target_max={np.max(np.abs(target))}")
-    
-    # Apply anti-aliasing filter
-    target = improved_anti_aliasing_filter(target, oversampled_rate)
-    reference = improved_anti_aliasing_filter(reference, oversampled_rate)
-    print(f"After anti-aliasing: target_max={np.max(np.abs(target))}, reference_max={np.max(np.abs(reference))}")
-    
-    # Convert to mid-side
-    target_mid, target_side = lr_to_ms(target)
-    reference_mid, reference_side = lr_to_ms(reference)
-    print(f"After mid-side conversion: target_mid_max={np.max(np.abs(target_mid))}, target_side_max={np.max(np.abs(target_side))}")
-    print(f"reference_mid_max={np.max(np.abs(reference_mid))}, reference_side_max={np.max(np.abs(reference_side))}")
-    
-    # Apply processing steps
-    if step >= 1:
-        if genre_profile is None:
-            target_mid, target_side = match_rms_ms(target_mid, target_side, reference_mid, reference_side, oversampled_rate, config)
-        else:
-            target_mid, target_side = match_rms_ms(target_mid, target_side, reference_mid, reference_side, oversampled_rate, config)
-        print(f"After RMS matching: target_mid_max={np.max(np.abs(target_mid))}, target_side_max={np.max(np.abs(target_side))}")
-        
-        # Calculate and log RMS after matching
-        processed_mid_side = ms_to_lr(target_mid, target_side)
-        processed_rms = calculate_improved_rms(processed_mid_side, oversampled_rate, config)
-        reference_rms = calculate_improved_rms(reference, oversampled_rate, config)
-        print(f"After RMS matching - Reference RMS: {reference_rms:.6f}, Processed RMS: {processed_rms:.6f}")
-        
-        print("After RMS Matching:")
-        log_audio_metrics(ms_to_lr(target_mid, target_side), "Target", config)
-    
-    if step >= 2:
-
-        # Apply subtle saturation to mid channel
-        target_mid = add_subtle_mid_channel_saturation(target_mid, config)
-        print(f"After mid channel saturation: target_mid_max={np.max(np.abs(target_mid))}, target_side_max={np.max(np.abs(target_side))}")
-
-        if genre_profile is None:
-            target_mid, target_side = match_frequencies_ms(target_mid, target_side, reference_mid, reference_side, config)
-        else:
-            target_mid, target_side = match_frequencies_ms(target_mid, target_side, reference_mid, reference_side, config)
-        print(f"After frequency matching: target_mid_max={np.max(np.abs(target_mid))}, target_side_max={np.max(np.abs(target_side))}")
-        
-        # Apply low-shelf tighten to side channel (audio is oversampled here,
-        # so the filter must be designed for the oversampled rate)
-        target_side = low_shelf_tighten(target_side, oversampled_rate, cutoff_freq=100, gain=0.5, order=4)
-        print(f"After side channel low-shelf tighten: target_side_max={np.max(np.abs(target_side))}")
-
-        # Apply EQ style after frequency matching
-        if config.eq_style != "Neutral":
-            print(f"Applying {config.eq_style} EQ style")
-            target_mid, target_side = apply_eq_style(target_mid, target_side, oversampled_rate, config.eq_style)
-        
-        # Apply lowpass filter
-        result = ms_to_lr(target_mid, target_side)
-        result = apply_lowpass_filter(result, config)
-        target_mid, target_side = lr_to_ms(result)
-        print("After Lowpass Filter:")
-        log_audio_metrics(result, "Target", config)
-    
-    if step >= 3:
-        if genre_profile is None:
-            target_mid, target_side = gradual_level_correction(target_mid, target_side, reference_mid, reference_side, config)
-        else:
-            target_mid, target_side = gradual_level_correction(target_mid, target_side, reference_mid, reference_side, config)
-        print(f"After gradual level correction: target_mid_max={np.max(np.abs(target_mid))}, target_side_max={np.max(np.abs(target_side))}")
-        
-        print("After Level Correction:")
-        log_audio_metrics(ms_to_lr(target_mid, target_side), "Target", config)
-    
-    if step >= 4:
-        if genre_profile is None:
-            result = finalize_stereo_image(target_mid, target_side, reference_mid, reference_side, config)
-        else:
-            result = finalize_stereo_image(target_mid, target_side, reference_mid, reference_side, config)
-        print(f"After stereo finalization: result_max={np.max(np.abs(result))}")
-        
-        print("After Stereo Adjustment:")
-        log_audio_metrics(result, "Target", config)
-    else:
-        result = ms_to_lr(target_mid, target_side)
-    
-    if step >= 5:
-        print("Applying final mastering processes...")
-        print(f"Before multi-stage limiting: result_max={np.max(np.abs(result)):.4f}")
-        
-        # Before final limiting, reapply the loudness ratio
-        result *= initial_loudness_ratio
-        
-        result = multi_stage_limiter(result, config)
-        print(f"After multi-stage limiting: result_max={np.max(np.abs(result)):.4f}")
-
-    # Apply final hard limiting before downsampling
-    result = np.clip(result, -0.95, 0.95)
-    print(f"After final hard limiting (before downsampling): result_max={np.max(np.abs(result)):.4f}")
-
-    # Downsample (now outside of step 5)
-    result = downsample(result, config.oversampling_factor, oversampled_rate)
-    print(f"After downsampling: result_max={np.max(np.abs(result)):.4f}")
-
-    # Add normalization step
-    target_peak_db = -0.5
-    current_peak_db = 20 * np.log10(np.max(np.abs(result)))
-    if current_peak_db < target_peak_db:
-        gain_db = target_peak_db - current_peak_db
-        gain_linear = 10 ** (gain_db / 20)
-        result *= gain_linear
-        print(f"Normalized to {target_peak_db} dB. Applied gain: {gain_db:.2f} dB")
-    else:
-        print(f"Current peak ({current_peak_db:.2f} dB) is already at or above target peak. No additional normalization applied.")
-
-    print(f"Final output: result_max={np.max(np.abs(result)):.4f}")
-
-    # Calculate and log initial LUFS before True Peak limiting
-    initial_lufs = calculate_lufs(result, config.internal_sample_rate)
-    print(f"LUFS before True Peak limiting: {initial_lufs:.2f}")
-    
-    # Apply simple dithering before final True Peak limiting
-    result = apply_dither(result)
-    
-    # Calculate True Peak
-    true_peak_db = calculate_true_peak(result, config.internal_sample_rate)
-    print(f"Initial True Peak (dBTP): {true_peak_db:.2f}")
-
-    # Apply True Peak limiting if necessary
-    if true_peak_db > -0.4:
-        gain_reduction_db = -0.4 - true_peak_db
-        gain_factor = 10 ** (gain_reduction_db / 20)
-        result *= gain_factor
-        print(f"Applied True Peak limiting. Gain reduction: {gain_reduction_db:.2f} dB")
-        
-        # Recalculate True Peak after limiting
-        true_peak_db = calculate_true_peak(result, config.internal_sample_rate)
-        print(f"Final True Peak after limiting (dBTP): {true_peak_db:.2f}")
-    else:
-        print("True Peak is already below -0.4 dBTP. No additional limiting applied.")
-
-    print(f"Final output: result_max={np.max(np.abs(result)):.4f}")
-
-    # Genre-specific loudness adjustment
-    if genre_profile and genre_profile['genre'] in ['Piano', 'Orchestral', 'Speech']:
-        if config.loudness_option == "dynamic":
-            # Reduce gain to simulate -0.6 dB true peak
-            result *= 10 ** (-0.3 / 20)  # Additional -0.3 dB
-        elif config.loudness_option == "soft":
-            # Reduce gain to simulate -0.9 dB true peak
-            result *= 10 ** (-0.6 / 20)  # Additional -0.6 dB
-
-    # Calculate and log final LUFS after all processing
-    final_lufs = calculate_lufs(result, config.internal_sample_rate)
-    print(f"Final LUFS after all processing: {final_lufs:.2f}")
-
-    print("After Final Processing:")
-    log_audio_metrics(result, "Target", config)
-    
-    end_time = time.time()
-    total_time = end_time - start_time
-    print(f"Total processing time for step {step}: {total_time:.2f} seconds")
-    
+def apply_style_dynamics(audio, config, genre_profile):
+    strength = config.style_strength
+    genre = (genre_profile or {}).get("genre") or config.genre or "Reference"
+    ratio, attack, release, budget, drive = DYNAMIC_PROFILES.get(genre, DYNAMIC_PROFILES["Reference"])
+    ratio = 1.0 + (ratio - 1.0) * strength
+    budget *= strength
+    sr = config.internal_sample_rate * config.oversampling_factor
+    detector = np.max(np.abs(audio), axis=0)
+    rms_level = np.sqrt(np.mean(audio**2))
+    threshold = 20.0 * np.log10(max(rms_level, config.epsilon)) + 3.0
+    over = 20.0 * np.log10(np.maximum(detector, config.epsilon)) - threshold
+    knee = 6.0
+    shaped = np.where(over <= -knee / 2, 0.0,
+                      np.where(over >= knee / 2, over, (over + knee / 2)**2 / (2 * knee)))
+    required = np.clip(shaped * (1 - 1 / ratio), 0.0, budget)
+    reduction = _smooth_style_reduction(required, np.exp(-1 / (sr * attack / 1000)),
+                                        np.exp(-1 / (sr * release / 1000)))
+    result = audio * 10.0 ** (-reduction[np.newaxis, :] / 20.0)
+    # A shared instantaneous gain preserves the stereo image through saturation.
+    saturation = drive * strength
+    if saturation > 0:
+        scale = 0.25 / max(rms_level, config.epsilon)
+        peak = np.max(np.abs(result), axis=0)
+        driven = peak * scale * saturation
+        sat_gain = np.tanh(driven) / np.maximum(driven, config.epsilon)
+        sat_gain = np.maximum(sat_gain, 10 ** (-0.35 * strength / 20))
+        result *= sat_gain[np.newaxis, :]
+    config.last_mastering_stats["dynamics"] = {
+        "profile": genre, "ratio": float(ratio), "attack_ms": attack, "release_ms": release,
+        "budget_db": float(budget), "max_gain_reduction_db": float(reduction.max()),
+        "gain_reduction_p95_db": float(np.percentile(reduction, 95)),
+        "saturation_drive": float(saturation),
+    }
     return result
+
+
+def process_audio(target, reference, step, config, genre_profile=None):
+    """Apply bounded style processing; the core adapter owns final LUFS/true peak."""
+    strength = float(config.style_strength)
+    if not np.isfinite(strength) or not 0 <= strength <= 1:
+        raise ValueError("Style strength must be finite and between 0 and 1")
+    audio = np.array(target, dtype=np.float64, copy=True)
+    config.last_mastering_stats = {"style_strength": strength}
+    if strength == 0:
+        if step >= 2 and config.eq_style != "Neutral":
+            mid, side = lr_to_ms(audio)
+            mid, side = apply_eq_style(mid, side, config.internal_sample_rate, config.eq_style)
+            audio = ms_to_lr(mid, side)
+        return audio
+
+    up = oversample(audio, config.oversampling_factor)
+    reference_up = oversample(np.array(reference, dtype=np.float64, copy=True), config.oversampling_factor)
+    rate = config.internal_sample_rate * config.oversampling_factor
+    target_mid, target_side = lr_to_ms(up)
+    reference_mid, reference_side = lr_to_ms(reference_up)
+    source_ratio = np.sqrt(np.mean(target_side**2) / max(np.mean(target_mid**2), config.epsilon))
+    ud = getattr(config, "upstream_delta", None)
+    if ud:
+        reference_mid *= float(ud["rms_mid"])
+        reference_side *= float(ud["rms_side"])
+    if step >= 1:
+        target_mid, target_side = match_rms_ms(target_mid, target_side, reference_mid, reference_side, rate, config)
+    if step >= 2:
+        target_mid, target_side = match_frequencies_ms(target_mid, target_side, reference_mid, reference_side, config)
+    if step >= 3:
+        target_mid, target_side = gradual_level_correction(target_mid, target_side, reference_mid, reference_side, config)
+    if step >= 4:
+        result = finalize_stereo_image(target_mid, target_side, reference_mid, reference_side, config)
+        target_mid, target_side = lr_to_ms(result)
+    ratio = np.sqrt(np.mean(target_side**2) / max(np.mean(target_mid**2), config.epsilon))
+    change_db = 20 * np.log10(max(ratio, config.epsilon) / max(source_ratio, config.epsilon))
+    bounded = float(np.clip(change_db, -0.35 * strength, 0.35 * strength))
+    target_side *= 10 ** ((bounded - change_db) / 20)
+    config.last_mastering_stats["style_width_change_db"] = bounded
+    # Apply EQ style after frequency matching: explicit EQ is independent of genre strength.
+    if step >= 2 and config.eq_style != "Neutral":
+        target_mid, target_side = apply_eq_style(target_mid, target_side, rate, config.eq_style)
+    result = ms_to_lr(target_mid, target_side)
+    if step >= 2 and getattr(config, "explicit_lowpass", False):
+        result = apply_lowpass_filter(result, config)
+    if step >= 5:
+        result = apply_style_dynamics(result, config, genre_profile)
+    return signal.resample_poly(result, 1, config.oversampling_factor, axis=-1)
 
 def calculate_true_peak(audio, sample_rate):
     # Upsample by a factor of 4 for true peak calculation
@@ -1133,56 +972,23 @@ def apply_eq_style(mid, side, sample_rate, eq_style):
     return mid, side
 
 def master_audio(input_file, output_file, config, eq_style, is_preview=False):
-    start_time = time.time()
-    print(f"Master audio function called with: input_file={input_file}, output_file={output_file}, reference_file={config.reference_file}, eq_style={eq_style}, is_preview={is_preview}")
-    config.eq_style = eq_style
-    
-    load_start = time.time()
-    target, sr = load_audio(input_file, config)
-    load_end = time.time()
-    print(f"Audio loading time: {load_end - load_start:.2f} seconds")
-    
-    print(f"Original audio length: {len(target[0])} samples")
-    print(f"Original audio duration: {len(target[0]) / sr:.2f} seconds")
-    
-    if is_preview:
-        preview_start = time.time()
-        preview_duration = 30  # seconds
-        preview_samples = min(sr * preview_duration, target.shape[1])
-        target = target[:, :preview_samples]
-        preview_end = time.time()
-        print(f"Preview creation time: {preview_end - preview_start:.2f} seconds")
-        print(f"Processing preview: {preview_samples} samples")
-        print(f"Preview duration: {preview_samples / sr:.2f} seconds")
-    else:
-        print(f"Processing full track: {len(target[0])} samples")
-    
-    if config.genre:
-        print(f"Using genre profile: {config.genre}")
-        genre_profile = load_genre_profile(config.genre)
-        reference, _ = create_reference_from_profile(genre_profile, config)
-        log_audio_metrics(reference, "Reference from Genre", config)
-    elif config.reference_file:
-        print(f"Using reference file: {config.reference_file}")
-        reference, _ = load_audio(config.reference_file, config)
-        genre_profile = None
-    else:
-        raise ValueError("Either genre or reference file must be specified")
-    
-    process_start = time.time()
-    processed_audio = process_audio(target, reference, 5, config, genre_profile)
-    process_end = time.time()
-    print(f"Audio processing time: {process_end - process_start:.2f} seconds")
-    
-    save_start = time.time()
-    save_audio(processed_audio, output_file, sr)    
-    save_end = time.time()
-    print(f"Audio saving time: {save_end - save_start:.2f} seconds")
-    
-    end_time = time.time()
-    total_time = end_time - start_time
-    print(f"Total Python processing time: {total_time:.2f} seconds")
-    print("Mastering completed")
+    # Standalone callers must use the same finalizer as the application adapter.
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parent
+    source = root / "soren_core.py"
+    if not source.is_file():
+        source = root / "core_decrypted.py"
+    spec = importlib.util.spec_from_file_location("soren_original_finalizer", source)
+    core = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = core
+    spec.loader.exec_module(core)
+    final_config = core.Config()
+    for name in ("genre", "reference_file", "loudness_option", "eq_style"):
+        setattr(final_config, name, getattr(config, name))
+    final_config.style_blend = config.style_strength
+    core.master_audio(input_file, output_file, final_config, eq_style, is_preview)
+    config.last_mastering_stats = final_config.last_mastering_stats
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audio Mastering Tool")

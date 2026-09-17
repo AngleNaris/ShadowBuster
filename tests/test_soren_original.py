@@ -20,9 +20,10 @@ def load(name, path):
     return module
 
 
-def test_styled_matches_original_after_linked_input_attenuation():
+def test_styled_uses_bounded_engine_then_shared_loudness(monkeypatch):
     core = load('restored_adapter', CORE)
     original = load('original_reference', ROOT / 'packaging/soren_original.py')
+    monkeypatch.setattr(core, 'apply_dither', lambda audio: audio)
     rng = np.random.default_rng(12)
     audio = rng.normal(0, .12, (2, 44100))
     audio[:, 1200] = [1.8, .9]
@@ -31,15 +32,19 @@ def test_styled_matches_original_after_linked_input_attenuation():
     config.loudness_option = 'loud'
     original_config = original.Config()
     original_config.loudness_option = 'loud'
+    original_config.style_strength = config.style_blend
+    original_config.reference_bandwidth_hz = config.internal_sample_rate / 2
     tp = core.calculate_true_peak(audio, 44100, 4)
     gain = min(0., -.1 - max(tp, 20 * np.log10(np.max(np.abs(audio)))))
     protected = audio * 10 ** (gain / 20)
     np.random.seed(123)
     expected = original.process_audio(protected.copy(), reference.copy(), 5, original_config)
+    target_lufs = core.loudness_target_lufs({'lufs': core.calculate_lufs(reference, 44100)}, 'loud')
+    expected = core.process_transparent(expected, config, target_lufs, core)
     np.random.seed(123)
     actual = core.process_audio(audio, reference.copy(), 5, config)
     np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=0)
-    assert config.last_mastering_stats['engine'] == 'soren_original'
+    assert config.last_mastering_stats['engine'] == 'soren_bounded_v2'
     assert config.last_mastering_stats['input_protection']['applied_gain_db'] == gain
     assert audio[0, 1200] == 1.8
 

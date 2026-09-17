@@ -1,7 +1,7 @@
 """bass_enhance v20260909 饱和低中频预算的回归测试。
 
 锚定四条硬保证：
-  1. sat=0 或因子 g=1.0 时与旧版（v20260908 饱和路径）位级一致；
+  1. sat=0 或因子 g=1.0 时与不含预算路径的同一 DSP 链位级一致；
   2. 预算只衰减 sat 新增的 180-500Hz 增量；带通非 brickwall，<120Hz 按实测
      容差断言（只允许裙边泄漏量级改变）；
   3. 原始低中频越浓，允许新增越少（密集 stem 新增量严格减少，上限 -3dB，
@@ -32,10 +32,12 @@ def sine(freq, sec, amp):
 
 
 def legacy_enhance(x, sr, sub_db, punch_db, sat, trans, drive=1.6):
-    """v20260908 旧饱和路径的位级参考（sat=0 / g=1.0 的回归锚点）。"""
+    """不含预算路径的同一 DSP 链位级参考（sat=0 / g=1.0 的回归锚点）。
+
+    warm 阶段直接复用生产 _warm_stage（shelf/bell 转折随生产演进），
+    本参考只锚定"预算机制不参与"这一性质，不冻结 DSP 历史。"""
     x = np.asarray(x, dtype=np.float64)
-    x_warm = bass._shelf(x, sr, 30.0, sub_db)
-    x_warm = bass._bell(x_warm, sr, 90.0, punch_db, q=1.2)
+    x_warm = bass._warm_stage(x, sr, sub_db, punch_db)
     lp = signal.sosfiltfilt(
         signal.butter(2, 200.0, 'lowpass', fs=sr, output='sos'), x_warm, padlen=0)
     x_sat = bass.soft_clip(lp, drive)
@@ -217,3 +219,60 @@ def test_silence_short_and_finite():
 
     assert bass.compute_sat_budget_gain(np.full(SR, np.nan), SR, sat=0.3) == 1.0
     assert bass.compute_sat_budget_gain(sine(60, 1.0, 0.5), SR, sat=0.0) == 1.0
+
+
+def test_side_shelf_db_overflow_values():
+    """受控溢出公式：Side 新增幅度系数 = Mid 新增幅度系数 × k（k=10^(-6/20)），
+    而非把 shelf 增益整体平移（平移会把小增益变成衰减、变相单声道化）。"""
+    assert bass.side_shelf_db(0.0) == 0.0
+    assert bass.side_shelf_db(-2.0) == -2.0          # 削减对称同幅
+    k = 10.0 ** (bass.SUB_SHELF_SIDE_RELATIVE_DB / 20.0)
+    expected3 = 20.0 * np.log10(1.0 + k * (10 ** (3.0 / 20.0) - 1.0))
+    assert bass.side_shelf_db(3.0) == pytest.approx(expected3, abs=1e-9)
+    assert 1.5 < bass.side_shelf_db(3.0) < 1.75       # +3dB 设定 → Side ≈ +1.6dB
+    assert 3.0 < bass.side_shelf_db(6.0) < 4.0
+    lo, hi = -12.0, 12.0
+    grid = [lo + i * 0.5 for i in range(int((hi - lo) / 0.5) + 1)]
+    vals = [bass.side_shelf_db(v) for v in grid]
+    assert vals == sorted(vals)                       # 单调
+
+
+def _band_rms(x, sr, lo, hi):
+    sos = signal.butter(2, [lo, hi], btype='bandpass', fs=sr, output='sos')
+    y = signal.sosfiltfilt(sos, np.asarray(x, dtype=np.float64), padlen=0)
+    return float(np.sqrt(np.mean(y * y)))
+
+
+def test_stereo_ms_side_overflow_bounded():
+    """M/S 域：Mid 全额 shelf、Side 受控溢出——两者的带内"新增增益系数"之比
+    ≈ k=0.5；Side 的绝对新增量还随 M/S 内容占比自然缩小（防浑浊）。"""
+    sr = SR
+    t = np.arange(sr) / sr
+    m = 0.5 * np.sin(2 * np.pi * 40.0 * t)
+    s = 0.1 * np.sin(2 * np.pi * 40.0 * t + 0.7)      # 真实侧链内容
+    stereo = np.column_stack((m + s, m - s))
+    out = bass._enhance_stereo(stereo, sr, sub_db=3.0, punch_db=0.0, sat=0.0,
+                               trans=0.0, auto_clarity_gains=None,
+                               sat_budget=1.0)
+    out_m = (out[:, 0] + out[:, 1]) / 2.0
+    out_s = (out[:, 0] - out[:, 1]) / 2.0
+    added_m = _band_rms(out_m - m, sr, 30.0, 80.0)
+    added_s = _band_rms(out_s - s, sr, 30.0, 80.0)
+    base_m = _band_rms(m, sr, 30.0, 80.0)
+    base_s = _band_rms(s, sr, 30.0, 80.0)
+    assert added_m > 0.1                              # Mid 确实被提升
+    gain_ratio = (added_s / base_s) / (added_m / base_m)
+    assert gain_ratio == pytest.approx(
+        10.0 ** (bass.SUB_SHELF_SIDE_RELATIVE_DB / 20.0), abs=0.05)
+
+
+def test_stereo_mono_input_stays_mono():
+    """全同双声道输入不产生人工侧链（S=0 → 输出仍全同）。"""
+    sr = SR
+    t = np.arange(sr) / sr
+    m = 0.5 * np.sin(2 * np.pi * 40.0 * t) + 0.2 * np.sin(2 * np.pi * 90.0 * t)
+    stereo = np.column_stack((m, m))
+    out = bass._enhance_stereo(stereo, sr, sub_db=3.0, punch_db=2.0, sat=0.3,
+                               trans=0.3, auto_clarity_gains=None,
+                               sat_budget=1.0)
+    np.testing.assert_allclose(out[:, 0], out[:, 1], atol=1e-6)

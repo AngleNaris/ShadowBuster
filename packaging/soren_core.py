@@ -21,6 +21,7 @@ from test_model import get_suggestions_for_genre
 from scipy.signal import butter, filtfilt
 import scipy.signal as signal
 import time
+from copy import copy
 
 # Use a simple string as a key
 KEY = "SimpleKey123"
@@ -79,6 +80,7 @@ class Config:
         self.sample_rate = 44100  # Add this line
         self.loudness_option = "normal"  # Default to "normal"
         self.style_mode = "styled"
+        self.style_blend = 0.85
         self.eq_style = "Neutral"  # Default to "Neutral"
         self.use_loudest_parts = True
         self.loudness_threshold = 0.4
@@ -834,7 +836,7 @@ def loudness_target_lufs(genre_profile, loudness_option):
         "soft": -3.10,
         "dynamic": -1.94,
         "normal": 0.0,
-        "loud": 1.58,
+        "loud": 2.50,
     }
     if loudness_option not in offsets:
         raise ValueError(f"Unknown loudness option: {loudness_option}")
@@ -876,40 +878,85 @@ def process_transparent(target, config, requested_lufs, core):
     if not np.isfinite(initial):
         raise ValueError('Cannot loudness-normalize silent audio')
     up = core.oversample(target, config.oversampling_factor)
-    drive = requested_lufs - core.calculate_lufs(up, sr * config.oversampling_factor)
+    target_drive = requested_lufs - core.calculate_lufs(up, sr * config.oversampling_factor)
+    peak_db = 20 * np.log10(max(float(np.max(np.abs(up))), config.epsilon))
+    budgets = {'soft': (4.0, 14.0), 'dynamic': (4.0, 14.0),
+               'normal': (6.0, 18.0), 'loud': (8.0, 20.0)}
+    limiter_config = copy(config)
+    if config.loudness_option == 'loud':
+        limiter_config.limiter_release_ms = min(config.limiter_release_ms, 80.0)
+    p95_budget, peak_budget = budgets[config.loudness_option]
+    p95_budget = getattr(config, 'limiter_p95_budget_db', p95_budget)
+    peak_budget = getattr(config, 'limiter_peak_budget_db', peak_budget)
+    lower = min(target_drive, config.limiter_ceiling_db - peak_db - 0.01)
+    upper = None
+    drive = lower
     best = None
-    # Always render from the unchanged input, never cascade limiters between trials.
-    for attempt in range(12):
-        limited, stats = core.linked_lookahead_limiter(up * 10 ** (drive / 20), config)
+    budget_limited = False
+    stop_reason = 'iteration_limit'
+    attempts = 0
+    # Render each trial from the unchanged input, never cascade limiters.
+    for attempt in range(18):
+        attempts = attempt + 1
+        limited, stats = core.linked_lookahead_limiter(up * 10 ** (drive / 20), limiter_config)
         result = signal.resample_poly(limited, 1, config.oversampling_factor, axis=-1)
         tp = core.calculate_true_peak(result, sr, config.true_peak_oversampling)
-        trim = min(0.0, config.true_peak_ceiling_db - 0.01 - tp)
+        trim = min(0.0, config.true_peak_ceiling_db - 0.02 - tp)
         result *= 10 ** (trim / 20)
         measured = core.calculate_lufs(result, sr)
-        error = requested_lufs - measured
-        candidate = (abs(error), result, stats, measured, trim, drive, attempt + 1)
-        if best is None or candidate[0] < best[0]:
-            best = candidate
-        if abs(error) <= 0.1:
+        signed_error = requested_lufs - measured
+        feasible = (stats['gain_reduction_p95_db'] <= p95_budget + 1e-6 and
+                    stats['max_gain_reduction_db'] <= peak_budget + 1e-6)
+        if feasible and (best is None or abs(signed_error) < best[0]):
+            best = (abs(signed_error), result, stats, trim, drive)
+        if feasible and abs(signed_error) <= 0.1:
+            stop_reason = 'target_met'
             break
-        if drive > 30 or (attempt > 0 and abs(error) >= previous_error - 0.005):
-            break
-        previous_error = abs(error)
-        drive += float(np.clip(error, -3, 3))
-    error, result, stats, measured, trim, drive, attempts = best
+        if not feasible:
+            budget_limited = True
+            upper = drive
+        elif signed_error < 0:
+            upper = drive
+        else:
+            lower = drive
+        if upper is not None:
+            if upper - lower < 0.02:
+                stop_reason = 'dynamic_budget' if budget_limited else 'converged'
+                break
+            drive = (lower + upper) / 2.0
+        else:
+            drive_ceiling = config.limiter_ceiling_db - peak_db + peak_budget
+            next_drive = min(drive_ceiling, drive + max(0.5, min(4.0, signed_error * 1.4)))
+            if next_drive <= drive:
+                budget_limited = True
+                stop_reason = 'dynamic_budget'
+                break
+            drive = next_drive
+    if best is None:
+        raise RuntimeError('No safe loudness candidate')
+    _, result, stats, trim, drive = best
     result = core.apply_dither(result)
     tp = core.calculate_true_peak(result, sr, config.true_peak_oversampling)
     if tp > config.true_peak_ceiling_db:
         raise RuntimeError('Transparent output exceeds true peak ceiling')
+    actual = float(core.calculate_lufs(result, sr))
+    error = float(requested_lufs - actual)
+    met = abs(error) <= 0.2
     config.last_mastering_stats = {
         'style_mode': 'off', 'target_lufs': float(requested_lufs),
-        'input_lufs': float(initial), 'actual_lufs': float(core.calculate_lufs(result, sr)),
-        'target_error_lu': float(error), 'target_met': bool(error <= 0.2),
+        'input_lufs': float(initial), 'actual_lufs': actual,
+        'target_error_lu': abs(error), 'target_signed_error_lu': error, 'target_met': met,
+        'target_status': 'met' if met else ('below_target' if error > 0 else 'above_target'),
+        'stop_reason': 'target_met' if met else stop_reason,
+        'dynamic_budget_limited': bool(budget_limited and not met),
+        'limiter_p95_budget_db': float(p95_budget), 'limiter_peak_budget_db': float(peak_budget),
+        'limiter_release_ms': float(limiter_config.limiter_release_ms),
         'applied_gain_db': float(drive), 'safety_trim_db': float(trim),
         'true_peak_dbtp': float(tp), 'limiter': stats, 'iterations': attempts,
         'spectral_processing': False,
     }
     return result
+
 
 
 def process_original_styled(target, reference, step, config, genre_profile):
@@ -925,23 +972,40 @@ def process_original_styled(target, reference, step, config, genre_profile):
     true_peak = calculate_true_peak(audio, config.internal_sample_rate, 4)
     gain_db = min(0.0, -0.1 - max(true_peak, 20 * np.log10(peak)))
     audio *= 10 ** (gain_db / 20)
+    strength = float(config.style_blend)
+    if not np.isfinite(strength) or not 0 <= strength <= 1:
+        raise ValueError("Style strength must be finite and between 0 and 1")
     original_config = original.Config()
+    original_config.style_strength = strength
+    original_config.reference_bandwidth_hz = getattr(config, 'reference_bandwidth_hz',
+                                                    config.internal_sample_rate / 2)
     for name in ("genre", "reference_file", "loudness_option", "eq_style"):
         setattr(original_config, name, getattr(config, name))
+    # 上游意图感知（v20260910）：styled 匹配目标 = 流派曲线 × 上游频谱 delta。
+    ud = getattr(config, "upstream_delta", None)
+    if ud is not None:
+        original_config.upstream_delta = ud
     if getattr(config, "original_lowpass_override", None) is not None:
         original_config.lowpass_cutoff = config.original_lowpass_override
+        original_config.explicit_lowpass = True
     result = original.process_audio(audio, reference, step, original_config, genre_profile)
     if not np.isfinite(result).all():
         raise RuntimeError("Original Soren returned non-finite samples")
-    config.last_mastering_stats = {
-        "style_mode": "styled", "engine": "soren_original",
+    requested_lufs = loudness_target_lufs(genre_profile, config.loudness_option)
+    if requested_lufs is None:
+        reference_lufs = calculate_lufs(reference, config.internal_sample_rate)
+        requested_lufs = loudness_target_lufs({'lufs': reference_lufs}, config.loudness_option)
+    style_stats = getattr(original_config, 'last_mastering_stats', {})
+    result = process_transparent(result, config, requested_lufs, sys.modules[__name__])
+    config.last_mastering_stats.update({
+        "style_mode": "styled", "engine": "soren_bounded_v2",
+        "style_blend": strength, "style_strength": strength,
+        "strength_semantics": "processing_amount", "style_processing": style_stats,
         "loudness_option": config.loudness_option,
         "input_protection": {"input_true_peak_dbtp": float(true_peak),
                              "applied_gain_db": float(gain_db)},
-        "actual_lufs": float(calculate_lufs(result, config.internal_sample_rate)),
-        "true_peak_dbtp": float(calculate_true_peak(result, config.internal_sample_rate, 4)),
-        "spectral_processing": step >= 2,
-    }
+        "spectral_processing": step >= 2 and (strength > 0 or config.eq_style != "Neutral"),
+    })
     return result
 
 
@@ -1397,11 +1461,21 @@ def master_audio(input_file, output_file, config, eq_style, is_preview=False):
     elif config.genre:
         print(f"Using genre profile: {config.genre}")
         genre_profile = load_genre_profile(config.genre)
-        reference, _ = create_reference_from_profile(genre_profile, config)
+        reference, reference_sr = create_reference_from_profile(genre_profile, config)
+        config.reference_bandwidth_hz = min(reference_sr, config.internal_sample_rate) / 2.0
+        if reference_sr != config.internal_sample_rate:
+            reference = librosa.resample(y=reference, orig_sr=reference_sr,
+                                         target_sr=config.internal_sample_rate)
         log_audio_metrics(reference, "Reference from Genre", config)
     elif config.reference_file:
         print(f"Using reference file: {config.reference_file}")
-        reference, _ = load_audio(config.reference_file, config)
+        reference, reference_sr = load_audio(config.reference_file, config)
+        if reference.ndim == 1:
+            reference = np.tile(reference, (2, 1))
+        config.reference_bandwidth_hz = min(reference_sr, config.internal_sample_rate) / 2.0
+        if reference_sr != config.internal_sample_rate:
+            reference = librosa.resample(y=reference, orig_sr=reference_sr,
+                                         target_sr=config.internal_sample_rate)
         genre_profile = None
     else:
         raise ValueError("Either genre or reference file must be specified")
@@ -1449,12 +1523,27 @@ if __name__ == "__main__":
     parser.add_argument("--eq-profile", choices=["Neutral", "Warm", "Bright", "Fusion"], default="Neutral", help="EQ profile to use for mastering")
     parser.add_argument("--preview", action="store_true", help="Process only the preview")
     parser.add_argument("--lowpass-cutoff", type=float, default=None,
-                        help="Override mastering lowpass (styled default: original 18 kHz)")
+                        help="Optional styled lowpass cutoff; disabled by default")
     parser.add_argument("--style-mode", choices=["styled", "off", "eq_only"], default="styled")
+    parser.add_argument("--upstream-delta", default=None,
+                        help="JSON 文件：上游等效频谱意图（freqs/mid_db/side_db/rms_mid/rms_side）")
+    parser.add_argument("--style-blend", type=float, default=0.85,
+                        help="styled processing strength (0-1), not an audio dry/wet ratio")
     args = parser.parse_args()
 
     config = Config()
     config.style_mode = args.style_mode
+    if args.style_mode == "styled":
+        config.style_blend = min(max(float(args.style_blend), 0.0), 1.0)
+    if args.upstream_delta:
+        with open(args.upstream_delta, "r", encoding="utf-8") as handle:
+            ud = json.load(handle)
+        for key in ("freqs", "mid_db", "side_db", "rms_mid", "rms_side"):
+            if key not in ud:
+                raise ValueError(f"upstream delta missing field: {key}")
+        config.upstream_delta = ud
+        print(f"Upstream delta loaded: {len(ud['freqs'])} points, "
+              f"rms_mid={ud['rms_mid']}, rms_side={ud['rms_side']}")
     config.loudness_option = args.loudness
     config.original_lowpass_override = args.lowpass_cutoff
     if args.lowpass_cutoff is not None:
