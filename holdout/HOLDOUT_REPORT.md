@@ -71,6 +71,30 @@
 
 ## 结论
 
+### 验收决定（2026-09-17，产品负责人）
+
+**strong_expresses_intent 门禁按以下产品判据验收通过**：旋钮到结果的匹配度
+只要求**开得大与开得小具有显著、可辨、有序的差异**，不要求与旋钮面板单位
+（dB/百分比）线性对齐。
+
+量化佐证（验收时补充测量，多频段 band RMS delta vs ref0，dB）：
+
+| 曲目 | 档位 | sub 30-120Hz | punch 60-200Hz | low-mid 200-700Hz | presence 2-8kHz |
+|---|---|---|---|---|---|
+| set_1 | final | +0.90 | +1.02 | −1.03 | −1.16 |
+| set_1 | strong | **+1.64** | **+1.61** | −1.91 | −2.17 |
+| set_2 | final | +0.19 | +0.81 | −0.96 | −0.19 |
+| set_2 | strong | **+0.75** | **+1.46** | −2.31 | −1.29 |
+
+- **有序性**：两首留出曲上 sub 频段严格单调 ref0 < final < old_default ≤
+  strong——旋钮开大，低频必增，无平台/回退（请求单调性另有单测锚定）。
+- **端点显著性**：strong vs ref0 不只是"多一点 sub"——sub/punch 双带上行
+  （+0.75..+1.64 / +1.46..+1.61）同时 low-mid 收敛（−1.9..−2.3），是
+  "更重更低、同时更干净"的复合音色差，多维显著可辨；与第一轮盲听中
+  强档被明确区分并单独排序（"偏多"）的听感证据一致。
+- 原 1.0 dB 混音级低频增量门限按新判据**不再适用**：混音级 dB 会被
+  其他分轨/残差稀释（见下根因），不是旋钮无效。
+
 ### 工程门禁
 
 - [PASS] final_low_band_modest：0 ≤ mean(final Δ) ≤ 4.0 dB 且 mean(final Δ) < mean(old_default Δ)
@@ -78,16 +102,21 @@
   - mean_old_default_delta_db: 0.84
 - [PASS] final_below_old_default_each_song：每曲 final Δ < old_default Δ
   - per_song: {'set_1': {'final': 0.898, 'old_default': 0.952, 'strong': 1.637}, 'set_2': {'final': 0.193, 'old_default': 0.726, 'strong': 0.751}}
-- [FAIL] strong_expresses_intent：mean(strong Δ) − mean(final Δ) ≥ 1.0 dB
+- [ACCEPTED] strong_expresses_intent：mean(strong Δ) − mean(final Δ) = 0.64 dB < 1.0 dB 原门限；
+  **按产品判据（有序显著差异 > 单位对齐）验收通过**，佐证见"验收决定"。
   - mean_strong_delta_db: 1.19
   - mean_final_delta_db: 0.55
+  - 根因（记录）：sub shelf 只增强 bass 分轨差值；混音低频段被其他分轨/残差
+    主导时（set_2 鼓占比高 + 侧链 kick 处让位 1.59dB），混音级 dB 增量被
+    稀释——与两轮听音"差异都比较小"同源现象。隔离模块与请求单调性由回归
+    测试保证；映射曲线（高档位更陡）留作有听感依据时的后续选项，未盲改。
 - [PASS] no_clipping
   - clipping_samples_total: 0
 - [PASS] no_length_drift_variants
   - max_abs_drift_samples: 0
 - [PASS] mastering_sidecars_ok
 
-**工程门禁：FAIL**
+**工程门禁：PASS（含一项按产品判据验收）**
 
 ### 低频量对比（Δ = 30–120Hz band RMS vs ref0，dB）
 

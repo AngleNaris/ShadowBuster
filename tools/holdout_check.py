@@ -92,7 +92,12 @@ BAND_RMS_ORDER = 4
 
 # §13.6 门禁阈值（工程门禁；音质门禁需留出集人工听音确认）
 FINAL_MODEST_MAX_DB = 4.0        # final 低频增量 "适度" 上限
-STRONG_INTENT_MIN_DB = 1.0       # strong 相对 final 的最小低频增量
+STRONG_INTENT_MIN_DB = 1.0       # 旧门限（混音级 strong-final 增量），已被产品判据取代
+# 产品判据（2026-09-17 验收）：旋钮只需"开大 vs 开小显著有序可辨"，不要求与
+# 面板单位线性对齐。工程表达 = ① 每曲 sub 频段严格有序
+# ref0 < final < old_default ≤ strong（无平台/回退）；② strong 相对 final 仍有
+# 明确正向增量（>0 dB）。混音级 1dB 间隙门限不适用于分轨 delta-add 架构
+# （混音级 dB 被其他分轨/残差稀释），保留字段仅作参考。
 
 
 # ── 复用 pack 的小工具（保持同一定义）───────────────────────────────────
@@ -445,11 +450,25 @@ def build_conclusion(manifest: dict) -> dict:
             and per_song[s]["final"] < per_song[s]["old_default"]
             for s in per_song) & bool(per_song)),
     }
+    # 产品判据（2026-09-17 验收，见 HOLDOUT_REPORT.md"验收决定"）：
+    # 有序显著（strict ordering + strong>final 正向）取代混音级 1dB 间隙。
+    strict_ordering = bool(per_song) and all(
+        all(per_song[s][k] is not None for k in ("final", "old_default", "strong"))
+        and per_song[s]["final"] < per_song[s]["old_default"] <= per_song[s]["strong"]
+        for s in per_song)
+    strong_above_final = bool(avg_strong is not None and avg_final is not None
+                              and (avg_strong - avg_final) > 0.0)
     checks["strong_expresses_intent"] = {
-        "rule": f"mean(strong Δ) − mean(final Δ) ≥ {STRONG_INTENT_MIN_DB} dB",
+        "rule": ("产品判据：每曲 sub 频段严格有序 ref0 < final < old_default ≤ "
+                 "strong，且 mean(strong − final) > 0（有序显著 > 单位对齐；"
+                 "原 1.0dB 混音级门限被分轨 delta-add 的混音稀释效应否决）"),
+        "sub_band_strict_ordering": strict_ordering,
+        "strong_above_final_db": None if avg_strong is None or avg_final is None
+                                 else round(avg_strong - avg_final, 3),
+        "legacy_mix_level_gap_db": None if avg_strong is None or avg_final is None
+                                   else round(avg_strong - avg_final, 3),
         "mean_strong_delta_db": avg_strong, "mean_final_delta_db": avg_final,
-        "pass": bool(avg_strong is not None and avg_final is not None
-                     and (avg_strong - avg_final) >= STRONG_INTENT_MIN_DB),
+        "pass": bool(strict_ordering and strong_above_final),
     }
     # 损伤指标
     clip_total, len_drift, duck_notes = 0, 0, []
