@@ -167,8 +167,12 @@ def _spectrogram_payload(path, time_frames=800, freq_bins=160):
 
 
 def collect_pipeline_kwargs(params):
-    """面板参数 → run_pipeline kwargs（批处理与预览共用同一组装与映射）。"""
+    """面板参数 → run_pipeline kwargs（批处理与预览共用同一组装与映射）。
+
+    默认值一律取 backend.DEFAULTS（单一来源，ENG-01）：GUI / CLI / 后端
+    不传参时解析出同一套产品默认，不存在隐藏的第二默认。"""
     params = dict(params or {})
+    d = backend.DEFAULTS
     mapping, notices = map_ui_params(params)
 
     def _stem_params(prefix):
@@ -177,22 +181,22 @@ def collect_pipeline_kwargs(params):
                              "harsh_cut_db", "width_db")}
 
     kwargs = dict(
-        sub_db=float(params.get("sub", 6)),
-        sat=float(params.get("sat", 0.3)),
-        punch_db=float(params.get("punch", 2)),
-        trans=float(params.get("trans", 0.3)),
-        space_wet=float(params.get("space", 0.6)),
-        space_denoise=float(params.get("denoise", 0.2)),
-        space_width_db=float(params.get("space_width", 6)),
-        vocal_gain_db=float(params.get("vocal", 0)),
+        sub_db=float(params.get("sub", d["sub_db"])),
+        sat=float(params.get("sat", d["sat"])),
+        punch_db=float(params.get("punch", d["punch_db"])),
+        trans=float(params.get("trans", d["trans"])),
+        space_wet=float(params.get("space", d["space_wet"])),
+        space_denoise=float(params.get("denoise", d["space_denoise"])),
+        space_width_db=float(params.get("space_width", d["space_width_db"])),
+        vocal_gain_db=float(params.get("vocal", d["vocal_gain_db"])),
         bypass=[b for b in (params.get("bypass") or []) if b],
-        quality=int(params.get("quality", 1)),
-        guidance=float(params.get("guidance", 1.5)),
-        genre=params.get("genre", "Pop"),
-        style_mode=params.get("style_mode", "styled"),
-        style_blend=float(params.get("style_blend", 0.85)),
-        loudness=params.get("loudness", "normal"),
-        eq_profile=params.get("eq", "Neutral"),
+        quality=int(params.get("quality", d["quality"])),
+        guidance=float(params.get("guidance", d["guidance"])),
+        genre=params.get("genre", d["genre"]),
+        style_mode=params.get("style_mode", d["style_mode"]),
+        style_blend=float(params.get("style_blend", d["style_blend"])),
+        loudness=params.get("loudness", d["loudness"]),
+        eq_profile=params.get("eq", d["eq_profile"]),
         reference=params.get("reference") or None,
         device=backend.auto_device(),
     )

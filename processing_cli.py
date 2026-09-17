@@ -27,7 +27,18 @@ def main(argv=None):
     parser.add_argument('-o', '--output', required=True, help='Output directory')
     parser.add_argument('--result-json', type=Path, help='New JSON result file (recommended for windowed EXE)')
     parser.add_argument('--overwrite', action='store_true')
-    for flag, low, high, default in [('sub-db',0,12,6),('punch-db',0,10,2),('sat',0,1,.3),('trans',0,1,.3),('space-wet',0,1,.6),('space-denoise',0,1,.2),('space-width-db',0,12,6),('vocal-gain-db',-6,6,0),('guidance',0,2,1.5)]:
+    # 处理默认值来自 backend.DEFAULTS 单一来源（ENG-01）：CLI 与 GUI/后端
+    # 解析结果一致，改动默认值只动一处。
+    d = backend.DEFAULTS
+    for flag, low, high, default in [('sub-db',0,12,d['sub_db']),
+                                      ('punch-db',0,10,d['punch_db']),
+                                      ('sat',0,1,d['sat']),
+                                      ('trans',0,1,d['trans']),
+                                      ('space-wet',0,1,d['space_wet']),
+                                      ('space-denoise',0,1,d['space_denoise']),
+                                      ('space-width-db',0,12,d['space_width_db']),
+                                      ('vocal-gain-db',-6,6,d['vocal_gain_db']),
+                                      ('guidance',0,2,d['guidance'])]:
         parser.add_argument('--'+flag, type=bounded(low, high), default=default)
     parser.add_argument('--vocal-comp-amount', type=bounded(0, 1), default=0.0,
                         help='bounded broadband vocal compression 0-1 (0=off, exact)')
@@ -65,12 +76,13 @@ def main(argv=None):
                             help=f'opt-in six-stem {prefix} high harshness shelf cut (dB), 0=neutral')
         parser.add_argument(f'--{prefix}-width-db', type=bounded(0, 6), default=0.0,
                             help=f'opt-in six-stem {prefix} side width (dB), 0=neutral')
-    parser.add_argument('--quality', type=int, choices=[0,1,2], default=1)
-    parser.add_argument('--genre', default='Pop')
-    parser.add_argument('--loudness', choices=['soft','dynamic','normal','loud'], default='normal')
-    parser.add_argument('--eq-profile', default='Neutral')
+    parser.add_argument('--quality', type=int, choices=[0,1,2], default=backend.DEFAULTS['quality'])
+    parser.add_argument('--genre', default=backend.DEFAULTS['genre'])
+    parser.add_argument('--loudness', choices=['soft','dynamic','normal','loud'],
+                        default=backend.DEFAULTS['loudness'])
+    parser.add_argument('--eq-profile', default=backend.DEFAULTS['eq_profile'])
     parser.add_argument('--style-mode', choices=['styled','off','eq_only'], default='off')
-    parser.add_argument('--style-blend', type=bounded(0,1), default=0.85,
+    parser.add_argument('--style-blend', type=bounded(0,1), default=backend.DEFAULTS['style_blend'],
                         help='styled processing intensity 0-1: 0=no style processing, '
                              '1=full style; ignored by off/eq_only; 100%% is no longer '
                              'bit-identical to the legacy release')

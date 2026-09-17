@@ -123,7 +123,9 @@ def test_gui_exposes_none_and_routes_eq_and_loudness():
     assert '<span id="dd-genre-label">无风格</span>' in (ROOT/'ui/index.html').read_text(encoding='utf-8')
     assert 'state.eq === "Neutral" ? "off" : "eq_only"' in js
     assert 'loudness: getLoudness(), eq: state.eq' in js
-    assert 'style_mode=params.get("style_mode", "styled")' in main
+    # 默认值自 v1.6.10 起来自 backend.DEFAULTS 单一来源（ENG-01）；
+    # 不传参时仍解析为 'styled'（tests/test_default_source.py 校验）。
+    assert 'style_mode=params.get("style_mode", d["style_mode"])' in main
 
 
 @pytest.mark.skipif(not STAGE_CPU.is_file(),

@@ -20,8 +20,40 @@ from audio_metrics import (quality_report_path, quality_summary, read_quality_re
                            write_quality_report)
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.9"
+APP_VERSION = "1.6.10"
 GPU_ENV_VERSION = "1.5.0"
+
+# ── 处理默认值单一来源（开发规格 v2 §5.2/§12.1，P0-03；ENG-01）──────────
+# GUI（main.collect_pipeline_kwargs / map_ui_params）、CLI（processing_cli）与
+# 后端（run_pipeline / 各 stage 函数）共用同一份默认值。此前三层各自维护，
+# run_pipeline 的 space_wet/space_denoise 默认 0.0 与 UI/CLI 的 0.6/0.2 不一致
+# （靠 GUI 恒传参掩盖）、stage_reshape 的 wet 默认 1.0 又是第三种取值——
+# 任何不传全参的调用方都会拿到与产品默认不同的处理。现在以本表为准，
+# tests/test_default_source.py 校验三层一致。
+DEFAULTS = {
+    "sub_db": 6.0,
+    "punch_db": 2.0,
+    "trans": 0.3,
+    "sat": 0.3,
+    "space_wet": 0.6,
+    "space_denoise": 0.2,
+    "space_width_db": 6.0,
+    "vocal_gain_db": 0.0,
+    "guidance": 1.5,
+    "quality": 1,
+    "genre": "Pop",
+    "loudness": "normal",
+    "eq_profile": "Neutral",
+    "style_mode": "styled",
+    "style_blend": 0.85,
+    # 以下为 GUI 产品映射恒开/联动的默认（CLI 保持显式 opt-in，见
+    # processing_cli；后端默认与 CLI 对齐=保守关闭，UI 路径由 main.py 映射层
+    # 统一注入）：映射关系本身属于 UI 语义，不在此表复制。
+    "noise_mode": "other",
+    "noise_low_hz": 8000.0,
+    "noise_high_hz": 20000.0,
+    "noise_max_attenuation_db": 6.0,
+}
 
 if getattr(sys, "frozen", False):
     # PyInstaller 冻结后 __file__ 在 _internal 里，exe 同级才是安装根目录
@@ -614,7 +646,7 @@ def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
         progress(1.0, "人声调整完成")
 
 
-def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0, width_db=6.0,
+def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=None,
                   progress=None, cancel=None, report_json=None,
                   noise_mode="other", noise_low_hz=8000.0, noise_high_hz=20000.0,
                   noise_max_attenuation_db=6.0):
@@ -623,6 +655,8 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0, width_db=6.0
     width_db 为宽度上限（other 轨 side 增益 dB，drums 自动取一半），wet 决定向该
     宽度目标混合的比例。wet≤0 且 denoise≤0，或缺少 drums/other stems 时直接透传
     （位级不变）。denoise>0 时即使 wet=0 也会运行，以允许单独使用高频降噪。
+    wet/denoise/width_db 默认取 DEFAULTS（单一来源，ENG-01）；此前本函数 wet
+    默认 1.0 与 run_pipeline/产品默认 0.6 是第三种取值。
 
     noise_mode="other"（默认）为兼容降噪路径：命令行与旧行为完全一致，四个
     noise_* 参数不进入子进程命令。noise_mode="adaptive_all" 为 Stage3 可选
@@ -630,6 +664,9 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=1.0, denoise=0.0, width_db=6.0
     --noise-max-attenuation-db 原样传给 soundstage_reshape.py（other-denoise-amount
     仍是共同降噪强度）。范围与 apollo_scripts/noise_profile.py 一致。
     """
+    wet = DEFAULTS["space_wet"] if wet is None else wet
+    denoise = DEFAULTS["space_denoise"] if denoise is None else denoise
+    width_db = DEFAULTS["space_width_db"] if width_db is None else width_db
     validate_noise_options(noise_mode, noise_low_hz, noise_high_hz,
                            noise_max_attenuation_db)
     if progress:
@@ -1097,23 +1134,47 @@ def _rebind_stage_report(report_path, input_path, output_path):
         return
 
 
-def run_pipeline(input_wav, output_dir, *, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
+def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
+                 trans=None,
                  bass_gain_db=0.0, bass_auto_clarity=False, sidechain_amount=0.0,
                  sidechain_attack_ms=5.0, sidechain_release_ms=150.0,
-                 sidechain_max_duck_db=6.0, vocal_gain_db=0.0,
-                 genre="Pop", loudness="normal",
-                 eq_profile="Neutral", reference=None, quality=1, guidance=1.5,
+                 sidechain_max_duck_db=6.0, vocal_gain_db=None,
+                 genre=None, loudness=None,
+                 eq_profile=None, reference=None, quality=None, guidance=None,
                  device="cuda", progress=None, cancel=None, work_dir=None,
-                 lowpass_cutoff=None, space_wet=0.0, space_denoise=0.0,
-                 space_width_db=6.0, balance_target_db=None, bypass=(),
-                 balance_mode=REFERENCE_MODE, style_mode="styled", style_blend=0.85,
-                 cache_enabled=True, noise_mode="other", noise_low_hz=8000.0,
-                 noise_high_hz=20000.0, noise_max_attenuation_db=6.0,
+                 lowpass_cutoff=None, space_wet=None, space_denoise=None,
+                 space_width_db=None, balance_target_db=None, bypass=(),
+                 balance_mode=REFERENCE_MODE, style_mode=None, style_blend=None,
+                 cache_enabled=True, noise_mode=None, noise_low_hz=None,
+                 noise_high_hz=None, noise_max_attenuation_db=None,
                  demucs_model="htdemucs", guitar_gain_db=0.0, guitar_mud_cut_db=0.0,
                  guitar_presence_db=0.0, guitar_harsh_cut_db=0.0, guitar_width_db=0.0,
                  synth_gain_db=0.0, synth_mud_cut_db=0.0, synth_presence_db=0.0,
                  synth_harsh_cut_db=0.0, synth_width_db=0.0,
                  vocal_comp_amount=0.0, vocal_air_db=None):
+    # 处理默认值一律取 DEFAULTS（单一来源，ENG-01）：不传参 = 产品默认，
+    # 与 GUI/CLI 解析结果一致；显式传参（含 0）不受影响。
+    sub_db = DEFAULTS["sub_db"] if sub_db is None else sub_db
+    sat = DEFAULTS["sat"] if sat is None else sat
+    punch_db = DEFAULTS["punch_db"] if punch_db is None else punch_db
+    trans = DEFAULTS["trans"] if trans is None else trans
+    vocal_gain_db = DEFAULTS["vocal_gain_db"] if vocal_gain_db is None else vocal_gain_db
+    genre = DEFAULTS["genre"] if genre is None else genre
+    loudness = DEFAULTS["loudness"] if loudness is None else loudness
+    eq_profile = DEFAULTS["eq_profile"] if eq_profile is None else eq_profile
+    quality = DEFAULTS["quality"] if quality is None else quality
+    guidance = DEFAULTS["guidance"] if guidance is None else guidance
+    space_wet = DEFAULTS["space_wet"] if space_wet is None else space_wet
+    space_denoise = DEFAULTS["space_denoise"] if space_denoise is None else space_denoise
+    space_width_db = DEFAULTS["space_width_db"] if space_width_db is None else space_width_db
+    style_mode = DEFAULTS["style_mode"] if style_mode is None else style_mode
+    style_blend = DEFAULTS["style_blend"] if style_blend is None else style_blend
+    noise_mode = DEFAULTS["noise_mode"] if noise_mode is None else noise_mode
+    noise_low_hz = DEFAULTS["noise_low_hz"] if noise_low_hz is None else noise_low_hz
+    noise_high_hz = DEFAULTS["noise_high_hz"] if noise_high_hz is None else noise_high_hz
+    noise_max_attenuation_db = (DEFAULTS["noise_max_attenuation_db"]
+                                if noise_max_attenuation_db is None
+                                else noise_max_attenuation_db)
     """执行单文件完整链路。progress(stage_idx, frac, label)。
 
     bypass: 可迭代的阶段名（lew/vocals/bass/drums/reshape/soren），命中的阶段位级跳过。
