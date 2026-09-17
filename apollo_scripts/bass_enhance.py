@@ -1,7 +1,7 @@
 # bass_enhance.py — 贝斯 stem 受控增强（包裹感 + 鼓质感版）
 # 目标：补 AI 音乐丢失的①低频包裹感(sub 存在感) ②鼓的质感(punch/clarity)，不轰头。
 # 改动(相对 v20260820)：
-#  - sub 频段(30-60Hz)用 low-shelf 温和抬升，不再对全频段加法叠加；
+#  - sub 频段(30-65Hz)用 low-shelf 温和抬升，不再对全频段加法叠加；
 #  - 新增 60-120Hz 轻度 bell 提升，强化鼓 body/punch；
 #  - 新增瞬态强调(transient emphasize)单独强化鼓点起音；
 #  - 饱和 drive 从固定 2.5 降到 1.6，仅作用于 sub+low-mid，低值不再重染色；
@@ -95,7 +95,7 @@ def saturation_wet(lp, drive=1.6, factor=SAT_OVERSAMPLE_FACTOR,
     return out
 
 
-SUB_SHELF_FC = 60.0
+SUB_SHELF_FC = 65.0
 # 低频侧链受控溢出（v20260910）：Side 的 shelf 新增幅度 = Mid 新增幅度 ×
 # 10^(-6/20)（一半）。不做黑胶刻盘式完全单声道化——数字混音的低频保留
 # 有限立体声（高相关但非全同）。
@@ -120,13 +120,24 @@ def side_shelf_db(sub_db, relative_db=SUB_SHELF_SIDE_RELATIVE_DB):
 def _shelf(x, sr, fc, gain_db, q=0.7071):
     """真 low-shelf（模拟原型 + 双线性变换 + filtfilt 零相位）。
 
-    为什么不用 RBJ biquad：RBJ shelf 在低 fc/小增益组合下会失稳（实测
-    fc=70Hz/sr=44100/+3dB 极点半径 1.39）。模拟原型
-        H(s) = (s² + G^¼·ω0/q·s + √G·ω0²) / (s² + G^−¼·ω0/q·s + G^−½·ω0²)
-    对任意 G>0 极点恒在左半平面，双线性（含 fc 预畸变）后恒稳定。
+    语义契约（开发规格 v2 §6.2；实测频响见 tests/test_sub_shelf_calibration.py，
+    65Hz/6dB 实测：10-20Hz +5.95..6.00dB 渐近满增益、65Hz +3.00dB（dB 域中点）、
+    100Hz +0.92dB、200Hz +0.07dB 退出）：
+      - gain_db = **低频渐近增益**（DC 处精确等于 gain_db），不声称转折频率
+        处也是相同增益——fc 是总提升的 dB 域中点（该处 ≈ gain_db/2）；
+      - gain_db=0 精确恒等（原样返回副本）；
+      - 响应随频率单调下降、无谐振（DSP-05）。
+
+    关于 RBJ：RBJ cookbook 低架在本参数域（fc≤100Hz、|gain|≤12dB、sr=44100）
+    实测极点半径 0.993-0.996，稳定可用——早期"fc=70Hz/+3dB 极点半径 1.39"
+    的失稳记录出自漏除 a0 归一化的旧实现，不是 RBJ 公式本身的问题。
+    本实现继续用模拟原型 H(s) = (s² + G^¼·ω0/q·s + √G·ω0²) /
+    (s² + G^−¼·ω0/q·s + G^−½·ω0²) + 双线性（含 fc 预畸变）：任意 G>0 极点
+    恒在左半平面，且响应已按上述契约标定；换 RBJ 不会得到可测差异。
     filtfilt 幅频取平方，故单次按 gain_db/2 设计（G=10^(gain_db/40)），
-    总提升精确等于 gain_db；fc 为总提升的 dB 域中点频率（30-60Hz sub
-    接近满增益、90Hz+ 快速退出，不与 punch bell 重叠）。gain_db=0 精确恒等。
+    总提升精确等于 gain_db。fc=65Hz 为规格 RC0 候选（§6.2：50/65/80Hz
+    三个内部候选比较后首版固定值，比较记录见
+    docs/analysis/sub_shelf_calibration_20260917.md；不启用自适应选择）。
     """
     if gain_db == 0.0:
         return np.asarray(x, dtype=np.float64).copy()
@@ -709,12 +720,57 @@ def apply_bass_sidechain(bass, sr, drums, amount=0, attack_ms=5, release_ms=150,
     return _finish(out.astype(out_dtype), True, conf, duck)
 
 
+GATE_WINDOW_S = 0.05
+GATE_THRESHOLD_DB = -45.0
+GATE_ATTACK_MS = 40.0
+GATE_RELEASE_MS = 250.0
+
+
+def _gate_curve(power, sr, gate_db=GATE_THRESHOLD_DB,
+                attack_ms=GATE_ATTACK_MS, release_ms=GATE_RELEASE_MS):
+    """功率域 RMS 活动门（开发规格 v2 §6.2）：返回 [0,1] 平滑门曲线。
+
+    输入是**功率**信号（x² 或多声道平均功率）——立体声联动检测在功率域
+    相加/平均，不做波形平均，反相内容不会在检测中抵消。门只用于缩放新增
+    处理差值（调用方），绝不切断原轨尾音。数值路径与旧内联实现逐位一致
+    （mono 回归锚点）。
+    """
+    n = len(power)
+    win = min(int(sr * GATE_WINDOW_S), n)  # 短于窗长时截短核，避免 convolve same 变长
+    env = np.sqrt(np.convolve(power, np.ones(win) / (sr * GATE_WINDOW_S), mode="same"))
+    env_db = 20 * np.log10(env + 1e-12)
+    target = np.where(env_db > gate_db, 1.0, 0.0)
+    a = 1.0 - np.exp(-1.0 / (sr * attack_ms / 1000.0))
+    r = 1.0 - np.exp(-1.0 / (sr * release_ms / 1000.0))
+    gate = np.empty_like(target)
+    acc = 0.0
+    for i in range(len(target)):
+        alpha = a if target[i] >= acc else r
+        acc = acc + alpha * (target[i] - acc)
+        gate[i] = acc
+    return gate
+
+
+def _stereo_activity_gate(bass, sr):
+    """立体声联动活动门：多声道平均功率（L²+R²)/2 → 一条共用门曲线。
+
+    M/S 各自独立检测会把反相低频（M≈0）误判为无活动而冻结 Mid 增强；
+    功率域左右联动（§6.2"活动检测联动左右声道、使用功率而非把左右波形
+    先平均"）保证反相内容仍被视为活跃。检测参考冻结在未处理的原始 stem
+    （与瞬态曲线同口径，规格 §11.4）。
+    """
+    x = np.asarray(bass, dtype=np.float64)
+    power = np.mean(x * x, axis=1) if x.ndim == 2 else x * x
+    return _gate_curve(power, sr)
+
+
 def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
-                      drive=1.6, gate_db=-45.0, attack_ms=40.0, release_ms=250.0,
-                      auto_clarity_gains=None, sat_budget_gain=None,
-                      transient_curves=None):
+                      drive=1.6, gate_db=GATE_THRESHOLD_DB, attack_ms=GATE_ATTACK_MS,
+                      release_ms=GATE_RELEASE_MS, auto_clarity_gains=None,
+                      sat_budget_gain=None, transient_curves=None,
+                      activity_gate=None):
     """增强 bass stem。
-    sub_db   : sub(30-60Hz) low-shelf 提升，给包裹感
+    sub_db   : sub 低架提升（65Hz 中点、低频渐近增益，见 _shelf 契约），给包裹感
     punch_db : 60-120Hz bell 提升，给鼓 body/punch
     sat      : 谐波饱和混入比例 0-1（仅作用于 sub+low-mid，4× 过采样）
     trans    : 瞬态强调强度 0-1（dB 预算制，立体声联动）
@@ -731,6 +787,10 @@ def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
         路径）；否则为调用方从原始立体声冻结的联动曲线 (g_main, g_hf)
         （_enhance_stereo 传入，M/S 共用同一条曲线——左右共用控制量，
         检测参考固定在未处理信号上，规格 §6.5/§11.4）。
+    activity_gate : None=活动门按本信号功率自算（单声道/回归参考路径）；
+        否则为调用方从原始立体声平均功率冻结的联动门曲线（_enhance_stereo
+        传入，M/S 共用——左右联动、功率域检测，反相内容不抵消，规格 §6.2）。
+        门只缩放新增差值（x_eff - x），原轨尾音不被切断。
     """
     x = x.astype(np.float64)
     mud_db, clar_db = (0.0, 0.0)
@@ -773,19 +833,16 @@ def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
     x_eff = transient_emphasize(x_eff, sr, trans * 0.8,
                                 curves=transient_curves)
 
-    # ── 5. RMS 门控：bass 活跃段才应用增强，静音段保持干净 ──
-    win = min(int(sr * 0.05), len(x))  # 短于窗长时截短核，避免 convolve same 变长
-    env = np.sqrt(np.convolve(x ** 2, np.ones(win) / (sr * 0.05), mode="same"))
-    env_db = 20 * np.log10(env + 1e-12)
-    target = np.where(env_db > gate_db, 1.0, 0.0)
-    a = 1.0 - np.exp(-1.0 / (sr * attack_ms / 1000.0))
-    r = 1.0 - np.exp(-1.0 / (sr * release_ms / 1000.0))
-    gate = np.empty_like(target)
-    acc = 0.0
-    for i in range(len(target)):
-        alpha = a if target[i] >= acc else r
-        acc = acc + alpha * (target[i] - acc)
-        gate[i] = acc
+    # ── 5. RMS 活动门控（功率域，§6.2）：bass 活跃段才应用增强；门只缩放
+    # 新增差值，静音段/原轨尾音保持干净。立体声联动时 M/S 共用一条从原始
+    # 双声道平均功率冻结的门曲线（_stereo_activity_gate）。
+    if activity_gate is None:
+        gate = _gate_curve(x * x, sr, gate_db=gate_db, attack_ms=attack_ms,
+                           release_ms=release_ms)
+    else:
+        n = len(x)
+        gate = activity_gate[:n] if len(activity_gate) >= n \
+            else np.concatenate((activity_gate, np.zeros(n - len(activity_gate))))
     x_out = x + (x_eff - x) * gate
 
     return x_out.astype(np.float32)
@@ -795,23 +852,25 @@ def _enhance_stereo(bass, sr, sub_db, punch_db, sat, trans,
                     auto_clarity_gains, sat_budget):
     """M/S 域立体声处理：Mid 全额 sub shelf，Side 按 side_shelf_db 受控溢出。
 
-    punch bell / 饱和 / 瞬态 / 门限对 M、S 用同一参数；门限与瞬态包络按
-    M、S 自身电平计算，近单声道的 S 会被门限自然冻结（无侧链内容可放大，
-    物理上合理）。立体声联动：M、S 传入同一 sat_budget 与 clarity gains。
-    瞬态控制曲线从**原始立体声**（多声道平均功率）冻结一条，M/S 共用
-    （左右共用控制量、检测参考固定在未处理信号上，规格 §6.5/§11.4）。
+    punch bell / 饱和 / 瞬态 / 门限对 M、S 用同一参数。立体声联动（§6.2/§6.5）：
+    瞬态控制曲线与活动门都从**原始立体声**冻结一条（瞬态=多声道平均功率的
+    快慢包络、活动门=多声道平均功率 RMS），M/S 共用——左右共用控制量、
+    检测参考固定在未处理信号上（§11.4），反相内容在功率域不抵消。
+    近单声道的 S 物理上无可放大内容，输出仍保持全同。
     """
     m = bass.mean(axis=1)
     s = (bass[:, 0] - bass[:, 1]) * 0.5
     transient_curves = transient_emphasize_curves(bass, sr, trans * 0.8)
+    activity_gate = _stereo_activity_gate(bass, sr)
     out_m = enhance_bass_stem(
         m, sr, sub_db=sub_db, punch_db=punch_db, sat=sat, trans=trans,
         auto_clarity_gains=auto_clarity_gains, sat_budget_gain=sat_budget,
-        transient_curves=transient_curves)
+        transient_curves=transient_curves, activity_gate=activity_gate)
     out_s = enhance_bass_stem(
         s, sr, sub_db=side_shelf_db(sub_db), punch_db=punch_db, sat=sat,
         trans=trans, auto_clarity_gains=auto_clarity_gains,
-        sat_budget_gain=sat_budget, transient_curves=transient_curves)
+        sat_budget_gain=sat_budget, transient_curves=transient_curves,
+        activity_gate=activity_gate)
     return np.column_stack((out_m + out_s, out_m - out_s))
 
 
@@ -821,7 +880,7 @@ def main():
     ap.add_argument("--in-mix", required=True, type=Path,
                     help="上一阶段完整混音；通过 delta-add 保留分离残差")
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--sub-db", type=float, default=4.0, help="sub(30-60Hz) 提升 dB")
+    ap.add_argument("--sub-db", type=float, default=4.0, help="sub 低频渐近提升 dB（65Hz 低架）")
     ap.add_argument("--punch-db", type=float, default=2.0, help="60-120Hz 鼓 body 提升 dB")
     ap.add_argument("--sat", type=float, default=0.3, help="谐波饱和混入比例 0-1")
     ap.add_argument("--trans", type=float, default=0.3, help="瞬态强调强度 0-1")
