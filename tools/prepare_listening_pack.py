@@ -21,7 +21,14 @@
 可重复运行、确定性（固定 RNG 种子）。listening_pack/ 下 wav 由 *.wav
 gitignore 规则自动忽略；本脚本与 manifest 文件可提交。
 
-用法: python tools/prepare_listening_pack.py [--skip-real] [--keep-work]
+用法: python tools/prepare_listening_pack.py [--round {1,2}] [--skip-real] [--keep-work]
+
+--round 1（默认）：第一轮全量校准包，行为与输出与历史版本完全一致。
+--round 2：弹性隔离轮（第一轮结论：rc0 低频量合适但弹性不足）。
+    sub 固定 2dB，弹性维度（punch/trans/sidechain/clarity 授权）递增：
+    ref0 / rc0（第一轮锚点）/ rc1（rc0 量 + 默认弹性）/ rc1e（更高弹性）。
+    仅 R（真实歌曲）+ A + B（弹性判别力最强的合成类），输出
+    listening_pack/round2/，盲听种子 20260918，全部 4 变体均做 mono 折叠。
 """
 
 from __future__ import annotations
@@ -68,6 +75,27 @@ VARIANTS: dict[str, dict] = {
 }
 
 MONO_VARIANTS = ["ref0", "default_v1610", "rc0"]
+
+# ── Round 2（弹性隔离轮）：sub 固定 2dB，只有弹性维度递增。仅 R+A+B。─────
+ROUND2_BLIND_SEED = 20260918
+ROUND2_VARIANT_ORDER = ["ref0", "rc0", "rc1", "rc1e"]
+ROUND2_VARIANTS: dict[str, dict] = {
+    "ref0": dict(sub_db=0.0, sat=0.0, punch_db=0.0, trans=0.0,
+                 sidechain=0.0, clarity=False, clarity_auth=0.0),
+    "rc0": dict(sub_db=2.0, sat=0.2, punch_db=1.5, trans=0.25,
+                sidechain=0.25, clarity=True, clarity_auth=0.5),
+    "rc1": dict(sub_db=2.0, sat=0.2, punch_db=2.0, trans=0.3,
+                sidechain=0.3333, clarity=True, clarity_auth=0.6667),
+    "rc1e": dict(sub_db=2.0, sat=0.2, punch_db=3.0, trans=0.4,
+                 sidechain=0.5, clarity=True, clarity_auth=1.0),
+}
+ROUND2_CLASSES = ["A", "B"]                # 弹性判别力最强的两组合成素材（同 round-1 种子）
+ROUND2_LISTEN_QUESTIONS = [
+    "低频量：rc1/rc1e 是否与 rc0 保持同一量级（sub 不变，低频量不应反弹变多）？",
+    "弹性：相比 rc0，kick 起音 / bass 律动是否更有弹性？rc1 与 rc1e 哪个合适？",
+    "过量检查：rc1e 是否开始出现低频偏多 / 抽吸（pumping）/ 低频变硬？",
+    "mono 折叠（小音箱）下以上结论是否仍然成立？",
+]
 
 REAL_INPUT = Path(r"D:\_3.AI\audio_upscale\_e2e_tmp\inference_samples\set_3\input.wav")
 REAL_CLASS = "R"
@@ -525,11 +553,15 @@ def fmt_knobs(v: dict) -> str:
 
 
 def write_manifests(packed: list[dict], recs: dict, real_info: dict,
-                    dsp_py: str, repover: str) -> None:
+                    dsp_py: str, repover: str, round_num: int = 1) -> None:
     now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    purpose = ("低频弹性隔离实验（Round 2）：sub 固定 2dB，弹性（punch/trans/sidechain/"
+               "clarity 授权）递增，rc0 为第一轮锚点") if round_num == 2 else \
+              "低频（bass/drums）DSP 试听校准（开发规格 §6.7 / §13）"
     machine = {
         "schema": "sorenstudio_listening_pack/1",
-        "purpose": "低频（bass/drums）DSP 试听校准（开发规格 §6.7 / §13）",
+        "round": round_num,
+        "purpose": purpose,
         "generated": now,
         "repo_version": repover,
         "blind_seed": BLIND_SEED,
@@ -544,11 +576,15 @@ def write_manifests(packed: list[dict], recs: dict, real_info: dict,
             "真实歌曲素材（若包含）包含分离残差，用 demucs htdemucs 四轨分离。",
             "所有非 ref0 变体按 integrated LUFS 匹配到同素材 ref0（残差 ≤ 0.2 LU）。",
             "mono 文件为匹配后立体声文件的 (L+R)/2 折叠（双声道等电平写出）。",
-            "盲名由固定种子 20260917 洗牌，映射仅见 KEY.md（先听后读）。",
+            f"盲名由固定种子 {BLIND_SEED} 洗牌，映射仅见 KEY.md（先听后读）。",
         ],
         "files": packed,
         "dsp_diagnostics": {},
     }
+    if round_num == 2:
+        machine["notes"].append(
+            "Round 2 假设：rc1/rc1e 的响度匹配增益应小于第一轮 default（R 组 +3.00dB）——"
+            "sub=2 抬升峰值更少，-0.5dBTP 静态天花板引发的匹配缩放更小。实际值见 files[].match_gain_db。")
 
     # 诊断（按 素材 → 变体）
     diag = {}
@@ -570,7 +606,10 @@ def write_manifests(packed: list[dict], recs: dict, real_info: dict,
 
     # ── MANIFEST.md ──
     L: list[str] = []
-    L.append("# ShadowBuster 低频试听校准包（§6.7 低频专项验收 / §13 试听校准）\n")
+    if round_num == 2:
+        L.append("# ShadowBuster 低频试听校准包 Round 2（弹性隔离：sub 固定 2dB，弹性递增）\n")
+    else:
+        L.append("# ShadowBuster 低频试听校准包（§6.7 低频专项验收 / §13 试听校准）\n")
     L.append(f"- 生成时间：{now}　版本：{repover}　盲听种子：{BLIND_SEED}")
     L.append(f"- DSP：真实生产脚本 apollo_scripts/bass_enhance.py + drum_enhance.py（子进程原样调用）")
     L.append(f"- 响度匹配：integrated LUFS（audio_metrics），非 ref 变体 → 同素材 ref0，残差 ≤ {MATCH_TOL_LU} LU；"
@@ -584,7 +623,11 @@ def write_manifests(packed: list[dict], recs: dict, real_info: dict,
     L.append("## 比对协议（§13.4）\n")
     L.append("- 所有变体已响度匹配（≤ 0.2 LU），用**外部播放器**以舒适音量逐对比较，不要用浏览器/混音软件做判断。")
     L.append("- **偏好与损伤分开评**：哪个更好听（preference）与 是否出现抽吸/变薄/断裂/染色（damage）分别记录。")
-    L.append("- **强设置应仍能表达用户意图**：strong 档若听起来与 default 无差别或反而更弱，属于校准问题，请记录。")
+    if round_num == 2:
+        L.append("- **隔离实验**：非 ref 变体的 sub/sat 完全相同（低频量维度固定），仅弹性维度"
+                 "（punch/trans/sidechain/clarity 授权）递增；rc0 为第一轮锚点（低频量对、弹性不足）。")
+    else:
+        L.append("- **强设置应仍能表达用户意图**：strong 档若听起来与 default 无差别或反而更弱，属于校准问题，请记录。")
     L.append("- 同素材类内比较（A 组内比 A、B 组内比 B …）；mono 文件用于小音箱/单声道检验。")
     L.append("- ref0 是无处理恒等参考（响度匹配后），可作为“原样”基线。\n")
 
@@ -650,9 +693,21 @@ def write_manifests(packed: list[dict], recs: dict, real_info: dict,
 # ── 主流程 ──────────────────────────────────────────────────────────────
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--round", type=int, default=1, choices=(1, 2),
+                    help="1=第一轮全量校准包（默认，行为不变）；2=弹性隔离轮（R+A+B，输出 round2/）")
     ap.add_argument("--skip-real", action="store_true", help="跳过真实歌曲分离/渲染")
     ap.add_argument("--keep-work", action="store_true", help="保留 _work 中间产物")
     args = ap.parse_args()
+
+    if args.round == 2:
+        global VARIANT_ORDER, VARIANTS, MONO_VARIANTS, BLIND_SEED, PACK_DIR, WORK_DIR, LISTEN_QUESTIONS
+        VARIANT_ORDER = list(ROUND2_VARIANT_ORDER)
+        VARIANTS = dict(ROUND2_VARIANTS)
+        MONO_VARIANTS = list(ROUND2_VARIANT_ORDER)      # round 2：全部 4 变体做 mono 折叠
+        BLIND_SEED = ROUND2_BLIND_SEED
+        PACK_DIR = REPO / "listening_pack" / "round2"
+        WORK_DIR = PACK_DIR / "_work"
+        LISTEN_QUESTIONS = list(ROUND2_LISTEN_QUESTIONS)
 
     log(f"listening pack -> {PACK_DIR}")
     PACK_DIR.mkdir(parents=True, exist_ok=True)
@@ -675,6 +730,8 @@ def main() -> int:
 
     # 1) 合成素材类
     for cls_key, (fn, seed) in SYNTH_CLASSES.items():
+        if args.round == 2 and cls_key not in ROUND2_CLASSES:
+            continue
         log(f"[class {cls_key}] synthesizing (seed {seed}) ...")
         rng = np.random.default_rng(seed)
         bass, drums = fn(rng)
@@ -737,7 +794,7 @@ def main() -> int:
     blind_rng = np.random.default_rng(BLIND_SEED)
     failures: list[str] = []
     log("")
-    log("writing matched outputs (blind naming, seed 20260917) ...")
+    log(f"writing matched outputs (blind naming, seed {BLIND_SEED}) ...")
     summary_rows: list[tuple] = []
 
     for cls_key in class_order:
@@ -820,7 +877,7 @@ def main() -> int:
         log(f"  class {cls_key}: " + ", ".join(f"{codes[v]}={v}" for v in present))
 
     # 4) manifest
-    write_manifests(packed, recs, real_info, dsp_py, repover)
+    write_manifests(packed, recs, real_info, dsp_py, repover, round_num=args.round)
 
     # 5) 汇总表
     log("")
