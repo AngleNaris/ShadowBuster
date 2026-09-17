@@ -59,7 +59,7 @@ def map_ui_params(params, six_stem_available=None):
         return default if value is None else value
 
     denoise = float(params.get("denoise", 0.0) or 0.0)
-    punch = float(params.get("punch", 2.0) or 0.0)
+    punch = float(params.get("punch", backend.DEFAULTS["punch_db"]) or 0.0)
     guitar = float(params.get("guitar", 0.0) or 0.0)
     try:
         quality = int(params.get("quality", 1))

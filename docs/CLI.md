@@ -17,7 +17,7 @@ Get-Content -Raw -Encoding UTF8 'D:\Music\run-001.json'
 
 将 EXE 路径替换为实际安装路径。`--input` 可以重复提供；同名输出冲突会拒绝。默认不覆盖已有音频，确需覆盖时显式使用 `--overwrite`。结果 JSON 必须是新路径，避免覆盖旧报告。运行成功退出 0；处理/文件错误退出 1；参数解析错误退出 2（解析错误不生成 JSON）。JSON 包含 status、exit_code、outputs、error。
 
-`--cpu` 使用 CPU，默认 cuda。主要旋钮与 UI 范围一致：Sub 0–12dB，Punch 0–10dB，sat/trans/space-wet/space-denoise 0–1，space-width-db 0–12dB。默认母带 style-mode=off（UI 无风格），默认 space-wet=.6、space-denoise=.2。`--loudness loud` 不只是更高的目标响度（流派 profile +2.5dB），还配合更快的限制器恢复（release 由 150ms 收紧到 80ms，其余响度档保持 150ms）。`--style-mode styled` 时 `--style-blend` 是风格处理强度（0–1，默认 0.85）：0 不施加风格处理，1 完整风格处理；它是处理强度而非波形比例，100%（1.0）与旧版"末端干湿混合"的实现不再位级一致。off / eq_only 忽略该强度；eq_only 的 EQ 与强度相互独立。`--help` 列出完整参数。bypass 不跳过分轨阶段，仅当低频/鼓/声场/人声四个分轨消费阶段全部旁路时才自动跳过分轨（此时分轨产物无人消费）。旁路 Lew 时输入若探测到非 44.1kHz 采样率，会先统一重采样为 44.1kHz 再进入后续阶段（Soren 母带只接受 44.1k；已是 44.1k 不重编码；六个阶段全部旁路时逐字节透传）。
+`--cpu` 使用 CPU，默认 cuda。主要旋钮与 UI 范围一致：Sub 0–12dB，Punch 0–10dB，sat/trans/space-wet/space-denoise 0–1，space-width-db 0–12dB。默认母带 style-mode=off（UI 无风格），默认 space-wet=.6、space-denoise=.2。**低频默认值经两轮听音校准定版（2026-09-17）**：`--sub-db 2 --punch-db 3 --trans 0.4 --sat 0.2`（此前 6/2/0.3/0.3；sub 6/9 被判低频偏多，弹性档 rc1e 在真实歌曲上最好，记录见 `listening_pack/ROUND1_RESULTS.md` / `ROUND2_RESULTS.md`）。三旋钮派生的 Kick/Bass 侧链默认 0.5、auto-clarity 授权 1.0（u_low=1.0）。`--loudness loud` 不只是更高的目标响度（流派 profile +2.5dB），还配合更快的限制器恢复（release 由 150ms 收紧到 80ms，其余响度档保持 150ms）。`--style-mode styled` 时 `--style-blend` 是风格处理强度（0–1，默认 0.85）：0 不施加风格处理，1 完整风格处理；它是处理强度而非波形比例，100%（1.0）与旧版"末端干湿混合"的实现不再位级一致。off / eq_only 忽略该强度；eq_only 的 EQ 与强度相互独立。`--help` 列出完整参数。bypass 不跳过分轨阶段，仅当低频/鼓/声场/人声四个分轨消费阶段全部旁路时才自动跳过分轨（此时分轨产物无人消费）。旁路 Lew 时输入若探测到非 44.1kHz 采样率，会先统一重采样为 44.1kHz 再进入后续阶段（Soren 母带只接受 44.1k；已是 44.1k 不重编码；六个阶段全部旁路时逐字节透传）。
 
 ## 母带验证与试听
 

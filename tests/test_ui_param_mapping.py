@@ -32,8 +32,9 @@ def test_zero_denoise_keeps_legacy_mode():
 def test_punch_drives_bounded_sidechain():
     """v1.6.10 起 sidechain 由低频协调授权 u_low 派生（规格 §6.3）：
     clip(max(sub/4, punch/3, trans/0.5, sat/0.4), 0, 1)，amount = u_low/2
-    （max_duck=6 时理论最大 duck = 3×u_low dB，精确对应规格 D=3.0×u_low）。"""
-    # 默认旋钮（sub=6 等）授权 1.0 → amount 0.5
+    （max_duck=6 时理论最大 duck = 3×u_low dB，精确对应规格 D=3.0×u_low）。
+    听音定版默认（sub2/punch3/trans.4/sat.2）→ u_low=1.0 → amount 0.5。"""
+    # 默认旋钮授权 1.0 → amount 0.5
     assert app_main.map_ui_params({})[0]["sidechain_amount"] == 0.5
     # 全零低频旋钮 → 授权 0 → 无暗中让位/去掩蔽（规格 §5.3）
     zero = app_main.map_ui_params(

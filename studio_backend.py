@@ -31,10 +31,14 @@ GPU_ENV_VERSION = "1.5.0"
 # 任何不传全参的调用方都会拿到与产品默认不同的处理。现在以本表为准，
 # tests/test_default_source.py 校验三层一致。
 DEFAULTS = {
-    "sub_db": 6.0,
-    "punch_db": 2.0,
-    "trans": 0.3,
-    "sat": 0.3,
+    # 低频默认值经两轮听音校准定版（listening_pack/ROUND1_RESULTS.md /
+    # ROUND2_RESULTS.md，规格 §13）：sub 6/9 被判偏多、2 合适；弹性档
+    # rc1e（punch 3 / trans 0.4）在真实歌曲上最好。sidechain/clarity
+    # 深度由 u_low 授权公式从这四个旋钮自动派生（u_low=1.0 → sc 0.5）。
+    "sub_db": 2.0,
+    "punch_db": 3.0,
+    "trans": 0.4,
+    "sat": 0.2,
     "space_wet": 0.6,
     "space_denoise": 0.2,
     "space_width_db": 6.0,

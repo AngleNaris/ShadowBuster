@@ -135,10 +135,13 @@ def test_gui_collected_defaults_match_single_source():
 
 
 def test_defaults_table_is_frozen_contract():
-    """表内容 = 当前产品默认（v1.6.9 公开 UI 默认；改动默认值必须是有意识的
-    profile 决策——改这里会同时改 GUI/CLI/后端三层）。"""
-    assert D["sub_db"] == 6.0 and D["punch_db"] == 2.0
-    assert D["trans"] == 0.3 and D["sat"] == 0.3
+    """表内容 = 当前产品默认。低频四旋钮为两轮听音校准定版（2026-09-17，
+    listening_pack/ROUND1_RESULTS.md + ROUND2_RESULTS.md，规格 §13）：
+    sub 6/9 被判偏多 → 2；弹性档 rc1e（punch 3 / trans 0.4）在真实歌曲
+    上最好；sat 0.2。改动这些默认值必须是有意识的 profile 决策并附听音
+    记录——改这里会同时改 GUI/CLI/后端三层。"""
+    assert D["sub_db"] == 2.0 and D["punch_db"] == 3.0
+    assert D["trans"] == 0.4 and D["sat"] == 0.2
     assert D["space_wet"] == 0.6 and D["space_denoise"] == 0.2
     assert D["space_width_db"] == 6.0 and D["vocal_gain_db"] == 0.0
     assert D["guidance"] == 1.5 and D["quality"] == 1
