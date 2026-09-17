@@ -3,7 +3,9 @@
 # （4-stem 分离，kick 起音点低频能量中位 99.9% 在 drums 轨）鼓的起音根本不在 bass 轨
 # —— bass 轨上的"鼓处理"实际只作用于贝斯。本脚本把同样的处理意图施加到鼓所在的轨：
 #  ① kick body/punch：90Hz bell（60-120Hz），只抬鼓的低频体，不碰其他轨；
-#  ② 全频段瞬态强调：kick beater click / snare crack / hat attack（HP>120Hz 快包络）；
+#  ② 全频段瞬态强调（v20260917 起为 dB 预算制、立体声联动：检测功率取多声道
+#     平均，左右共用同一条控制曲线——左右互换输入得到对应互换输出；
+#     主敲击区 120Hz-8kHz ≤ 4×trans dB，高频区减半防镲片硬化）；
 #  ③ RMS 门控改快 attack(5ms)：跟上密集鼓点，起音第一击就有增强；release 150ms；
 #  ④ 以完整输入混音为基底 delta-add 后做 -0.5dB 峰值保护，保留分离残差并给下游母带留 headroom。
 # 用法: python drum_enhance.py --drums drums.wav --in-mix premix.wav --out out.wav [--punch-db 2] [--trans 0.3]
@@ -16,7 +18,7 @@ import soundfile as sf
 from audio_validation import validate_audio_pair, finite_range
 from stage_metadata import write_report
 
-from bass_enhance import _bell, _transient
+from bass_enhance import _bell, transient_emphasize, transient_emphasize_curves
 
 
 def _gate(x, sr, gate_db=-45.0, attack_ms=5.0, release_ms=150.0):
@@ -35,15 +37,19 @@ def _gate(x, sr, gate_db=-45.0, attack_ms=5.0, release_ms=150.0):
     return gate
 
 
-def enhance_drum_stem(x, sr, punch_db=2.0, trans=0.3):
-    """增强鼓 stem。punch_db: 90Hz bell 提升量; trans: 瞬态强调强度 0-1。"""
+def enhance_drum_stem(x, sr, punch_db=2.0, trans=0.3, transient_curves=None):
+    """增强鼓 stem。punch_db: 90Hz bell 提升量; trans: 瞬态强调强度 0-1。
+
+    单声道输入（或 transient_curves=None）时瞬态曲线按本信号自算；立体声
+    调用方应从原始 (n,2) drums 冻结联动曲线传入（左右共用控制量）。
+    """
     x = x.astype(np.float64)
     if punch_db == 0 and trans == 0:
         return x.copy()
     # 1. kick body/punch：90Hz bell，只动 60-120Hz
     x_warm = _bell(x, sr, 90.0, punch_db, q=1.2)
-    # 2. 全频段瞬态强调（_transient 用 HP>120Hz 快包络，覆盖 kick click/snare/hat 起音）
-    x_eff = _transient(x_warm, sr, trans)
+    # 2. 全频段瞬态强调（主敲击区 120Hz-8kHz + 高频区减半，立体声联动）
+    x_eff = transient_emphasize(x_warm, sr, trans, curves=transient_curves)
     # 3. 门控：鼓不响的段落保持原样
     gate = _gate(x, sr)
     return x + (x_eff - x) * gate
@@ -80,8 +86,13 @@ def main():
         drums = drums * (10 ** (args.drums_gain_db / 20.0))
 
     out = np.zeros_like(drums)
+    # 瞬态控制曲线从原始立体声冻结（多声道平均功率，左右共用一条）：
+    # 每声道独立计算会让左右漂移、左右互换不对称（规格 §6.5 / DSP-09）。
+    transient_curves = transient_emphasize_curves(drums, sr, args.trans)
     for c in range(drums.shape[1]):
-        out[:, c] = enhance_drum_stem(drums[:, c], sr, punch_db=args.punch_db, trans=args.trans)
+        out[:, c] = enhance_drum_stem(drums[:, c], sr, punch_db=args.punch_db,
+                                      trans=args.trans,
+                                      transient_curves=transient_curves)
     out = in_mix + (out - original_drums)
 
     # 与 bass_enhance 相同的约定：混合后统一留 -0.5dB 母带余量（真峰值由下游 Soren 负责）

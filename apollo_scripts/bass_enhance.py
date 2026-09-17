@@ -31,6 +31,14 @@
 #    duck ≤ max_duck_db 且按置信等比缩小；
 #  - main 集成仅在 --sidechain-amount > 0 且提供 --drums 时生效；delta-add
 #    与既有参数默认完全不变。
+# v20260917（开发规格 v2 §6.5/§6.6，P2 批次；DSP 代码变更经代码哈希自动
+# 使既有缓存失效）：
+#  - 瞬态检测重写：立体声联动的平滑功率快/慢包络比值（dB）+ 相对活动门 +
+#    显式 dB 预算（主敲击区 120-8kHz ≤ 4×amount dB，高频区减半），移除按
+#    整曲唯一最大事件的归一化——单个巨大瞬态不再吃掉其余鼓点的量程，稳态
+#    正弦不再持续触发，整曲电平缩放不改变处理性格（DSP-07/09/16/17）；
+#  - 饱和 4× 过采样：tanh 支路上采样后非线性、抗混叠下采样回落（分块处理
+#    控内存），干湿零相位对齐（DSP-14）。
 import argparse
 from pathlib import Path
 
@@ -45,6 +53,44 @@ from scipy import ndimage, signal
 def soft_clip(x, drive):
     """tanh 软限幅产生温和谐波"""
     return np.tanh(x * drive) / np.tanh(drive)
+
+
+# ── 饱和 4× 过采样（开发规格 v2 §6.6；DSP-14）───────────────────────────
+# 路径：先限带（调用方 _lp200）→ 上采样 → tanh → 抗混叠下采样回落。
+# 过采样把非线性谐波搬出基带后由下采样 FIR 压制，混叠残余远低于原生采样率
+# 直通；resample_poly 补偿 FIR 群延迟，干湿零相位对齐。长信号分块处理
+# （块间留上下文余量 ≫ FIR 半长/过采样因子），峰值内存与短信号同量级。
+SAT_OVERSAMPLE_FACTOR = 4
+SAT_CHUNK_SAMPLES = 1 << 19      # ≈12s @44.1k；分块控内存
+SAT_CHUNK_CONTEXT = 256          # FIR 半长/过采样因子 ≈ 10 样本，256 为 25 倍余量
+
+
+def saturation_wet(lp, drive=1.6, factor=SAT_OVERSAMPLE_FACTOR,
+                   chunk=SAT_CHUNK_SAMPLES):
+    """4× 过采样 tanh 饱和湿路径（输入应为已限带信号）。
+
+    drive→0 时 soft_clip(x·d)/tanh(d) → x，可用作干湿对齐的自检。
+    0% 混合由调用方处理（sat=0 不调用本函数即逐样本恒等）。
+    """
+    x = np.asarray(lp, dtype=np.float64)
+    n = len(x)
+    if n == 0:
+        return x.copy()
+
+    def _one(seg):
+        up = signal.resample_poly(seg, factor, 1)
+        return signal.resample_poly(soft_clip(up, drive), 1, factor)
+
+    if n <= chunk:
+        return _one(x)
+    out = np.empty(n)
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        lo = max(0, start - SAT_CHUNK_CONTEXT)
+        hi = min(n, end + SAT_CHUNK_CONTEXT)
+        seg = _one(x[lo:hi])
+        out[start:end] = seg[start - lo:end - lo]
+    return out
 
 
 SUB_SHELF_FC = 60.0
@@ -106,28 +152,148 @@ def _bell(x, sr, fc, gain_db, q=1.2):
     return signal.lfilter(b, a, x)
 
 
-def _transient(x, sr, amount, fc=120.0, q=0.7):
-    """瞬态强调：提取高频包络并把攻击段单独放大，强化鼓点起音"""
-    # 用高通突出瞬态，再做单边整流得到瞬态包络
-    hp = signal.sosfiltfilt(
-        signal.butter(2, fc, "highpass", fs=sr, output="sos"), x, padlen=0
-    )
-    env = np.abs(hp)
-    # 快攻击慢释放，得到"只在起音出现"的瞬态权重
-    attack = 1.0 - np.exp(-1.0 / (sr * 0.005))
-    release = 1.0 - np.exp(-  1.0 / (sr * 0.08))
-    w = np.empty_like(env)
-    prev = 0.0
-    for i in range(len(env)):
-        a = attack if env[i] > prev else release
-        prev = prev + a * (env[i] - prev)
-        w[i] = max(0.0, env[i] - prev)  # 只取"超出慢包络"的快速变化 = 瞬态
-    wmax = np.max(w)
-    if wmax > 1e-9:
-        w /= wmax
+# ── 瞬态检测 v2（开发规格 v2 §6.5；DSP-07/09/16/17）─────────────────────
+# 旧实现（HP→|·|→快慢包络差→按整曲最大值归一→幅度域加法）的三个结构性问题：
+#   1) 全曲唯一最大事件决定量程：一个巨大瞬态吃掉所有其它鼓点的增强比例，
+#      且更响的同一素材会得到完全不同的处理性格；
+#   2) 逐声道独立包络：左右漂移，左右互换不对称；
+#   3) 幅度域叠加无明确上限：显示值与实际 dB 关系不可解释。
+# v2 契约：检测 = 平滑功率的快/慢包络比值（dB，电平无关的相对量）；控制量
+# 立体声联动（多声道平均功率导出，左右共用同一条增益曲线，左右互换输入 →
+# 输出对应互换）；活动门为相对门（慢包络 P95 参考，整曲电平缩放不改变处理
+# 性格）；应用 = 频带内 dB 预算增益（主敲击区 120Hz-8kHz ≤ 4×amount dB，
+# 高频区减半防镲片硬化）。稳态信号（连续正弦/持续长音）包络稳定后比值→0dB，
+# 不再持续触发。amount=0 精确恒等。
+TRANS_FAST_MS = 5.0             # 快包络：跟上起音
+TRANS_SLOW_MS = 80.0            # 慢包络：局部平均电平基准
+TRANS_ONSET_THRESHOLD_DB = 6.0  # 快/慢功率比值超出该值才累积起音证据
+TRANS_KNEE_DB = 6.0             # 软转折宽度：证据 0→满量程线性上升
+TRANS_MAIN_BUDGET_DB = 4.0      # amount=1 主敲击区最大起音增强（dB）
+TRANS_HF_REL_BUDGET = 0.5       # 高频区预算为主区一半
+TRANS_MAIN_LO_HZ = 120.0        # 主敲击区：kick click / snare crack
+TRANS_MAIN_HI_HZ = 8000.0
+TRANS_HF_LO_HZ = 8000.0         # 高频区：hi-hat / cymbal 起音
+TRANS_GATE_REF_PCT = 95.0       # 活动门参考：慢包络分位（局部稳健统计）
+TRANS_GATE_REL_DB = -40.0       # 慢包络低于参考该值 → 不活跃（相对门）
+TRANS_GATE_ATTACK_MS = 5.0      # 门快开：首击即增强
+TRANS_GATE_RELEASE_MS = 200.0   # 门慢关：尾音不闪断
+TRANS_FRAME_HOP = 64            # 包络帧步长（≈1.5ms@44.1k ≪ 快包络常数）
+TRANS_EPS_POW = 1e-24           # 功率域下限，防 0/0
+
+
+def _frame_power(band, hop):
+    """(n,ch)/(n,) 带通信号 → (帧功率, 原长度)。声道平均功率，反相不抵消。"""
+    x = np.asarray(band, dtype=np.float64)
+    p = x * x if x.ndim == 1 else np.mean(x * x, axis=1)
+    n = len(p)
+    pad = (-n) % hop
+    if pad:
+        p = np.concatenate((p, np.zeros(pad)))
+    return p.reshape(-1, hop).mean(axis=1), n
+
+
+def _frame_onepole(pf, hop, sr, ms):
+    """帧域一阶平滑（lfilter 实现，等效采样域同时间常数）。"""
+    a = 1.0 - np.exp(-hop / (sr * ms / 1000.0))
+    return signal.lfilter([a], [1.0], pf)
+
+
+def _relative_activity_gate(e_slow, hop, sr):
+    """相对活动门：以慢包络 P95 为参考（局部稳健统计，电平无关）。
+
+    门目标经快开/慢关一阶平滑；全曲参考幅度≈0（静音/极短）时门恒 0。
+    """
+    if not len(e_slow):
+        return np.zeros(0)
+    ref = float(np.percentile(e_slow, TRANS_GATE_REF_PCT))
+    if ref <= TRANS_EPS_POW:
+        return np.zeros(len(e_slow))
+    floor = ref * 10.0 ** (TRANS_GATE_REL_DB / 10.0)   # 功率域
+    target = (e_slow > floor).astype(np.float64)
+    a = 1.0 - np.exp(-hop / (sr * TRANS_GATE_ATTACK_MS / 1000.0))
+    r = 1.0 - np.exp(-hop / (sr * TRANS_GATE_RELEASE_MS / 1000.0))
+    out = np.empty(len(target))
+    acc = 0.0
+    for i in range(len(target)):
+        alpha = a if target[i] >= acc else r
+        acc += alpha * (target[i] - acc)
+        out[i] = acc
+    return out
+
+
+def _transient_bands(x2, sr):
+    """主敲击区/高频区两个检测-施加频带（零相位，检测与施加同带）。"""
+    hf_hi = min(TRANS_HF_LO_HZ * 2.5, 0.45 * sr)
+    return (_bandpass_time(x2, sr, TRANS_MAIN_LO_HZ, TRANS_MAIN_HI_HZ),
+            _bandpass_time(x2, sr, TRANS_HF_LO_HZ, hf_hi))
+
+
+def _transient_band_curve(band, sr, budget_db, hop=TRANS_FRAME_HOP):
+    """单频带起音控制曲线（线性增益，1.0=不加）；立体声联动检测。"""
+    n = len(band)
+    if budget_db <= 0.0 or n == 0:
+        return np.ones(n)
+    pf, n_src = _frame_power(band, hop)
+    e_fast = _frame_onepole(pf, hop, sr, TRANS_FAST_MS)
+    e_slow = _frame_onepole(pf, hop, sr, TRANS_SLOW_MS)
+    ratio_db = 10.0 * np.log10((e_fast + TRANS_EPS_POW) / (e_slow + TRANS_EPS_POW))
+    evidence = np.clip((ratio_db - TRANS_ONSET_THRESHOLD_DB) / TRANS_KNEE_DB,
+                       0.0, 1.0)
+    gate = _relative_activity_gate(e_slow, hop, sr)
+    g_db = np.clip(budget_db * evidence * gate, 0.0, budget_db)
+    centers = (np.arange(len(g_db)) + 0.5) * hop
+    return np.interp(np.arange(n_src), centers, 10.0 ** (g_db / 20.0))
+
+
+def transient_emphasize_curves(x, sr, amount):
+    """计算立体声联动瞬态控制曲线（不施加）。返回 (g_main, g_hf) 或 None。
+
+    检测功率取多声道平均（反相不抵消）；曲线对左右互换不变（DSP-09）。
+    amount<=0 → None（调用方按恒等处理）。调用方负责把曲线冻结在未处理的
+    检测参考上（规格 §11.4），并对长度一致性负责（管线同源分轨等长）。
+    """
+    amount = float(amount)
+    if amount <= 0.0:
+        return None
+    x2 = np.asarray(x, dtype=np.float64)
+    if x2.ndim == 1:
+        x2 = x2[:, None]
+    main_band, hf_band = _transient_bands(x2, sr)
+    g_main = _transient_band_curve(main_band, sr, TRANS_MAIN_BUDGET_DB * amount)
+    g_hf = _transient_band_curve(
+        hf_band, sr, TRANS_MAIN_BUDGET_DB * TRANS_HF_REL_BUDGET * amount)
+    return g_main, g_hf
+
+
+def transient_emphasize(x, sr, amount, curves=None):
+    """立体声联动瞬态强调（dB 预算制）。x: (n,) 或 (n,ch)。
+
+    curves: 调用方预计算的联动曲线 (g_main, g_hf)（如 _enhance_stereo 从
+    原始立体声冻结的参考）；None 时按 x 自身频带计算（单声道/回归参考
+    路径，与旧 _transient 的"检测即施加对象"语义一致）。amount<=0 精确
+    恒等（返回 float64 副本）。曲线长度不齐时截断/以 1.0 补齐（防御性，
+    生产路径同源等长）。
+    """
+    x = np.asarray(x)
+    if float(amount) <= 0.0 or len(x) == 0:
+        return x.astype(np.float64, copy=True)
+    squeeze = x.ndim == 1
+    x2 = x[:, None].astype(np.float64) if squeeze else x.astype(np.float64)
+    n = x2.shape[0]
+    main_band, hf_band = _transient_bands(x2, sr)
+    if curves is None:
+        g_main = _transient_band_curve(main_band, sr, TRANS_MAIN_BUDGET_DB * amount)
+        g_hf = _transient_band_curve(
+            hf_band, sr, TRANS_MAIN_BUDGET_DB * TRANS_HF_REL_BUDGET * amount)
     else:
-        w[:] = 0.0
-    return x + hp * w * amount
+        g_main, g_hf = curves
+
+    def _fit(g):
+        return g[:n] if len(g) >= n else np.concatenate((g, np.ones(n - len(g))))
+
+    out = x2 + main_band * (_fit(g_main)[:, None] - 1.0) \
+              + hf_band * (_fit(g_hf)[:, None] - 1.0)
+    return out[:, 0] if squeeze else out
 
 
 AUTO_CLARITY_MUD_CENTER_HZ = 285.0
@@ -245,7 +411,7 @@ def compute_sat_budget_gain(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, drive=1.6,
             if mud_db != 0.0 or clar_db != 0.0:
                 xc = apply_auto_clarity_eq(xc, sr, mud_db, clar_db)
         lp = _lp200(_warm_stage(xc, sr, sub_db, punch_db), sr)
-        delta = sat * (soft_clip(lp, drive) - lp)
+        delta = sat * (saturation_wet(lp, drive) - lp)
         e_gen += _band_mean_square(delta, sr, SAT_BUDGET_LOW_HZ, SAT_BUDGET_HIGH_HZ)
         e_lm += _band_mean_square(xc, sr, SAT_BUDGET_LOW_HZ, SAT_BUDGET_HIGH_HZ)
         e_low += _band_mean_square(xc, sr, SAT_BUDGET_LOWBAND_LO_HZ, SAT_BUDGET_LOWBAND_HI_HZ)
@@ -543,12 +709,13 @@ def apply_bass_sidechain(bass, sr, drums, amount=0, attack_ms=5, release_ms=150,
 
 def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
                       drive=1.6, gate_db=-45.0, attack_ms=40.0, release_ms=250.0,
-                      auto_clarity_gains=None, sat_budget_gain=None):
+                      auto_clarity_gains=None, sat_budget_gain=None,
+                      transient_curves=None):
     """增强 bass stem。
     sub_db   : sub(30-60Hz) low-shelf 提升，给包裹感
     punch_db : 60-120Hz bell 提升，给鼓 body/punch
-    sat      : 谐波饱和混入比例 0-1（仅作用于 sub+low-mid）
-    trans    : 瞬态强调强度 0-1
+    sat      : 谐波饱和混入比例 0-1（仅作用于 sub+low-mid，4× 过采样）
+    trans    : 瞬态强调强度 0-1（dB 预算制，立体声联动）
     auto_clarity_gains : None=关闭（默认，行为与旧版位级一致）；否则为
         analyze_auto_clarity() 返回的 (mud_db, clarity_db)，在 sub 增强
         **之前**施加同一组宽频 EQ。立体声联动：两声道必须传同一组增益。
@@ -558,6 +725,10 @@ def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
         compute_sat_budget_gain() 结果）。sat=0 或因子=1.0 时与旧版位级一致；
         <1 时仅衰减 sat 新增的 180-500Hz 增量（≤-3dB，非硬预算），原 stem
         不作 EQ，<120Hz 仅裙边泄漏量级改变（带通非 brickwall）。
+    transient_curves : None=瞬态控制曲线按本信号自行计算（单声道/回归参考
+        路径）；否则为调用方从原始立体声冻结的联动曲线 (g_main, g_hf)
+        （_enhance_stereo 传入，M/S 共用同一条曲线——左右共用控制量，
+        检测参考固定在未处理信号上，规格 §6.5/§11.4）。
     """
     x = x.astype(np.float64)
     mud_db, clar_db = (0.0, 0.0)
@@ -573,9 +744,9 @@ def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
 
     # ── 1+2. 包裹感与鼓质感（与旧版同序：sub low-shelf + punch bell） ──
     x_warm = _warm_stage(x, sr, sub_db, punch_db)
-    # ── 3. 谐波饱和：仅作用于 sub+low-mid（再低通一次避免高频染色） ──
+    # ── 3. 谐波饱和：仅作用于 sub+low-mid（限带 → 4× 过采样 tanh → 回落）──
     lp = _lp200(x_warm, sr)
-    x_sat = soft_clip(lp, drive)
+    x_sat = saturation_wet(lp, drive)
     x_eff = (1.0 - sat) * lp + sat * x_sat
     # ── 3b. 饱和低中频预算（启发式/未听感验证）：仅衰减 sat 新增的 180-500Hz
     # 增量，静态因子 ≤-3dB（非硬预算），立体声联动时两声道同一 g；g==1.0 或
@@ -596,8 +767,9 @@ def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
             x_eff = x_eff - (1.0 - g) * delta_lm
     # 高频部分(>200Hz)保持原貌，不参与饱和
     x_eff = x_eff + (x_warm - lp)
-    # ── 4. 瞬态强调 ──
-    x_eff = _transient(x_eff, sr, trans * 0.8)
+    # ── 4. 瞬态强调（dB 预算制，立体声联动曲线由 _enhance_stereo 冻结传入）──
+    x_eff = transient_emphasize(x_eff, sr, trans * 0.8,
+                                curves=transient_curves)
 
     # ── 5. RMS 门控：bass 活跃段才应用增强，静音段保持干净 ──
     win = min(int(sr * 0.05), len(x))  # 短于窗长时截短核，避免 convolve same 变长
@@ -624,16 +796,20 @@ def _enhance_stereo(bass, sr, sub_db, punch_db, sat, trans,
     punch bell / 饱和 / 瞬态 / 门限对 M、S 用同一参数；门限与瞬态包络按
     M、S 自身电平计算，近单声道的 S 会被门限自然冻结（无侧链内容可放大，
     物理上合理）。立体声联动：M、S 传入同一 sat_budget 与 clarity gains。
+    瞬态控制曲线从**原始立体声**（多声道平均功率）冻结一条，M/S 共用
+    （左右共用控制量、检测参考固定在未处理信号上，规格 §6.5/§11.4）。
     """
     m = bass.mean(axis=1)
     s = (bass[:, 0] - bass[:, 1]) * 0.5
+    transient_curves = transient_emphasize_curves(bass, sr, trans * 0.8)
     out_m = enhance_bass_stem(
         m, sr, sub_db=sub_db, punch_db=punch_db, sat=sat, trans=trans,
-        auto_clarity_gains=auto_clarity_gains, sat_budget_gain=sat_budget)
+        auto_clarity_gains=auto_clarity_gains, sat_budget_gain=sat_budget,
+        transient_curves=transient_curves)
     out_s = enhance_bass_stem(
         s, sr, sub_db=side_shelf_db(sub_db), punch_db=punch_db, sat=sat,
         trans=trans, auto_clarity_gains=auto_clarity_gains,
-        sat_budget_gain=sat_budget)
+        sat_budget_gain=sat_budget, transient_curves=transient_curves)
     return np.column_stack((out_m + out_s, out_m - out_s))
 
 

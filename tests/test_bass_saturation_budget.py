@@ -34,16 +34,16 @@ def sine(freq, sec, amp):
 def legacy_enhance(x, sr, sub_db, punch_db, sat, trans, drive=1.6):
     """不含预算路径的同一 DSP 链位级参考（sat=0 / g=1.0 的回归锚点）。
 
-    warm 阶段直接复用生产 _warm_stage（shelf/bell 转折随生产演进），
-    本参考只锚定"预算机制不参与"这一性质，不冻结 DSP 历史。"""
+    warm/饱和/瞬态阶段直接复用生产实现（v20260917 起饱和为 4× 过采样、
+    瞬态为 dB 预算制；shelf/bell/饱和/瞬态随生产演进），本参考只锚定
+    "预算机制不参与"这一性质，不冻结 DSP 历史。"""
     x = np.asarray(x, dtype=np.float64)
     x_warm = bass._warm_stage(x, sr, sub_db, punch_db)
-    lp = signal.sosfiltfilt(
-        signal.butter(2, 200.0, 'lowpass', fs=sr, output='sos'), x_warm, padlen=0)
-    x_sat = bass.soft_clip(lp, drive)
+    lp = bass._lp200(x_warm, sr)
+    x_sat = bass.saturation_wet(lp, drive)
     x_eff = (1.0 - sat) * lp + sat * x_sat
     x_eff = x_eff + (x_warm - lp)
-    x_eff = bass._transient(x_eff, sr, trans * 0.8)
+    x_eff = bass.transient_emphasize(x_eff, sr, trans * 0.8)
     win = min(int(sr * 0.05), len(x))
     env = np.sqrt(np.convolve(x ** 2, np.ones(win) / (sr * 0.05), mode='same'))
     env_db = 20 * np.log10(env + 1e-12)
