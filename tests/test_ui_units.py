@@ -48,4 +48,5 @@ def test_help_does_not_make_absolute_invariance_claims_or_link_controls():
     assert '绝对不变' not in APP
     assert '人声' in APP and '尽量保留原曲' in APP
     # The help describes independent domains; no automatic coupling promise is made.
-    assert '展开效果和降噪都停用' in APP
+    # v1.6.10 文案：面板关闭时展开/自动整理/降噪都停用（含空间去拥挤）。
+    assert '展开效果、自动整理和降噪都停用' in APP

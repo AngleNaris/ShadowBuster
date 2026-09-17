@@ -44,6 +44,9 @@ def test_cli_default_stays_off():
 
 
 def test_help_documents_always_on_with_bounds():
+    """v1.6.10：深度由低频旋钮授权（上限 1.5dB，规格 §6.4），全零恒等说明。"""
     assert "自动清晰" in APP
-    assert "默认始终开启" in APP
-    assert "±2dB" in APP        # 有界声明随恒开一并呈现
+    assert "默认开启" in APP
+    assert "1.5dB" in APP          # 有界声明（授权预算上限）
+    assert "全部归零" in APP       # 全零旋钮 → 自动整理关闭（§5.3）
+    assert "±2dB" not in APP       # 旧固定 ±2dB 文案已随授权化移除

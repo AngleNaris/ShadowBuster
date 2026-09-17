@@ -30,9 +30,30 @@ def test_zero_denoise_keeps_legacy_mode():
 
 
 def test_punch_drives_bounded_sidechain():
-    assert app_main.map_ui_params({"punch": 0})[0]["sidechain_amount"] == 0.0
-    assert app_main.map_ui_params({})[0]["sidechain_amount"] == 0.1      # 默认鼓身 2
-    assert app_main.map_ui_params({"punch": 10})[0]["sidechain_amount"] == 0.5
+    """v1.6.10 起 sidechain 由低频协调授权 u_low 派生（规格 §6.3）：
+    clip(max(sub/4, punch/3, trans/0.5, sat/0.4), 0, 1)，amount = u_low/2
+    （max_duck=6 时理论最大 duck = 3×u_low dB，精确对应规格 D=3.0×u_low）。"""
+    # 默认旋钮（sub=6 等）授权 1.0 → amount 0.5
+    assert app_main.map_ui_params({})[0]["sidechain_amount"] == 0.5
+    # 全零低频旋钮 → 授权 0 → 无暗中让位/去掩蔽（规格 §5.3）
+    zero = app_main.map_ui_params(
+        {"sub": 0, "punch": 0, "trans": 0, "sat": 0})[0]
+    assert zero["sidechain_amount"] == 0.0
+    assert zero["clarity_auth"] == 0.0
+    # punch 满格授权满（sub=0 时仍由 punch 驱动）
+    assert app_main.map_ui_params(
+        {"sub": 0, "punch": 10})[0]["sidechain_amount"] == 0.5
+    # 中间态：仅 sub=2 → u_low=0.5 → amount 0.25
+    assert app_main.map_ui_params(
+        {"sub": 2, "punch": 0, "trans": 0, "sat": 0})[0]["sidechain_amount"] == 0.25
+
+
+def test_clarity_auth_follows_low_frequency_authorization():
+    mapping, _ = app_main.map_ui_params(
+        {"sub": 2, "punch": 0, "trans": 0, "sat": 0})
+    assert mapping["clarity_auth"] == 0.5
+    explicit = app_main.map_ui_params({"sub": 2, "clarity_auth": 0.0})[0]
+    assert explicit["clarity_auth"] == 0.0          # 显式隐藏参数优先
 
 
 def test_explicit_hidden_params_win():

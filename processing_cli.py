@@ -50,6 +50,15 @@ def main(argv=None):
     parser.add_argument('--sidechain-attack-ms', type=bounded(1, 50), default=5.0)
     parser.add_argument('--sidechain-release-ms', type=bounded(20, 500), default=150.0)
     parser.add_argument('--sidechain-max-duck-db', type=bounded(0, 12), default=6.0)
+    parser.add_argument('--clarity-auth', type=bounded(0, 1), default=None,
+                        help='auto-clarity authorization 0-1 (low-end knobs derived, '
+                             'spec 6.3/6.4); omit to let the DSP derive from '
+                             'sub/punch/trans/sat; 0 forces gains (0,0)')
+    parser.add_argument('--space-amount', type=bounded(0, 1), default=None,
+                        help='space intensity authorization 0-1 (spec 7.4): scales '
+                             'width delta and authorizes bounded 200-700Hz other-stem '
+                             'de-crowding (<=1.5*a dB, evidence-gated); defaults to '
+                             '--space-wet when omitted')
     parser.add_argument('--noise-mode', choices=['other', 'adaptive_all'], default='other',
                         help='Stage3 opt-in noise denoise mode: other=legacy other-stem '
                              'denoise (default), adaptive_all=confidence-gated adaptive '
@@ -125,6 +134,10 @@ def main(argv=None):
             kwargs['bypass'] = [p.strip() for p in opts.bypass.split(',') if p.strip()]
             kwargs['cache_enabled'] = not kwargs.pop('no_cache')
             kwargs['device'] = 'cpu' if opts.cpu else backend.auto_device()
+            # --space-amount 缺省 = --space-wet（声场强度授权与宽度混合比例
+            # 同源，规格 §7.2/§7.4；显式传参可解耦）。
+            if kwargs.get('space_amount') is None:
+                kwargs['space_amount'] = opts.space_wet
             # 输出目录与输入一致地解析为绝对路径：阶段子进程（Lew 等）的
             # 工作目录不在应用根，相对路径会在子进程里指错位置。
             results = backend.run_batch(inputs, str(Path(opts.output).resolve()), **kwargs)

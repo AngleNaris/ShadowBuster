@@ -389,6 +389,12 @@ def _run_stream(cmd, cwd, env=None, on_progress=None, cancel=None):
 # 旧 PCM16 时代的缓存产物不与本版本产物混用。
 AUDIO_FORMAT_VERSION = "f32-internal-1"
 
+# DSP 引擎版本（开发规格 v2 §16.1，schema/engine/profile 三版本分离）：
+# 低频/声场 DSP 算法映射变更时递增。v2 起：瞬态检测器 v2（dB 预算制、
+# 立体声联动、相对活动门）、饱和 4× 过采样、低频协调授权 u_low、
+# other 轨 200-700Hz 空间去拥挤。进入缓存身份（§16.5：新引擎不与旧缓存混用）。
+DSP_ENGINE_VERSION = "dsp-v2-20260917"
+
 
 def ffmpeg_convert(src, dst, sr=44100, subtype="FLOAT"):
     """内部中转统一解码/重采样为 32-bit float WAV（浮点无量化损失）。
@@ -554,10 +560,13 @@ def _run_reported(cmd, in_mix, out_wav, report_json, stage, cancel):
 def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
                bass_gain_db=0.0, auto_clarity=False, sidechain_amount=0.0,
                sidechain_attack_ms=5.0, sidechain_release_ms=150.0,
-               sidechain_max_duck_db=6.0, progress=None, cancel=None, report_json=None):
+               sidechain_max_duck_db=6.0, clarity_auth=None, progress=None,
+               cancel=None, report_json=None):
     """贝斯增强。auto_clarity: opt-in 保守清晰度 EQ（--auto-clarity），
     默认关闭；关闭时命令行与旧行为完全一致（位级透传）。sidechain_amount 默认 0，
-    仅在 drums.wav 存在且显式开启时对 Bass 低频应用有界 Kick 侧链。"""
+    仅在 drums.wav 存在且显式开启时对 Bass 低频应用有界 Kick 侧链。
+    clarity_auth: auto-clarity 授权 0-1（低频旋钮派生，规格 §6.3/§6.4；
+    None=由 DSP 脚本按本阶段四个低频参数自算）。"""
     if progress:
         progress(0.0, "贝斯增强")
     bass = stem_dir / "bass.wav"
@@ -571,6 +580,8 @@ def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, tra
            "--sidechain-attack-ms", str(sidechain_attack_ms),
            "--sidechain-release-ms", str(sidechain_release_ms),
            "--sidechain-max-duck-db", str(sidechain_max_duck_db)]
+    if clarity_auth is not None:
+        cmd += ["--clarity-auth", str(float(clarity_auth))]
     drums = Path(stem_dir) / "drums.wav"
     if drums.exists():
         cmd += ["--sidechain-drums", str(drums)]
@@ -649,12 +660,15 @@ def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
 def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=None,
                   progress=None, cancel=None, report_json=None,
                   noise_mode="other", noise_low_hz=8000.0, noise_high_hz=20000.0,
-                  noise_max_attenuation_db=6.0):
+                  noise_max_attenuation_db=6.0, space_amount=None):
     """声场重塑（broadband delta-add）：wet 缩放全部处理差值，可附带 ≥10kHz 噪声地板降噪。
 
     width_db 为宽度上限（other 轨 side 增益 dB，drums 自动取一半），wet 决定向该
     宽度目标混合的比例。wet≤0 且 denoise≤0，或缺少 drums/other stems 时直接透传
     （位级不变）。denoise>0 时即使 wet=0 也会运行，以允许单独使用高频降噪。
+    wet 同时作为声场强度授权（--space-amount，规格 §7.4）：wet>0 时 other 轨
+    200-700Hz 的持续性拥挤可获 ≤1.5×wet dB 的证据门控整理（无证据不动；与宽度
+    串联，不与宽度重复削同一频段）。
     wet/denoise/width_db 默认取 DEFAULTS（单一来源，ENG-01）；此前本函数 wet
     默认 1.0 与 run_pipeline/产品默认 0.6 是第三种取值。
 
@@ -667,13 +681,18 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
     wet = DEFAULTS["space_wet"] if wet is None else wet
     denoise = DEFAULTS["space_denoise"] if denoise is None else denoise
     width_db = DEFAULTS["space_width_db"] if width_db is None else width_db
+    # 声场强度授权（规格 §7.2/§7.4）：缺省与宽度混合比例同源（=wet），
+    # CLI --space-amount 可显式解耦。
+    space_amount = wet if space_amount is None else space_amount
     validate_noise_options(noise_mode, noise_low_hz, noise_high_hz,
                            noise_max_attenuation_db)
     if progress:
         progress(0.0, "声场重塑")
     scale = 1.0
     stems_dir = Path(stems_dir)
-    if (wet <= 0 and denoise <= 0) or not (stems_dir / "drums.wav").exists() or not (stems_dir / "other.wav").exists():
+    if (wet <= 0 and denoise <= 0 and space_amount <= 0) \
+            or not (stems_dir / "drums.wav").exists() \
+            or not (stems_dir / "other.wav").exists():
         shutil.copyfile(in_mix, out_wav)
         if report_json is not None:
             # 透传也产出本次运行的"未施加"报告：报告永远与成品同批生成，
@@ -685,13 +704,16 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
                                           "stems": {}, "applied": False,
                                           "reason": "passthrough"},
                                 "width": {"bands": [],
-                                          "analysis": "passthrough (no reshape applied)"}})
+                                          "analysis": "passthrough (no reshape applied)"},
+                                "spatial_unmask": {"applied": False,
+                                                   "reason": "passthrough"}})
     else:
         cmd = [PYTHON, str(DSP_DIR / "soundstage_reshape.py"),
                "--in-mix", str(in_mix), "--out-wav", str(out_wav),
                "--stems-dir", str(stems_dir),
                "--mode", "broadband", "--wet", str(wet),
-               "--side-gain-db", str(width_db)]
+               "--side-gain-db", str(width_db),
+               "--space-amount", str(space_amount)]
         if denoise > 0:
             cmd += ["--other-denoise-amount", str(denoise)]
         if noise_mode == "adaptive_all":
@@ -1138,12 +1160,13 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                  trans=None,
                  bass_gain_db=0.0, bass_auto_clarity=False, sidechain_amount=0.0,
                  sidechain_attack_ms=5.0, sidechain_release_ms=150.0,
-                 sidechain_max_duck_db=6.0, vocal_gain_db=None,
+                 sidechain_max_duck_db=6.0, clarity_auth=None, vocal_gain_db=None,
                  genre=None, loudness=None,
                  eq_profile=None, reference=None, quality=None, guidance=None,
                  device="cuda", progress=None, cancel=None, work_dir=None,
                  lowpass_cutoff=None, space_wet=None, space_denoise=None,
-                 space_width_db=None, balance_target_db=None, bypass=(),
+                 space_width_db=None, space_amount=None, balance_target_db=None,
+                 bypass=(),
                  balance_mode=REFERENCE_MODE, style_mode=None, style_blend=None,
                  cache_enabled=True, noise_mode=None, noise_low_hz=None,
                  noise_high_hz=None, noise_max_attenuation_db=None,
@@ -1167,6 +1190,8 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     space_wet = DEFAULTS["space_wet"] if space_wet is None else space_wet
     space_denoise = DEFAULTS["space_denoise"] if space_denoise is None else space_denoise
     space_width_db = DEFAULTS["space_width_db"] if space_width_db is None else space_width_db
+    # 声场强度授权（规格 §7.2/§7.4）：缺省与声场面板滑杆同源（=space_wet）。
+    space_amount = space_wet if space_amount is None else space_amount
     style_mode = DEFAULTS["style_mode"] if style_mode is None else style_mode
     style_blend = DEFAULTS["style_blend"] if style_blend is None else style_blend
     noise_mode = DEFAULTS["noise_mode"] if noise_mode is None else noise_mode
@@ -1294,8 +1319,12 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
         for pattern in ("*.pt", "*.pth", "*.ckpt", "*.json", "*.yaml"):
             runtime_files.extend(folder.rglob(pattern))
     runtime_stamp = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in runtime_files if p.is_file()]
+    # DSP 引擎版本（开发规格 v2 §16.1/§16.5）：与 APP_VERSION 解耦——DSP 算法
+    # 映射变更（如瞬态检测器 v2、饱和过采样、去拥挤）必须独立递增以失效
+    # 旧缓存并标识产物引擎；代码哈希已覆盖"文件内容变即失效"，本字段补充
+    # "语义版本"标识：文件回滚/重排但算法不变时可不递增，反之必须递增。
     identity = {"version": APP_VERSION, "runtime": str(PYTHON), "device": device,
-                "audio_format": AUDIO_FORMAT_VERSION,
+                "audio_format": AUDIO_FORMAT_VERSION, "dsp_engine": DSP_ENGINE_VERSION,
                 "runtime_files": runtime_stamp, "input_md5": pipeline_cache.md5(input_wav),
                 "code": [(str(p), pipeline_cache.md5(p)) for p in implementation if p.is_file()]}
     cache = pipeline_cache.StageCache(cache_enabled, identity)
@@ -1413,6 +1442,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                        sidechain_attack_ms=sidechain_attack_ms,
                        sidechain_release_ms=sidechain_release_ms,
                        sidechain_max_duck_db=sidechain_max_duck_db,
+                       clarity_auth=clarity_auth,
                        progress=cb(2), cancel=cancel, report_json=bass_report)
             extra = _stage_report_extra(bass_report, "bass")
             if extra is not None:
@@ -1447,6 +1477,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             reshape_report.unlink(missing_ok=True)
             reshape_scale = run_reshape(drum_out, stem_dir, shape_out, wet=space_wet,
                           denoise=space_denoise, width_db=space_width_db,
+                          space_amount=space_amount,
                           progress=cb(4, 0.0, 0.5), cancel=cancel, report_json=reshape_report,
                           **reshape_kwargs)
             extra = _stage_report_extra(reshape_report, "reshape")

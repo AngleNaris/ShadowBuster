@@ -29,6 +29,8 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile, QWebEnginePage
 
 import studio_backend as backend
+from apollo_scripts.low_freq_policy import (low_frequency_authorization,
+                                            sidechain_amount_from_authorization)
 
 
 def map_ui_params(params, six_stem_available=None):
@@ -66,9 +68,19 @@ def map_ui_params(params, six_stem_available=None):
 
     noise_mode = params.get("noise_mode") or (
         "adaptive_all" if denoise > 0 else "other")
+    # 低频协调授权（规格 §6.3/§6.4）：Kick/Bass 让位与 auto-clarity 深度都由
+    # 低频旋钮派生的 u_low 缩放——全零低频旋钮 → 授权 0 → 辅助完全不动
+    # （不存在不可关闭的暗中去掩蔽）。显式隐藏参数仍优先。
+    sub = float(params.get("sub", backend.DEFAULTS["sub_db"]) or 0.0)
+    trans = float(params.get("trans", backend.DEFAULTS["trans"]) or 0.0)
+    sat = float(params.get("sat", backend.DEFAULTS["sat"]) or 0.0)
+    low_auth = low_frequency_authorization(sub, punch, trans, sat)
     sidechain_amount = explicit("sidechain_amount")
     if sidechain_amount is None:
-        sidechain_amount = round(0.5 * (punch / 10.0), 4)
+        sidechain_amount = sidechain_amount_from_authorization(low_auth)
+    clarity_auth = explicit("clarity_auth")
+    if clarity_auth is None:
+        clarity_auth = low_auth
 
     # 人声压缩默认随 UI 启用（有界、空气感不受频谱损失）；空气高架镜像补偿
     # 母带 8kHz 高架衰减（SOREN_HIGH_SHELF_MID_DB），只补不削、封顶 2dB。
@@ -106,6 +118,7 @@ def map_ui_params(params, six_stem_available=None):
         "sidechain_attack_ms": with_default("sidechain_attack_ms", 5.0),
         "sidechain_release_ms": with_default("sidechain_release_ms", 150.0),
         "sidechain_max_duck_db": with_default("sidechain_max_duck_db", 6.0),
+        "clarity_auth": clarity_auth,
         "demucs_model": demucs_model,
         "vocal_comp_amount": vocal_comp_amount,
         "vocal_air_db": vocal_air_db,

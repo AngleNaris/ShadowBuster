@@ -321,6 +321,139 @@ def resolve_side_gains(mode, override_db=None):
     return params
 
 
+# ── 空间去拥挤（开发规格 v2 §7.4，P3-04）────────────────────────────────
+# 声场强度 a 可授权对 other 轨 200-700Hz 的持续性伴奏重叠做小幅整理：
+#   实际衰减 ≤ 1.5 × a dB，且只在"有明确证据"时动作（频段持续占用 + 相对
+#   全曲该频段能量足够高），无证据不动——不为使声场旋钮"永远有效"而强行
+#   挖空伴奏。与人声去掩蔽划分频段所有权：人声主导区（≥1kHz 掩蔽带）的
+#   伴奏退让由 vocal_adjust 的 1.5/3kHz 掩蔽 EQ 负责，本模块只动 200-700Hz
+#   的中低频背景重叠，不重复做第二套 duck。a=0 → 精确恒等；独立于宽度
+#   （W=0、a>0 时允许轻微去拥挤）。
+SPATIAL_UNMASK_LO_HZ = 200.0
+SPATIAL_UNMASK_HI_HZ = 700.0
+SPATIAL_UNMASK_DEPTH_DB_AT_SPACE_ONE = 1.5
+SPATIAL_UNMASK_FRAME_MS = 100.0      # 证据帧长：持续占用须跨多帧
+SPATIAL_UNMASK_HOLD_MS = 400.0       # 证据保持：短暂起伏不闪烁
+SPATIAL_UNMASK_RELEASE_MS = 800.0    # 证据释放：缓慢退出，不做节奏门
+SPATIAL_UNMASK_EVIDENCE_RATIO_DB = 3.0   # 帧能量高于基准 3dB 起算证据
+SPATIAL_UNMASK_EVIDENCE_KNEE_DB = 9.0    # 软转折宽度（3→12dB 线性上升）
+SPATIAL_UNMASK_REF_PCT = 25.0            # 基准 = P25（局部稳健统计）：整曲多数
+                                         # 时间都拥挤（无对比）→ 基准即拥挤电平
+                                         # → 无"局部堆积"证据，符合 §7.4"无明确
+                                         # 问题不动作"
+SPATIAL_UNMASK_MIN_SECONDS = 1.0         # 更短不下判断
+SPATIAL_UNMASK_EPS = 1e-24
+
+
+def _spatial_unmask_gain_curve(band_power, sr):
+    """200-700Hz 帧能量 → 证据包络 ∈ [0,1]（帧域，全曲联动）。"""
+    frames = len(band_power)
+    if frames == 0:
+        return np.zeros(0)
+    ref = float(np.percentile(band_power, SPATIAL_UNMASK_REF_PCT))
+    if ref <= SPATIAL_UNMASK_EPS:
+        # 基准静音（频段几乎全空）而局部有能量：仍以相对量评估，
+        # 用非零帧的 P25 兜底，避免全曲中位≈0 时把任何瞬时当堆积。
+        nonzero = band_power[band_power > SPATIAL_UNMASK_EPS]
+        if not len(nonzero):
+            return np.zeros(frames)
+        ref = float(np.percentile(nonzero, SPATIAL_UNMASK_REF_PCT))
+    ratio_db = 10.0 * np.log10((band_power + SPATIAL_UNMASK_EPS) / (ref + SPATIAL_UNMASK_EPS))
+    evidence = np.clip((ratio_db - SPATIAL_UNMASK_EVIDENCE_RATIO_DB)
+                       / SPATIAL_UNMASK_EVIDENCE_KNEE_DB, 0.0, 1.0)
+    hop_s = SPATIAL_UNMASK_FRAME_MS / 1000.0
+    hold = max(1, int(SPATIAL_UNMASK_HOLD_MS / SPATIAL_UNMASK_FRAME_MS))
+    release = 1.0 - np.exp(-hop_s / (SPATIAL_UNMASK_RELEASE_MS / 1000.0))
+    out = np.empty(frames)
+    acc = 0.0
+    held = np.zeros(frames, dtype=int)
+    countdown = 0
+    for i in range(frames):
+        if evidence[i] > acc:
+            countdown = hold          # 重置保持窗
+            acc = evidence[i]
+        elif countdown > 0:
+            countdown -= 1
+        else:
+            acc += release * (evidence[i] - acc)
+        held[i] = countdown
+        out[i] = acc
+    return out
+
+
+def spatial_unmask_other(stem, sr, space_amount, report=None):
+    """other 轨 200-700Hz 有界去拥挤（声场强度 a 授权，规格 §7.4）。
+
+    仅缩放带通分量（零相位提取后精确重组，带外逐样本不变）；衰减深度
+    ≤ 1.5 × a dB 且乘证据包络（持续占用才动作）。a<=0 或无证据 → 精确
+    返回原数组（位级不变，dtype 保留）。
+    """
+    amount = 0.0 if space_amount is None else float(space_amount)
+    if amount <= 0.0 or len(stem) == 0:
+        if report is not None:
+            report.update(applied=False, auth=round(amount, 4),
+                          depth_cap_db=round(
+                              SPATIAL_UNMASK_DEPTH_DB_AT_SPACE_ONE * amount, 4),
+                          reason="disabled" if amount <= 0.0 else "empty")
+        return stem
+    if len(stem) < int(sr * SPATIAL_UNMASK_MIN_SECONDS):
+        if report is not None:
+            report.update(applied=False, auth=round(amount, 4),
+                          depth_cap_db=round(
+                              SPATIAL_UNMASK_DEPTH_DB_AT_SPACE_ONE * amount, 4),
+                          reason="insufficient_duration")
+        return stem
+    x = np.asarray(stem, dtype=np.float64)
+    if x.ndim == 1:
+        x = x[:, None]
+    depth_cap = SPATIAL_UNMASK_DEPTH_DB_AT_SPACE_ONE * amount
+    # 带内能量（多声道平均，反相不抵消）→ 帧证据
+    band = _bandpass_time(x, sr, SPATIAL_UNMASK_LO_HZ, SPATIAL_UNMASK_HI_HZ)
+    hop = max(1, int(sr * SPATIAL_UNMASK_FRAME_MS / 1000.0))
+    n = x.shape[0]
+    pad = (-n) % hop
+    power = band * band
+    p = np.mean(power, axis=1) if power.ndim == 2 else power
+    if pad:
+        p = np.concatenate((p, np.zeros(pad)))
+    frame_power = p.reshape(-1, hop).mean(axis=1)
+    evidence = _spatial_unmask_gain_curve(frame_power, sr)
+    max_ev = float(np.max(evidence)) if len(evidence) else 0.0
+    if max_ev <= 0.0:
+        if report is not None:
+            report.update(applied=False, auth=round(amount, 4),
+                          depth_cap_db=round(depth_cap, 4), reason="no_evidence")
+        return stem
+    duck_db = np.clip(depth_cap * evidence, 0.0, depth_cap)
+    centers = (np.arange(len(duck_db)) + 0.5) * hop
+    gain = np.interp(np.arange(n), centers, 10.0 ** (-duck_db / 20.0))
+    out = x + (gain[:, None] - 1.0) * band
+    out = out.astype(stem.dtype if stem.dtype in (np.float32, np.float64)
+                     else np.float32)
+    if report is not None:
+        active = duck_db > 0.01
+        report.update(
+            applied=bool(np.any(active)),
+            auth=round(amount, 4),
+            band_hz=[SPATIAL_UNMASK_LO_HZ, SPATIAL_UNMASK_HI_HZ],
+            depth_cap_db=round(depth_cap, 4),
+            evidence_p50=round(float(np.percentile(evidence, 50)), 4),
+            evidence_p95=round(float(np.percentile(evidence, 95)), 4),
+            duck_db_p95=round(float(np.percentile(duck_db, 95)), 4),
+            duck_db_max=round(float(np.max(duck_db)), 4),
+            coverage=round(float(np.mean(active)), 4),
+            reason="applied")
+    if stem.ndim == 1:
+        return out[:, 0]
+    return out
+
+
+def _bandpass_time(x, sr, lo, hi):
+    """二阶 butter 带通 + sosfiltfilt（沿时间轴）。"""
+    sos = signal.butter(2, [lo, hi], btype="bandpass", fs=sr, output="sos")
+    return signal.sosfiltfilt(sos, np.asarray(x, dtype=np.float64), padlen=0, axis=0)
+
+
 def main():
     ap = argparse.ArgumentParser(description="delta-add 声场重塑（管线内阶段：stems 由 stage_demucs 预先产出）")
     ap.add_argument("--in-mix", required=True, type=Path, help="输入混音（管线上一阶段产物或原曲）")
@@ -331,6 +464,10 @@ def main():
     ap.add_argument("--side-gain-db", type=float, default=None,
                     help="宽度上限 dB：覆盖模式预设的 side 增益（other=设定值，drums=一半）")
     ap.add_argument("--wet", type=float, default=1.0, help="拓宽干湿比 0-1；0=不拓宽，降噪仍由独立 amount 控制")
+    ap.add_argument("--space-amount", type=float, default=0.0,
+                    help="声场强度授权 0-1（规格 §7.4）：缩放宽度差值并授权 other 轨 "
+                         "200-700Hz 有界去拥挤（≤1.5×a dB，证据门控）；0=去拥挤关闭。"
+                         "与 --wet 相互独立：wet 缩放宽度差值，本参数不重复缩放宽度")
     ap.add_argument("--other-denoise-amount", type=float, default=0.0,
                     help="other 轨 ≥fc 噪声地板降噪量 0-1（Audition 降噪量语义，贴地板 -amount*100%%）")
     ap.add_argument("--other-denoise-fc", type=float, default=10000.0)
@@ -344,6 +481,8 @@ def main():
 
     if not np.isfinite(args.wet) or not 0.0 <= args.wet <= 1.0:
         ap.error("--wet must be finite and within [0, 1]")
+    if not np.isfinite(args.space_amount) or not 0.0 <= args.space_amount <= 1.0:
+        ap.error("--space-amount must be finite and within [0, 1]")
     if args.side_gain_db is not None and (
             not np.isfinite(args.side_gain_db) or not 0.0 <= args.side_gain_db <= 12.0):
         ap.error("--side-gain-db must be finite and within [0, 12]")
@@ -375,9 +514,34 @@ def main():
     out = mix.copy()
     width_delta = np.zeros_like(mix)
     denoise_delta = np.zeros_like(mix)
+    unmask_report = {"applied": False}
     noise_report = {"mode": args.noise_mode, "amount": args.other_denoise_amount,
                     "stems": {}, "applied": False}
     wet = args.wet
+    # 空间去拥挤（规格 §7.4）：声场强度 a 授权的 other 轨 200-700Hz 有界
+    # 整理，先于宽度施加（整理后的 other 作为宽度的输入——同一轨按串联
+    # 处理，不是两套独立差值相加）。a=0 或无证据 → 精确透传。
+    other_stem_processed = None
+    if args.space_amount > 0:
+        other_path = stem_dir / "other.wav"
+        other_raw, o_sr = sf.read(other_path, always_2d=True, dtype="float64")
+        if o_sr != sr:
+            raise SystemExit(f"other sample rate {o_sr} != {sr}")
+        try:
+            validate_audio_pair(other_raw, mix, o_sr, primary_name="other",
+                                secondary_name="in-mix", require_sr=sr)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        other_stem_processed = spatial_unmask_other(
+            other_raw, sr, args.space_amount, report=unmask_report)
+        if unmask_report.get("applied"):
+            # 去拥挤差值并入混音基底（其它阶段的差值计算都基于当前基底）
+            unmask_delta = (other_stem_processed - other_raw) * 1.0
+            out = out + unmask_delta
+            print(f"  other: 空间去拥挤 200-700Hz ≤{unmask_report['depth_cap_db']:.2f}dB "
+                  f"(auth={unmask_report['auth']:.2f}, coverage={unmask_report['coverage']:.0%})")
+        else:
+            print(f"  other: 空间去拥挤未动作（{unmask_report.get('reason')}）")
     for name, (db, fc, gain) in params.items():
         stem, s_sr = sf.read(stem_dir / f"{name}.wav", always_2d=True, dtype="float64")
         if s_sr != sr:
@@ -386,6 +550,9 @@ def main():
             validate_audio_pair(stem, out, s_sr, primary_name=name, secondary_name="in-mix")
         except ValueError as exc:
             raise SystemExit(str(exc))
+        if name == "other" and other_stem_processed is not None \
+                and unmask_report.get("applied"):
+            stem = other_stem_processed    # 宽度作用于去拥挤后的 other（串联）
         n = len(stem)
         if args.mode == "dynamic" and db > 0:
             reshaped = _dynamic_side_shelf(stem, sr, fc, db)
@@ -459,7 +626,8 @@ def main():
     if args.report_json:
         write_report(args.report_json, stage="reshape", scale=float(scale) if peak > 0.999 else 1.0,
                      input_path=args.in_mix, output_path=args.out_wav,
-                     extra={"noise": noise_report, "width": budget})
+                     extra={"noise": noise_report, "width": budget,
+                            "spatial_unmask": unmask_report})
     print(f"  输出: {args.out_wav}")
 
     print("宽度报告:")

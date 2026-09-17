@@ -46,6 +46,8 @@ import numpy as np
 import soundfile as sf
 
 from audio_validation import validate_audio_pair, finite_range
+from low_freq_policy import (clarity_mud_cap_db, low_frequency_authorization,
+                             scale_clarity_gains)
 from stage_metadata import write_report
 from scipy import ndimage, signal
 
@@ -826,8 +828,11 @@ def main():
     ap.add_argument("--bass-gain-db", type=float, default=0.0, help="bass 整体增益 dB")
     ap.add_argument("--auto-clarity", action="store_true",
                     help="opt-in 保守清晰度 EQ：能量启发式（非音色分类器）检测到活跃谐波"
-                         "内容时，做 ≤2dB 的 180-450Hz 泥浊削减与 ~800Hz 清晰度提升；"
-                         "静音/纯 sub/噪声样不动，默认关闭")
+                         "内容时，做泥浊削减与清晰度提升（深度由 --clarity-auth 授权缩放，"
+                         "上限 1.5×auth dB，规格 §6.4）；静音/纯 sub/噪声样不动，默认关闭")
+    ap.add_argument("--clarity-auth", type=float, default=None,
+                    help="auto-clarity 授权 0-1（低频旋钮派生，规格 §6.3/§5.3）；"
+                         "None=按本脚本四个低频参数自算。授权 0 → 增益 (0,0) 精确恒等")
     ap.add_argument("--sidechain-drums", type=Path, default=None,
                     help="可选 drums stem；用于 kick 触发的受控 bass 低频让位")
     ap.add_argument("--sidechain-amount", type=float, default=0.0,
@@ -861,6 +866,9 @@ def main():
             (args.sidechain_max_duck_db, "sidechain-max-duck-db", 0.0, 12.0)):
         try: finite_range(value, name, lo, hi)
         except ValueError as exc: ap.error(str(exc))
+    if args.clarity_auth is not None:
+        try: finite_range(args.clarity_auth, "clarity-auth", 0.0, 1.0)
+        except ValueError as exc: ap.error(str(exc))
     if args.sidechain_amount > 0 and args.sidechain_drums is None:
         ap.error("--sidechain-amount > 0 requires --drums (drums stem)")
 
@@ -876,7 +884,18 @@ def main():
 
     # 立体声联动：全曲只分析一次（两声道合并），两声道共用同一组 EQ 增益，
     # 绝不做 per-channel 独立分析（否则左右清晰度会不一致）。
-    clarity_gains = analyze_auto_clarity(bass, sr) if args.auto_clarity else None
+    # 授权缩放（规格 §6.3/§6.4/§5.3）：清晰度增益按低频旋钮派生的授权缩放，
+    # 泥浊削减上限 1.5×auth dB；全零旋钮 → 授权 0 → (0,0) 精确恒等（不存在
+    # 不可关闭的暗中去掩蔽）。
+    clarity_auth = None
+    clarity_gains = None
+    if args.auto_clarity:
+        clarity_auth = args.clarity_auth if args.clarity_auth is not None else \
+            low_frequency_authorization(args.sub_db, args.punch_db,
+                                        args.trans, args.sat)
+        clarity_auth = float(np.clip(clarity_auth, 0.0, 1.0))
+        clarity_gains = scale_clarity_gains(
+            analyze_auto_clarity(bass, sr), clarity_auth)
 
     # 饱和低中频预算（v20260909）：全曲只算一次，两声道共用同一静态因子 g
     # （立体声联动，绝不做 per-channel 独立计算）；sat=0 时不启用。
@@ -933,8 +952,19 @@ def main():
 
     sf.write(args.out, out.astype(np.float32), sr, subtype="FLOAT")
     if args.report_json:
+        clarity_report = ({"applied": bool(clarity_gains is not None
+                                           and (clarity_gains[0] != 0.0
+                                                or clarity_gains[1] != 0.0)),
+                           "auth": round(float(clarity_auth), 4),
+                           "mud_db": clarity_gains[0],
+                           "clarity_db": clarity_gains[1],
+                           "mud_cap_db": round(clarity_mud_cap_db(clarity_auth), 4)}
+                          if clarity_gains is not None
+                          else {"applied": False, "reason": "disabled"})
         write_report(args.report_json, stage="bass", scale=float(ceiling / peak) if (not neutral and peak > ceiling) else 1.0,
-                     input_path=args.in_mix, output_path=args.out, extra={"sidechain": sc_report or {"applied": False, "reason": "disabled"}})
+                     input_path=args.in_mix, output_path=args.out,
+                     extra={"sidechain": sc_report or {"applied": False, "reason": "disabled"},
+                            "clarity": clarity_report})
     if sat_budget is not None:
         trim_db = min(SAT_BUDGET_MAX_REDUCTION_DB,
                       max(0.0, -20.0 * float(np.log10(max(sat_budget, 1e-12)))))
@@ -949,10 +979,12 @@ def main():
         sc_txt = "sidechain=requested_but_not_applied (no confident kicks)"
     else:
         sc_txt = "sidechain=off"
+    clarity_txt = (f"{clarity_gains}(auth={clarity_auth:.2f})"
+                   if clarity_gains is not None else "off")
     print(f"Bass-enhanced mix done: {args.out} | sub={args.sub_db}dB punch={args.punch_db}dB "
           f"sat={args.sat} trans={args.trans} "
           f"sat_lmid_trim={trim_txt} (heuristic, not listening-verified) "
-          f"auto_clarity={clarity_gains if clarity_gains is not None else 'off'} "
+          f"auto_clarity={clarity_txt} "
           f"{sc_txt} "
           f"| {sr}Hz {bass.shape[1]}ch")
 
