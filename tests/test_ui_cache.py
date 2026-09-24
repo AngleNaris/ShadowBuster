@@ -142,8 +142,8 @@ def test_no_cache_deletion_outside_helper():
     assert "rmtree" not in cache_fn and "unlink" not in cache_fn
 
 
-def test_help_states_no_realtime_audition_once_with_shared_note():
-    note = "正式批处理不提供实时试听；快速试听片段请用顶部「预览」。处理完成后，请用播放器打开成品比较。"
+def test_help_states_draft_audition_once_with_shared_note():
+    note = "在文件列表上方点击草稿准备缓存，即可全曲播放、拖动进度并实时调参。草稿为近似效果，正式成品以导出为准。"
     assert APP.count(note) == 1                       # 单一共享文案，随面板注入
     assert "const AUDITION_NOTE" in APP
     assert "helpBody.innerHTML = c.html + AUDITION_NOTE;" in APP
@@ -158,7 +158,11 @@ def test_help_states_no_realtime_audition_once_with_shared_note():
 
 
 def test_asset_versions_bumped_for_cache_busting():
-    # v1.6.9 合入 macOS 移植（已发布 macOS.1 的 53/50）后 UI 再次变更：
-    # v1.6.8（52/49）与 macOS.1（53/50）两批客户端缓存都必须失效，继续递增。
-    assert 'style.css?v=57' in HTML
-    assert 'app.js?v=54' in HTML
+    # UI 改版（报告页按设计图重做 + 14 项复查 + 二次修正 + 四轮：分段纵轴/Δ 合并/固定量程/配色统一
+    # + 播放器文件框改为整框按钮并加两翼刻度、换曲改为带子滚动
+    # + 播放键只在播放时点亮、源胶囊描边完整、版本菜单可再次点击收回
+    # + 缓存失败只闪红线、KPI 去箭头且图标中性、频谱换视图整幅渐变
+    # + 缓存进度只长在底部 3px 线上、扫光收进同一行，指针贯穿整条时间轴（含范围选择带），
+    #   键盘焦点不再画任何外框）：63/60 那批缓存也须失效，继续递增。
+    assert 'style.css?v=93' in HTML
+    assert 'app.js?v=88' in HTML

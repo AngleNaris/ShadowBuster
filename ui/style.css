@@ -57,15 +57,18 @@ body {
   overflow: hidden;
 }
 
-/* ═══ 全局滚动条：细窄暗色、无上下箭头 ═══ */
-* { scrollbar-width: thin; scrollbar-color: var(--c-panel-2) transparent; }
+/* ═══ 全局滚动条：细窄、轨道有色、滑条与轨道一律直角、无上下箭头 ═══
+   不要再写 scrollbar-width / scrollbar-color：Chromium 见到标准属性就切回系统外观，
+   整套 ::-webkit-scrollbar 会被整体忽略——箭头和圆角正是这么回来的。 */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--c-panel-2); border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: var(--c-bg); border-radius: 0; }
+::-webkit-scrollbar-thumb {
+  background: var(--c-border); border-radius: 0;
+  border: 2px solid transparent; background-clip: padding-box;
+}
 ::-webkit-scrollbar-thumb:hover { background: var(--c-accent); background-clip: padding-box; }
-/* 移除滚动条上下箭头按钮 */
 ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
-::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-corner { background: var(--c-bg); }
 
 /* 无障碍：视觉提示改为红框后，仍向读屏播报（clip 隐藏但可被朗读） */
 .sr-only {
@@ -74,20 +77,7 @@ body {
   clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
-/* ═══ 输出质量摘要：逐文件实测报告（常驻占位，3 列网格 / 窄窗口 2 列）═══ */
-.quality-summary {
-  display: flex; flex-direction: column; gap: var(--s-2);
-  padding: var(--s-3) var(--s-4);
-}
-.quality-file-line { margin: 0; min-width: 0; }
-.quality-file {
-  display: block; min-width: 0;
-  font-size: 11.5px; font-family: var(--mono); color: var(--c-text-dim);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.quality-file-row { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
-.quality-file-label { flex: none; font-size: 11px; color: var(--c-text-faint); }
-/* 原生 select 的紧凑变体：与 dd-trigger 同规格（共享契约） */
+/* ═══ 原生 select 的紧凑变体：与 dd-trigger 同规格（共享契约）═══ */
 .quality-select {
   flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 var(--s-2);
   background: var(--c-bg); color: var(--c-text);
@@ -97,27 +87,6 @@ body {
 .quality-select:hover:not(:disabled) { border-color: var(--c-accent-hi); }
 .quality-select:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -1px; }
 .quality-select:disabled { opacity: 0.45; cursor: not-allowed; }
-.quality-grid {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--s-2) var(--s-4);
-}
-.q-cell {
-  min-width: 0;
-  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2);
-}
-.q-label { flex: none; font-size: 11px; color: var(--c-text-dim); }
-.q-value {
-  min-width: 0;
-  font-family: var(--mono); font-size: 12px; color: var(--c-text);
-  text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.quality-error {
-  margin: 0; font-size: 11px; font-family: var(--mono);
-  color: var(--c-err); word-break: break-all;
-}
-@media (max-width: 719px) {
-  .quality-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 
 /* ═══ 处理特效层 ═══ */
 .fx-canvas {
@@ -270,6 +239,14 @@ body {
 .file-item .fi-x::after { content: ""; position: absolute; inset: -9px; }
 .file-item .fi-x:hover { color: var(--c-err); background: var(--c-panel-2); }
 
+/* ═══ 名称跑马灯：内层承载位移，外层负责裁切 ═══
+   内层自己出省略号，位移时改 clip——省略号跟着内层走会飘到窗口中间。 */
+.mq {
+  display: block; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mq.running { text-overflow: clip; }
+
 /* 队列底部操作：两按钮均分整行 */
 .queue-actions {
   display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2);
@@ -300,7 +277,9 @@ body {
   background: var(--c-bg); border: var(--border); cursor: pointer;
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.file-card:hover, .file-card:focus-within { border-color: var(--c-accent-hi); box-shadow: 0 0 0 1px rgba(var(--c-accent-rgb),0.18); }
+/* 卡片只在悬停时点亮：:focus-within 会让键盘 Tab / 点进路径框时整卡描边，
+   与「键盘操作不留外框」冲突（卡片自带 tabindex，点进来就是一层框）。 */
+.file-card:hover { border-color: var(--c-accent-hi); box-shadow: 0 0 0 1px rgba(var(--c-accent-rgb),0.18); }
 .file-card:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 1px; }
 .file-label { position: absolute; left: 8px; top: 7px; font-size: 11px; color: var(--c-text-dim); pointer-events: none; }
 .path-input {
@@ -628,26 +607,6 @@ html[data-mode="light"] { --hardware-face: radial-gradient(circle at 50% 32%, #f
 .dd-opt[aria-selected="true"] { color: var(--c-accent-hi); font-weight: 700;
   text-shadow: 0 0 7px rgba(var(--c-accent-rgb), 0.6); }
 .dd-opt:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -2px; }
-
-/* ═══ 滚动条共享契约：待处理列表 / 下拉 / 说明面板 统一（细窄、无圆角、无箭头）═══ */
-.queue-list, .dd-panel, .help-body, .content {
-  scrollbar-width: thin;
-  scrollbar-color: var(--c-border) transparent;
-}
-.queue-list::-webkit-scrollbar, .dd-panel::-webkit-scrollbar, .help-body::-webkit-scrollbar { width: 8px; }
-.queue-list::-webkit-scrollbar-track, .dd-panel::-webkit-scrollbar-track, .help-body::-webkit-scrollbar-track { background: transparent; }
-.queue-list::-webkit-scrollbar-thumb, .dd-panel::-webkit-scrollbar-thumb, .help-body::-webkit-scrollbar-thumb {
-  background: var(--c-border);
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.queue-list::-webkit-scrollbar-thumb:hover, .dd-panel::-webkit-scrollbar-thumb:hover, .help-body::-webkit-scrollbar-thumb:hover {
-  background: var(--c-accent);
-  background-clip: padding-box;
-}
-.queue-list::-webkit-scrollbar-button, .dd-panel::-webkit-scrollbar-button, .help-body::-webkit-scrollbar-button {
-  display: none; width: 0; height: 0;
-}
 
 /* ═══ 分段选择 ═══ */
 .seg { display: grid; grid-template-columns: repeat(4, 1fr); border: var(--border); overflow: hidden; }
@@ -1312,33 +1271,48 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
   transition: opacity var(--dur) var(--ease), filter var(--dur) var(--ease);
 }
 
-/* ═══════════════ 顶栏改版：LOGO 左对齐 + 右侧视图 TAB ═══════════════ */
+/* ═══════════════ 顶栏改版：LOGO 左对齐 + 右侧连体视图段控 ═══════════════
+   三枚 TAB 共用一个完整外框；选中态由滑动指示块（tab-glider）承载，
+   切换动画由 app.js 用 Web Animations API 驱动（此 QtWebEngine 的 CSS
+   transition 不插值）。 */
 .topbar { justify-content: flex-start; gap: var(--s-4); }
 .topbar-nav {
   margin-left: auto;
-  display: flex; align-items: center; gap: var(--s-2);
+  position: relative;
+  display: flex; align-items: stretch;
+  padding: 3px;
+  background: var(--c-key);
+  border: var(--border);
+  box-shadow: var(--inset-well);
 }
 .tab-btn {
-  position: relative;
-  height: 30px; padding: 0 var(--s-4);
-  background: var(--c-key); border: var(--border);
+  position: relative; z-index: 1;
+  height: 28px; padding: 0 var(--s-5);
+  background: none; border: none;
   color: var(--c-text-dim); font: inherit; font-size: 12px; font-weight: 700;
   letter-spacing: 1px; cursor: pointer;
-  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease), text-shadow var(--dur) var(--ease);
 }
-.tab-btn:hover { color: var(--c-text); border-color: var(--c-accent-hi); }
+.tab-btn + .tab-btn { border-left: 1px solid var(--c-border); }
+.tab-btn:hover { color: var(--c-text); }
+/* 滑动块正好盖在相邻两枚按钮的分隔线上：谁压住谁取决于 DPI 取整，
+   灰色分隔线赢的那一帧就把块的 1px 描边吃掉一边。让选中项自己的分隔线
+   用同色、右侧那枚的分隔线让位，块的描边两侧都稳定可见。 */
 .tab-btn[aria-pressed="true"] {
-  color: var(--c-text); border-color: var(--c-accent-hi);
-  background: color-mix(in srgb, var(--c-accent) 34%, var(--c-key));
+  color: #fff;
+  text-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.65);
+  border-left-color: var(--c-accent-hi);
 }
-.tab-btn:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 2px; }
-.tab-badge {
-  display: inline-block; margin-left: var(--s-2);
-  min-width: 18px; padding: 0 4px; height: 16px; line-height: 16px;
-  font-size: 10px; font-family: var(--mono); text-align: center;
-  color: var(--c-text); background: var(--c-accent); border: 1px solid var(--c-accent-hi);
+.tab-btn[aria-pressed="true"] + .tab-btn { border-left-color: transparent; }
+.tab-btn:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -2px; z-index: 2; }
+.tab-glider {
+  position: absolute; top: 3px; height: 28px; left: 3px; width: 0;
+  background: color-mix(in srgb, var(--c-accent) 58%, var(--c-key));
+  box-shadow: inset 0 0 0 1px var(--c-accent-hi),
+              0 0 12px rgba(var(--c-accent-rgb), 0.45),
+              inset 0 0 0 2px rgba(255,255,255,0.05);
+  pointer-events: none;
 }
-.tab-badge[hidden] { display: none; }
 
 /* ═══════════════ 文件列表弹窗 ═══════════════ */
 .modal {
@@ -1390,17 +1364,7 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
   flex: 1; overflow: auto; padding: var(--s-4) var(--s-5) var(--s-6);
   display: flex; flex-direction: column; gap: var(--s-4);
 }
-.pv-row { display: flex; align-items: center; gap: var(--s-3); }
-.pv-row .quality-select { flex: 1; max-width: 560px; }
 .pv-dim { font-size: 12px; color: var(--c-text-dim); font-family: var(--mono); }
-.pv-wave-wrap { position: relative; border: var(--border); background: var(--c-panel); }
-#pv-wave { display: block; width: 100%; height: 150px; cursor: crosshair; touch-action: none; }
-.pv-hint {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  font-size: 11.5px; color: var(--c-text-faint); pointer-events: none;
-}
-.pv-actions { gap: var(--s-3); }
-.pv-actions .btn { min-width: 108px; }
 .pv-progress {
   height: 4px; background: var(--c-key); border: var(--border);
 }
@@ -1409,35 +1373,6 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
   height: 100%; width: 0%; background: var(--c-accent-hi);
   transition: width var(--dur) var(--ease);
 }
-.pv-audios { display: flex; flex-direction: column; gap: var(--s-2); }
-.pv-audios audio { width: 100%; max-width: 720px; height: 36px; }
-.pv-audios audio[hidden] { display: none; }
-
-/* ═══════════════ 报告图表 ═══════════════ */
-.rp-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--s-4);
-}
-@media (max-width: 980px) { .rp-grid { grid-template-columns: 1fr; } }
-.rp-fig {
-  margin: 0; padding: var(--s-3); border: var(--border); background: var(--c-panel);
-}
-.rp-fig figcaption { font-size: 11.5px; font-weight: 700; letter-spacing: 1px; color: var(--c-text-dim); margin-bottom: var(--s-2); }
-.rp-fig canvas { display: block; width: 100%; height: 190px; }
-.rp-config {
-  font-size: 12px; color: var(--c-text-dim); font-family: var(--mono);
-  border: var(--border); background: var(--c-panel); padding: var(--s-3);
-}
-.rp-constraints { display: flex; flex-direction: column; gap: 4px; }
-.rp-constraints .rc-row {
-  display: flex; gap: var(--s-3); align-items: baseline; font-size: 12px;
-  border: var(--border); background: var(--c-panel); padding: 6px var(--s-3);
-}
-.rp-constraints .rc-status { font-weight: 700; font-family: var(--mono); min-width: 52px; }
-.rp-constraints .rc-pass { color: var(--c-ok); }
-.rp-constraints .rc-warn { color: #e0b34c; }
-.rp-constraints .rc-fail { color: var(--c-err); }
-.rp-constraints .rc-unknown { color: var(--c-text-faint); }
 
 /* ═══════════════ 内嵌 pane 视图（预览 / 报告；文件 UI 常驻）═══════════════ */
 .pane-view[hidden] { display: none; }
@@ -1445,75 +1380,424 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
   display: flex; flex-direction: column; gap: var(--s-4);
   border: var(--border); background: var(--c-panel);
   padding: var(--s-4);
+  /* canvas.width(=clientWidth*dpr) 的固有宽度会沿 flex min-width:auto 链
+     反馈撑宽整页（右列溢出窗口）：全链 min-width:0 + canvas max-width 掐断 */
+  min-width: 0;
 }
-.pane-head { display: flex; align-items: baseline; gap: var(--s-3); }
-.pane-title { font-size: 14px; font-weight: 800; letter-spacing: 2px; }
-.pane-sub { font-size: 11.5px; color: var(--c-text-dim); margin-right: auto; }
-.pane-close { color: var(--c-text-dim); }
-.pane-body { display: flex; flex-direction: column; gap: var(--s-4); }
+.pane-body { display: flex; flex-direction: column; gap: var(--s-4); min-width: 0; }
+/* 报告页去掉最外层框：卡片/摘要各自都有面板底，外面再套一层就是双重边框。
+   左右内缩一并归零，让报告各块与上方队列面板的外边线对齐；上下留一点气，
+   否则版本胶囊会贴着队列按钮，看起来像队列的下一行。 */
+#pane-report.pane-view { border: none; background: none; padding: var(--s-3) 0; }
 
-/* ═══════════════ 频谱预览（DAW 式）与报告指标卡片 ═══════════════ */
+/* ═══════════════ 频谱预览（DAW 式）与报告图表 ═══════════════ */
 .spec-panel { border: var(--border); background: var(--c-panel); }
 .spec-transport {
   display: flex; align-items: center; gap: var(--s-3);
   padding: var(--s-2) var(--s-3); border-bottom: var(--border);
 }
-.spec-name {
-  font-size: 12px; font-family: var(--mono); color: var(--c-text);
-  margin-right: auto; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; max-width: 46%;
-}
+/* 播放条不重复显示文件名（上方队列已标明选中曲目）；音源切换用报告同款胶囊 */
+.pv-chips { display: flex; align-items: center; gap: var(--s-2); flex: none; }
+#pv-clock { margin-left: auto; flex: none; }
 .spec-btn { height: 26px; padding: 0 var(--s-3); }
 .spec-btn[disabled] { opacity: 0.45; cursor: default; }
 .spec-stack { position: relative; padding: var(--s-2); display: flex; flex-direction: column; gap: var(--s-2); }
-.spec-lane { display: flex; align-items: stretch; gap: var(--s-2); }
+.spec-lane { display: flex; align-items: stretch; gap: var(--s-2); min-width: 0; }
 .spec-tag {
-  flex: 0 0 42px; display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--c-text-dim);
+  flex: 0 0 48px; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: var(--c-text-dim);
   border: var(--border); background: var(--c-key);
+  cursor: pointer; user-select: none;
 }
-.spec-lane canvas { display: block; flex: 1; width: 100%; height: 140px; }
-.pv-hint {
-  margin: 0; padding: var(--s-2); text-align: center;
-  font-size: 11.5px; color: var(--c-text-faint);
-}
-.pv-row { display: flex; align-items: center; gap: var(--s-3); }
-.pv-actions .btn { min-width: 108px; }
+.spec-lane canvas { display: block; flex: 1; min-width: 0; width: 100%; max-width: 100%; height: 140px; }
 .pv-progress { height: 4px; background: var(--c-key); border: var(--border); }
 .pv-progress[hidden] { display: none; }
 .pv-progress-fill { height: 100%; width: 0%; background: var(--c-accent-hi); transition: width var(--dur) var(--ease); }
 .pv-dim { font-size: 12px; color: var(--c-text-dim); font-family: var(--mono); }
 
-.rp-file-line { display: flex; align-items: baseline; gap: var(--s-3); }
-.rp-file-name { font-size: 13px; font-family: var(--mono); color: var(--c-text); }
-.rp-cards {
-  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: var(--s-2);
-}
-@media (max-width: 980px) { .rp-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.metric-card {
-  border: var(--border); background: var(--c-key);
-  padding: var(--s-2) var(--s-3);
-  display: flex; flex-direction: column; gap: 2px;
-}
-.mc-label { font-size: 11px; color: var(--c-text-dim); letter-spacing: 0.5px; }
-.mc-vals { font-size: 12.5px; font-family: var(--mono); color: var(--c-text); }
-
-/* ═══════════════ 效果器 pane：内部间距与主内容区一致 ═══════════════ */
-#pane-process { display: flex; flex-direction: column; gap: 8px; }
-.pane-head .pane-title { margin-right: auto; }
-.pane-sub { font-size: 11.5px; color: var(--c-text-dim); }
-.spec-track {
-  font-size: 11px; font-weight: 700; letter-spacing: 1px;
-  color: var(--c-text); border: var(--border); background: var(--c-key);
-  padding: 2px var(--s-2);
-}
+/* 轨道高亮：当前播放轨的标签点亮、画布描边 */
 .spec-lane { cursor: pointer; }
 .spec-lane .spec-tag { transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
 .spec-lane.active .spec-tag { color: var(--c-text); border-color: var(--c-accent-hi); }
 .spec-lane.active canvas { outline: 1px solid var(--c-accent-hi); }
 
+/* ═══════════════ 效果器 pane：内部间距与主内容区一致 ═══════════════ */
+#pane-process { display: flex; flex-direction: column; gap: 8px; }
+
+/* 预览 pane：吃掉内容区剩余高度，频谱随之拉伸（canvas 高度由 JS 读取绘制）。
+   flex 链上必须解除 min-height:auto（默认会被 canvas 固有高度撑破容器）。 */
+#pane-preview { flex: 1 1 auto; min-height: 320px; overflow: hidden; }
+#pane-preview .pane-body { flex: 1 1 auto; min-height: 0; }
+#pane-preview .spec-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+#pane-preview .spec-stack { flex: 1 1 auto; min-height: 0; }
+#pane-preview .spec-lane { flex: 1 1 0; min-height: 0; }
+#pane-preview .spec-lane canvas { height: 100%; }
+
+/* ═══════════════ 报告：版本多选 + 曲线/频谱对比 ═══════════════ */
+.rp-toolbar { display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap; }
+.rp-chips { display: flex; gap: var(--s-2); flex-wrap: wrap; align-items: center; }
+.rp-chips-empty { font-size: 11.5px; color: var(--c-text-faint); }
+.rp-chip {
+  height: 24px; padding: 0 var(--s-3);
+  border: var(--border); background: var(--c-key);
+  color: var(--c-text-dim); font: inherit; font-size: 11.5px; font-weight: 700;
+  letter-spacing: 0.5px; cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+              border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.rp-chip:hover { color: var(--c-text); border-color: var(--c-accent-hi); }
+.rp-chip[aria-pressed="true"] {
+  color: #fff; background: var(--c-accent); border-color: var(--c-accent-hi);
+  box-shadow: 0 0 10px rgba(var(--c-accent-rgb), 0.35);
+}
+.rp-chip:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 1px; }
+.rp-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--c-text-dim); }
+.rp-swatch { width: 14px; height: 3px; flex: none; }
+
+/* ═══ 成品元信息行：文件名/格式胶囊 + 分析时间 ═══ */
+.rp-head {
+  display: flex; align-items: center; gap: var(--s-4);
+  padding: var(--s-3) var(--s-4); border: var(--border);
+  background: var(--panel-tex), var(--panel-tex-2), var(--c-panel);
+  box-shadow: var(--inset-well);
+}
+.rp-head-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.rp-name { font-size: 14px; font-weight: 700; letter-spacing: 0.3px; color: var(--c-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-mchips { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+.rp-mchip { font-family: var(--mono); font-size: 10.5px; color: var(--c-text-dim); }
+.rp-mchip + .rp-mchip::before { content: "│"; margin-right: var(--s-2); color: var(--c-border); }
+.rp-head-side { margin-left: auto; display: flex; flex-direction: column; gap: 3px; flex: none; text-align: right; }
+.rp-mrow { display: flex; gap: var(--s-2); justify-content: flex-end; align-items: baseline; }
+.rp-mkey { font-size: 10.5px; color: var(--c-text-faint); letter-spacing: 0.5px; }
+.rp-mval { font-family: var(--mono); font-size: 11px; color: var(--c-text-dim); }
+@media (max-width: 900px) {
+  .rp-head { flex-wrap: wrap; }
+  .rp-head-side { margin-left: 0; text-align: left; width: 100%; }
+  .rp-mrow { justify-content: flex-start; }
+}
+
+/* ═══ 处理摘要 KPI ═══ */
+.rp-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-3); }
+@media (max-width: 900px) { .rp-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.rp-kpi {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: var(--s-3) var(--s-4); border: var(--border);
+  background: var(--panel-tex), var(--panel-tex-2), var(--c-panel);
+  box-shadow: var(--inset-well);
+}
+.rp-kpi-ic { width: 24px; height: 24px; flex: none; color: var(--c-text-dim); }
+.rp-kpi-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rp-kpi-label { font-size: 12px; font-weight: 600; color: var(--c-text-dim); white-space: nowrap; }
+.rp-kpi-sub { font-size: 10px; color: var(--c-text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-kpi-val { margin-left: auto; display: flex; align-items: baseline; gap: 4px; flex: none; }
+.rp-kpi-num { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rp-kpi-unit { font-size: 10.5px; color: var(--c-text-dim); }
+/* 方向只由读数颜色表态：图标与数值单位一样是中性色，不跟着方向变色
+   （推导色由 app.js 回写为 CSS 变量）。 */
+.rp-kpi.up .rp-kpi-num { color: var(--rp-boost); }
+.rp-kpi.down .rp-kpi-num { color: var(--rp-cut); }
+.rp-kpi.flat .rp-kpi-num { color: var(--c-text-dim); }
+
+/* ═══ 图表面板网格：2×2 ═══ */
+.rp-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-4);
+}
+@media (max-width: 980px) { .rp-grid { grid-template-columns: 1fr; } }
+/* 第二排限高：窗口再高也不要把钻石图拉成针、把频谱拉成超长条。
+   240 已经贴到下限——钻石框要求正方形，画布再矮就会横向缩成一条扁菱形。 */
+.rp-fig--stereo, .rp-fig--spec { max-height: 240px; }
+.rp-fig {
+  position: relative; min-width: 0; margin: 0; padding: var(--s-4);
+  display: flex; flex-direction: column;
+  border: var(--border);
+  background: var(--panel-tex), var(--panel-tex-2), var(--c-panel);
+  box-shadow: var(--inset-well);
+}
+.rp-fig figcaption { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-3); flex: 0 0 auto; }
+.rp-cap-zh { font-size: 12.5px; font-weight: 700; letter-spacing: 0.5px; color: var(--c-text); }
+.rp-legend-inline { margin-left: auto; display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s-2) var(--s-3); align-items: center; }
+.rp-legend-inline .rp-legend-item { font-size: 10.5px; white-space: nowrap; }
+.rp-fig canvas { display: block; width: 100%; max-width: 100%; }
+.rp-fig--freq canvas { height: 264px; }
+
+/* ═══ 响度与动态：哑铃行 ═══ */
+.rp-dyn { display: flex; flex-direction: column; gap: var(--s-3); flex: 1 1 auto; justify-content: space-between; }
+.rp-dyn-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: var(--s-3); }
+.rp-dyn-label { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rp-dyn-label b { font-size: 11.5px; font-weight: 600; color: var(--c-text-dim); }
+.rp-dyn-label i { font-style: normal; font-size: 9.5px; color: var(--c-text-faint); }
+.rp-dyn-track { position: relative; height: 42px; border: var(--border); background: var(--c-bg); box-shadow: var(--inset-deep); }
+.rp-dyn-tick { position: absolute; top: 14px; bottom: 12px; width: 1px; background: rgba(255,255,255,0.07); pointer-events: none; }
+.rp-dyn-sl { position: absolute; bottom: 1px; font-size: 8.5px; line-height: 1; color: var(--c-text-faint); white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+.rp-dyn-sl-mid { transform: translateX(-50%); }
+.rp-dyn-sl-end { transform: translateX(-100%); }
+.rp-dyn-conn { position: absolute; top: 24px; height: 2px; transform: translateY(-50%); background: var(--rp-cut); opacity: 0.5; }
+.rp-dyn-dot { position: absolute; top: 24px; width: 9px; height: 9px; transform: translate(-50%, -50%); border: 1px solid var(--c-bg); }
+.rp-dyn-dot.before { background: var(--c-text-dim); }
+/* 「处理后」一侧按本行变化方向取色：升=对比色、降=主题色（行 class 由 renderDynamics 打上）。
+   圆点填充与光晕都走 currentColor，避免点和halo分属两色。 */
+.rp-dyn-dot.after { color: var(--rp-cut); background: currentColor; box-shadow: 0 0 6px currentColor; }
+.rp-dyn-num { position: absolute; top: 2px; transform: translateX(-50%); font-size: 9.5px; line-height: 1; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rp-dyn-num.before { color: var(--c-text-dim); }
+.rp-dyn-num.after { color: var(--rp-cut); font-weight: 700; }
+.rp-dyn-num.both { color: var(--c-text-faint); font-size: 9px; }
+/* 空态读数槽：居中、纯灰，不带任何方向色（方向色会替数据下结论） */
+.rp-dyn-num.empty { left: 50%; color: var(--c-text-faint); font-size: 9px; }
+.rp-dyn-num.both i { font-style: normal; color: var(--c-text-dim); }
+.rp-dyn-num.both b { color: var(--rp-cut); }
+.rp-dyn-row.up .rp-dyn-conn { background: var(--rp-boost); }
+.rp-dyn-row.up .rp-dyn-dot.after, .rp-dyn-row.up .rp-dyn-num.after,
+.rp-dyn-row.up .rp-dyn-num.both b { color: var(--rp-boost); }
+.rp-dyn-num.rn-start { transform: translateX(0); }
+.rp-dyn-num.rn-end { transform: translateX(-100%); }
+
+/* ═══ 立体声场：3 频段钻石图 ═══ */
+.rp-fans { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-3); flex: 1 1 auto; min-height: 0; }
+.rp-fan { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-2); border: var(--border); background: var(--c-bg); box-shadow: var(--inset-deep); }
+.rp-fan-hd { display: flex; align-items: baseline; gap: 3px; white-space: nowrap; overflow: hidden; }
+.rp-fan-hd b { font-size: 11px; font-weight: 600; color: var(--c-text-dim); }
+.rp-fan-hd i { font-style: normal; font-size: 8.5px; color: var(--c-text-faint); }
+.rp-fan canvas { width: 100%; flex: 1 1 0; height: auto; min-height: 112px; display: block; }
+/* 声场实际变化数值：从画布底行挪到卡片底部，钻石因此多回 16px 高度 */
+.rp-fan-ft { text-align: center; font-size: 10.5px; font-weight: 700; line-height: 1;
+  font-variant-numeric: tabular-nums; color: var(--rp-cut); }
+.rp-fan.up .rp-fan-ft { color: var(--rp-boost); }
+.rp-fan.flat .rp-fan-ft { color: var(--c-text-dim); font-weight: 600; }
+.rp-fan-num { margin-left: auto; display: inline-flex; gap: 2px; font-size: 9.5px;
+  font-variant-numeric: tabular-nums; }
+.rp-fan-num .before { color: var(--c-text-dim); }
+.rp-fan-num .arrow { color: var(--c-text-faint); }
+.rp-fan-num .after { color: var(--rp-cut); font-weight: 700; }
+.rp-fan.up .rp-fan-num .after { color: var(--rp-boost); }
+
+/* ═══ 频谱变化：分段切换 + 色标 ═══ */
+.rp-spec-tabs { display: inline-flex; margin-left: auto; border: var(--border); background: var(--c-key); }
+.rp-spec-tab { height: 22px; padding: 0 var(--s-3); border: none; background: none; color: var(--c-text-dim); font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
+.rp-spec-tab + .rp-spec-tab { border-left: 1px solid var(--c-border); }
+.rp-spec-tab:hover { color: var(--c-text); }
+.rp-spec-tab[aria-pressed="true"] { color: #fff; background: var(--c-accent); box-shadow: inset 0 0 0 1px var(--c-accent-hi), 0 0 10px rgba(var(--c-accent-rgb), 0.35); }
+.rp-spec-tab:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -2px; }
+.rp-spec-wrap { position: relative; display: flex; gap: var(--s-2); flex: 1 1 auto; min-height: 0; }
+.rp-spec-wrap canvas { flex: 1 1 0; min-width: 0; height: auto; min-height: 112px; border: var(--border); }
+
+/* 画布 hover 指标说明 */
+.rp-tip {
+  position: absolute; z-index: 30;
+  max-width: 300px; padding: 6px 8px;
+  display: none; flex-direction: column; gap: 2px;
+  background: var(--c-panel-2);
+  border: 1px solid var(--c-accent-hi);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.55);
+  pointer-events: none;
+  font-size: 11px; line-height: 1.5; color: var(--c-text-dim);
+}
+.rp-tip.show { display: flex; }
+.rp-tip b { font-size: 11px; letter-spacing: 0.5px; color: var(--c-text); }
+.rp-tip i { font-style: normal; font-family: var(--mono); font-size: 10.5px; color: var(--c-text); }
+
 /* ═══════════════ dock 视图联动（报告页隐藏主按钮）═══════════════ */
 .dock[hidden] { display: none; }
 
 #pane-process[hidden] { display: none !important; }
+
+/* DAW transport: quiet metal panel, independent loop and seek surfaces. */
+.player { position: sticky; top: 0; z-index: 20; flex: 0 0 auto; padding: var(--s-4); --player-control: 44px; --player-label: 12px; --cache-progress: 0%; container-type: inline-size; background: linear-gradient(to bottom, var(--c-panel-2), var(--c-panel)); }
+.player-toolbar { display: grid; grid-template-columns: max-content minmax(0,1fr) max-content; align-items: center; gap: var(--s-4); min-width: 0; }
+.player-main-controls, .player-source-controls, .player-monitor-controls { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
+.player-source-controls { justify-self: stretch; }
+.player-monitor-controls { justify-self: end; }
+.player-transport { display: flex; gap: var(--s-1); flex-shrink: 0; }
+.player-key { width: var(--player-control); height: var(--player-control); display: grid; place-items: center; color: var(--c-text-dim); border: var(--border); background: var(--c-panel-2); box-shadow: var(--inset-well); cursor: pointer; }
+.player-key svg { width: 18px; height: 18px; fill: currentColor; stroke: currentColor; stroke-width: 1.5; }
+.player-key svg path[fill="none"] { fill: none; }
+/* 播放键平时就是一粒普通按键，只有正在播放时才点亮：主题色底 + 白光晕 */
+.player-play { width: var(--player-control); }
+.player-play[data-playing="true"] { color: #fff; background: var(--c-accent); border-color: var(--c-accent-hi); box-shadow: inset 0 0 0 1px var(--c-accent-hi), 0 0 8px rgba(var(--c-accent-rgb),.35); }
+.player-play[data-playing="true"]:hover:not(:disabled) { background: color-mix(in srgb, var(--c-accent) 82%, #fff); }
+.player-key:disabled { opacity: .4; cursor: default; }
+.player-play .pause-symbol, .player-play[data-playing="true"] .play-symbol { display: none; }
+.player-play[data-playing="true"] .pause-symbol { display: block; }
+#draft-loop[aria-pressed="true"] { color: var(--c-text); border-color: var(--c-text-dim); background: color-mix(in srgb,var(--c-accent) 18%,var(--c-panel)); }
+.player-readout { flex-shrink: 0; height: var(--player-control); display: flex; flex-direction: column; justify-content: center; padding: var(--s-1) var(--s-2); background: var(--c-panel-2); border: var(--border); box-shadow: var(--inset-deep), var(--inset-well); font-family: Consolas, "SFMono-Regular", monospace; font-variant-numeric: tabular-nums; }
+.player-time-label { display: block; font-size: 10px; line-height: 10px; letter-spacing: 1px; color: var(--c-text-dim); }
+#draft-time { font-size: 22px; line-height: 1; color: var(--c-text); }
+#player-total { font-size: var(--player-label); color: var(--c-text-dim); }
+.player-sources { display: flex; align-items: stretch; flex-shrink: 0; }
+.player-source { font: inherit; font-size: var(--player-label); white-space: nowrap; min-width: var(--player-control); color: var(--c-text-dim); background: var(--c-panel-2); border: var(--border); padding: 0 var(--s-2); height: var(--player-control); cursor: pointer; }
+/* 相邻胶囊各留整圈描边、只重叠 1px：静止时分隔线仍是一条，
+   而悬停/选中那枚抬到邻居之上时，它自己的四边描边都完整（旧写法 border-left: 0
+   会把左边那 1px 描边让出去，悬停时看起来就是「左侧描边消失」）。 */
+.player-source + .player-source { margin-left: -1px; }
+.player-source:hover:not(:disabled), .player-source[aria-pressed="true"], .player-source.is-selected { position: relative; z-index: 1; }
+.player-sources .player-source { width: calc(4em + 2 * var(--s-2) + 2px); min-width: 0; flex-shrink: 0; }
+.player-sources .player-version-arrow { width: 28px; padding: 0; display: grid; place-items: center; }
+.player-version-arrow svg { width: 14px; height: 14px; }
+.player-version-menu { position: fixed; inset: auto; margin: 0; padding: var(--s-1); min-width: 160px; max-height: min(240px,50vh); overflow-y: auto; background: var(--c-panel); color: var(--c-text); border: var(--border); box-shadow: 0 8px 24px #0006; }
+.player-version-menu button { display: block; width: 100%; min-height: 32px; padding: var(--s-1) var(--s-2); text-align: left; font: inherit; color: var(--c-text-dim); background: transparent; border: 0; cursor: pointer; }
+.player-version-menu button:hover, .player-version-menu button[aria-selected="true"] { color: var(--c-text); background: var(--c-panel-2); }
+/* 选中胶囊自己就用描边点亮主题色（替代全局 aria-pressed 内描边）：
+   框和整行的格子线共用同一条边，四边齐整，也不跟邻居的分隔线打架。 */
+:root .player-source[aria-pressed="true"], :root .player-source.is-selected { color: var(--c-text); border-color: var(--c-accent-hi); background: color-mix(in srgb,var(--c-accent) 24%,var(--c-panel)); box-shadow: 0 0 8px rgba(var(--c-accent-rgb),.35); }
+.player-source:disabled { opacity: .4; cursor: default; }
+.player-prepare { flex-shrink: 0; height: var(--player-control); padding: 0 var(--s-4); font-size: var(--player-label); }
+.player .rack-help { position: static; flex: 0 0 auto; width: var(--player-control); height: var(--player-control); color: var(--c-text-dim); }
+.player-volume { display: flex; align-items: center; gap: var(--s-2); flex-shrink: 0; font-size: var(--player-label); color: var(--c-text-dim); }
+.player-volume-knob { width: var(--player-control); height: var(--player-control); flex: 0 0 auto; }
+.player-volume-knob::before { inset: 6px; }
+.player-volume-knob .knob-tick { height: 8px; transform-origin: 1.25px 17px; }
+.player-volume-knob:hover { transform: none; }
+.player .btn:active { transform: none; }
+.player-volume-readout { display: grid; grid-template-rows: repeat(2, 16px); width: 4ch; font-variant-numeric: tabular-nums; }
+#player-volume-value { color: var(--c-text); }
+.player-delta[aria-pressed="true"] { color: var(--c-text); border-color: var(--c-text-dim); background: color-mix(in srgb,var(--c-accent) 24%,var(--c-panel)); }
+.player-timeline { position: relative; isolation: isolate; border-top: var(--border); margin-top: var(--s-4); padding-top: var(--s-1); background: var(--c-bg); }
+/* Loop, ruler and seek share the full timeline content width. */
+.player-loop-lane { height: 20px; margin-inline: 0; position: relative; background: var(--c-bg); touch-action: none; cursor: crosshair; user-select: none; }
+.player-loop-region { position: absolute; top: 0; height: 100%; min-width: 1px; background: color-mix(in srgb, var(--c-accent) 28%, transparent); color: var(--c-text); cursor: grab; }
+.player-loop-region[data-active="false"] { opacity: .4; }
+.player-loop-region:active { cursor: grabbing; }
+.player-loop-handle { position: absolute; top: 0; bottom: 0; width: 18px; cursor: ew-resize; z-index: 2; }
+.player-loop-handle::after { content: ''; position: absolute; top: 0; width: 7px; height: 100%; border-top: 2px solid var(--c-text-dim); border-bottom: 2px solid var(--c-text-dim); }
+.player-loop-handle[data-edge="a"] { left: -5px; }.player-loop-handle[data-edge="a"]::after { left: 5px; border-left: 2px solid var(--c-text-dim); }
+.player-loop-handle[data-edge="b"] { right: -5px; }.player-loop-handle[data-edge="b"]::after { right: 5px; border-right: 2px solid var(--c-text-dim); }
+#player-loop-label { display: block; overflow: hidden; white-space: nowrap; padding: 0 var(--s-5); text-align: center; font: var(--player-label)/20px var(--mono); }
+.player-track { position: relative; height: var(--player-control); margin-top: 3px; background: var(--c-bg); }
+/* 缓存进度只长在轨道底部那 3px 线上：::before 是常驻的暗色槽，::after 是已准备的长度。
+   往上铺底色会把波形罩住一层色，读数反而不清；状态的「就绪/过期」也由这条线自己变色。 */
+.player-track::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--c-border); pointer-events: none; }
+.player-track::after { content: ''; position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: var(--c-accent-hi); pointer-events: none; transition: width 260ms var(--ease), background-color 260ms var(--ease); }
+.player[data-cache="preparing"] .player-track::after { width: var(--cache-progress); }
+.player[data-cache="ready"] .player-track::after { width: 100%; }
+.player[data-cache="stale"] .player-track::after, .player[data-cache="error"] .player-track::after { width: 100%; background: var(--c-err); }
+/* 第一批进度到达前（fraction 还是 0），这条线没有长度可看：一道扫光沿它走一遍表示「还在等数据」，
+   进度一来就把位置让出来（data-cache-sweep 由 cacheState 按 fraction 写）。扫光只占这条线所在的一行。 */
+.player[data-cache-sweep="true"] .player-timeline::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; z-index: 1; pointer-events: none; background: linear-gradient(100deg, transparent 42%, color-mix(in srgb, var(--c-accent-hi) 55%, transparent) 50%, transparent 58%); background-size: 260% 100%; background-repeat: no-repeat; background-position: 95% 0; animation: player-cache-sweep 1.5s linear infinite; }
+@keyframes player-cache-sweep { from { background-position: 95% 0; } to { background-position: 5% 0; } }
+
+#player-ruler { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#player-waveform { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: -1; }
+.player-timeline .player-track { background: transparent; }
+/* 循环带只铺一层轻纱，够和主轨区分即可：重了就把整条波形压成黑块 */
+.player-timeline .player-loop-lane { background: color-mix(in srgb, var(--c-bg) 38%, transparent); box-shadow: inset 0 -1px var(--c-text-faint); }
+.player-loop-lane::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--c-text-faint); pointer-events: none; z-index: 3; }
+#draft-seek { touch-action: none; }
+.player-source, .player-key, .player-version-menu button, .rack-bypass, .seg-btn { transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), opacity var(--dur) var(--ease); }
+@media (prefers-reduced-motion: reduce) { .player-source, .player-key, .player-version-menu button, .rack-bypass, .seg-btn { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .player-track::after { transition: none; } .player[data-cache-sweep="true"] .player-timeline::after { display: none; } }
+.player-tick { position: absolute; top: 0; height: 5px; border-left: 1px solid var(--c-text-faint); }
+.player-tick.major { height: 8px; }
+.player-tick span { position: absolute; top: 14px; left: 0; font: 10px var(--mono); color: var(--c-text-dim); }
+/* 指针贯穿整条时间轴：从范围选择带的顶一直画到轨道底，不在带上留一段空白。
+   往上是 3px 轨道外边距 + 20px 带高 + 4px 时间轴内边距 = 27px；z-index 要压过带底那条 1px 分界线（3），
+   否则竖线穿过它时会被割断 1px。 */
+#player-playhead { position: absolute; top: calc(-3px - 20px - var(--s-1)); bottom: -2px; width: 1px; background: var(--c-text); pointer-events: none; z-index: 4; }
+/* 三角必须与 1px 竖线同轴：竖线占满 [L, L+1]，中轴在 L+0.5。用 border 画三角做不到——
+   Blink 打底把 border 宽度取整，三角永远是偶数宽，偶数宽的盒子要么边沿落在半像素上
+   （被打底取整后整块平移 0.5px），要么中轴落在整数上（与 L+0.5 差 0.5px），
+   实测两种写法都不对齐。改成 9px 奇数宽的盒子 + clip-path：盒子左沿与竖线左沿同为 L-4/L，
+   小数部分一致、取整同步，顶点在 50% 处正好压在竖线中轴。 */
+#player-playhead::before { content: ''; position: absolute; top: 0; left: -4px; width: 9px; height: 6px; background: var(--c-text); clip-path: polygon(50% 100%, 0 0, 100% 0); }
+#draft-seek { appearance: none; position: absolute; inset: 0; width: 100%; height: var(--player-control); margin: 0; background: transparent; cursor: pointer; }
+#draft-seek::-webkit-slider-runnable-track { height: var(--player-control); background: transparent; }
+#draft-seek::-webkit-slider-thumb { appearance: none; width: 0; height: var(--player-control); background: transparent; border: 0; }
+#draft-seek:disabled { cursor: default; }
+.player-loop-editor { color: var(--c-text); background: var(--c-panel); border: var(--border); padding: var(--s-6); max-width: calc(100% - 2 * var(--s-4)); max-height: calc(100% - 2 * var(--s-4)); overflow: auto; box-shadow: 0 12px 40px #0008; }
+.player-loop-editor::backdrop { background: #0006; }
+.player-loop-editor h3 { margin: 0 0 18px; font-size: 16px; }
+.player-loop-editor label { display: flex; align-items: center; gap: 16px; margin: 10px 0; font-size: 12px; }
+.player-loop-editor input { padding: 8px; width: 120px; background: var(--c-bg); color: var(--c-text); border: var(--border); font: 14px var(--mono); }
+.player-loop-editor form > div { display: flex; justify-content: flex-end; gap: 8px; }
+#player-loop-error, #draft-status { color: var(--c-err); font-size: var(--player-label); }
+#player-loop-error { max-width: 240px; }
+#draft-status { margin-top: 8px; }
+.player-key:hover:not(:disabled), .player-source:hover:not(:disabled) { border-color: var(--c-accent-hi); }
+/* Below 900px of player content, pair sources and monitor on the same second row. */
+@container (max-width: 900px) {
+  .player-toolbar { grid-template-columns: minmax(0,1fr) max-content; }
+  .player-main-controls { grid-column: 1 / -1; justify-content: space-between; }
+  .player-source-controls { justify-self: stretch; }
+}
+@container (max-width: 540px) {
+  .player-toolbar { grid-template-columns: minmax(0,1fr); }
+  .player-main-controls, .player-source-controls, .player-monitor-controls { justify-self: stretch; justify-content: space-between; }
+}
+@container (max-width: 340px) {
+  .player-main-controls { flex-wrap: wrap; }
+}
+
+
+.player-readout > div { display: flex; align-items: baseline; gap: var(--s-1); height: 22px; line-height: 22px; white-space: nowrap; }
+html[data-mode="light"] .player { --c-err: #b42332; }
+
+/* 选中态统一走内描边，不靠焦点外框（焦点外框已在文件末尾全局关掉）。 */
+:root button[aria-pressed="true"], :root button.is-selected, :root .player-source.is-selected { box-shadow: inset 0 0 0 1px var(--c-accent-hi), 0 0 8px rgba(var(--c-accent-rgb),.35); }
+[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+
+/* ═══ 文件名框：整框就是一个按钮，两翼是刻度带 ═══
+   刻度用重复渐变画满一条带子，滚轮换曲时整条平移一个周期——
+   首尾相位相同，看起来就是刻度在连续滚动（见 app.js rollTicks）。 */
+.player-file-picker {
+  position: relative; --pf-tick-w: 9px; overflow: hidden;
+  display: flex; align-items: center; min-width: 100px; flex: 1; height: var(--player-control);
+  padding: 0; border: var(--border); background: var(--c-panel-2); color: var(--c-text-dim);
+  font: inherit; text-align: left; cursor: pointer;
+  box-shadow: var(--inset-deep), var(--inset-well);
+  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.player-file-picker:hover { color: var(--c-text); border-color: var(--c-border); }
+.player-file-picker:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 1px; }
+.pf-ticks {
+  flex: 0 0 auto; align-self: stretch; position: relative; width: var(--pf-tick-w); overflow: hidden;
+  /* 两端淡出：刻度带不要以半截刻度切在框的上下沿上 */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+}
+.pf-ticks i {
+  position: absolute; left: 0; right: 0; top: -10px; bottom: -10px;
+  background-image: repeating-linear-gradient(to bottom, var(--c-border) 0 1px, transparent 1px 10px);
+}
+.player-file-picker:hover .pf-ticks i {
+  background-image: repeating-linear-gradient(to bottom, var(--c-text-faint) 0 1px, transparent 1px 10px);
+}
+#player-file-name { display: flex; align-items: center; flex: 1; min-width: 0; padding: 0 var(--s-1); overflow: hidden; font-size: 12px; }
+/* 换曲滚动：旧名与新名贴成一条两行的带子，整条平移一行整（= 一个框高）。
+   裁切交给按钮本身（.player-file-picker 的 overflow），带子自己不裁——
+   否则裁窗会跟着 transform 一起走，看到的就不是「滚过窗口」而是整块滑走。 */
+.mq-roll {
+  position: absolute; top: 0; bottom: 0;
+  left: calc(var(--pf-tick-w) + var(--s-1)); right: calc(var(--pf-tick-w) + var(--s-1));
+  font-size: 12px;
+}
+.mq-roll > span { display: flex; align-items: center; height: 100%; white-space: nowrap; overflow: hidden; }
+.player-file-menu { position: fixed; inset: auto; margin: 0; padding: var(--s-4); max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); color: var(--c-text); background: var(--c-panel); border: var(--border); box-shadow: 0 8px 24px #0006; z-index: 30; animation: none; }
+.player-file-menu:not(:popover-open) { display: none; }
+.player-file-menu .queue-list { height: auto; min-height: 0; max-height: min(224px,35vh); }
+.player-file-menu .fi-name { border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 8px 0; }
+.player-file-menu .file-item.selected { background: color-mix(in srgb,var(--c-accent) 18%,var(--c-panel)); }
+/* 选中反馈只落整行底色：名称按钮再自描一圈 1px 就成了双层框 */
+.player-file-menu .fi-name[aria-pressed="true"] { box-shadow: none; }
+.player-file-menu .queue-btn { height: 32px; }
+.player-file-menu .file-item { grid-template-columns: 8px minmax(0,1fr) 32px; min-height: 32px; padding-block: 0; }
+.player-file-menu .fi-name, .player-file-menu .fi-x { min-height: 32px; padding-block: 0; }
+.player-file-menu .fi-x { width: 32px; height: 32px; }
+.player-file-menu .fi-x::after { inset: 0; }
+.player-file-menu .file-item, .player-file-menu .file-empty, .player-file-menu .queue-count { font-size: 12px; }
+.player-file-picker.drop-hover { box-shadow: inset 0 0 0 1px var(--c-accent-hi), 0 0 8px rgba(var(--c-accent-rgb),.35); }
+@container (max-width: 540px) { .player-source-controls { flex-wrap: wrap; }.player-file-picker { flex-basis: 160px; } }
+
+/* Top-layer menus retain their surface through both halves of the transition. */
+.player-file-menu, .player-version-menu { opacity: 0; transform: translateY(-4px); transition: opacity 120ms ease, transform 120ms ease, display 120ms allow-discrete, overlay 120ms allow-discrete; }
+.player-file-menu:popover-open, .player-version-menu:popover-open { opacity: 1; transform: translateY(0); }
+@starting-style { .player-file-menu:popover-open, .player-version-menu:popover-open { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .player-file-menu, .player-version-menu { transition: none; transform: none; } }
+.player-loop-handle[data-edge="a"] { left: 0; }
+.player-loop-handle[data-edge="a"]::after { left: 0; }
+.player-loop-handle[data-edge="b"] { right: 0; }
+.player-loop-handle[data-edge="b"]::after { right: 0; }
+
+/* 键盘操作不在任何元素上留外框：全站的 :focus-visible 描边在这一条里统一关掉。
+   放文件末尾——与上面各条 .class:focus-visible 同权重（0,2,0），靠源序取胜；
+   选中/激活态另有底色与内描边（aria-pressed、is-selected）表达，不需要焦点环。 */
+:root :focus-visible { outline: none; }

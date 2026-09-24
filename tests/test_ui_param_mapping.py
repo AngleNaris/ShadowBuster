@@ -70,22 +70,22 @@ def test_quality_two_uses_six_stem_when_available():
     assert notices == []
 
 
-def test_quality_two_falls_back_without_weights_with_notice():
+def test_quality_two_does_not_silently_fall_back():
     mapping, notices = app_main.map_ui_params({"quality": 2}, lambda: False)
-    assert mapping["demucs_model"] == "htdemucs"
-    assert notices and "四轨" in notices[0]
-
-
-def test_standard_quality_stays_four_stem():
-    mapping, notices = app_main.map_ui_params({"quality": 1}, lambda: False)
-    assert mapping["demucs_model"] == "htdemucs"
+    assert mapping["demucs_model"] == "htdemucs_6s"
     assert notices == []
 
 
-def test_explicit_model_wins_and_skips_fallback_notice():
+def test_standard_quality_uses_six_stem():
+    mapping, notices = app_main.map_ui_params({"quality": 1}, lambda: False)
+    assert mapping["demucs_model"] == "htdemucs_6s"
+    assert notices == []
+
+
+def test_gui_always_uses_six_stem():
     mapping, notices = app_main.map_ui_params(
         {"quality": 2, "demucs_model": "htdemucs"}, lambda: False)
-    assert mapping["demucs_model"] == "htdemucs"
+    assert mapping["demucs_model"] == "htdemucs_6s"
     assert notices == []
 
 
@@ -113,10 +113,20 @@ def test_explicit_vocal_params_win():
     assert mapping["vocal_air_db"] == 0.5
 
 
-def test_guitar_fader_zero_is_neutral_and_four_stem():
+@pytest.mark.parametrize('params', [
+    {'style_mode': 'off'}, {'style_mode': 'eq_only'},
+    {'style_mode': 'styled', 'reference': 'user.wav'},
+    {'style_mode': 'styled', 'bypass': ['soren']},
+])
+def test_independent_mastering_does_not_compensate_legacy_tone(params):
+    assert app_main.map_ui_params(params)[0]['vocal_air_db'] == 0
+    assert app_main.map_ui_params({**params, 'vocal_air_db': 1.2})[0]['vocal_air_db'] == 1.2
+
+
+def test_guitar_fader_zero_is_neutral_and_six_stem():
     mapping, notices = app_main.map_ui_params({"guitar": 0.0}, lambda: True)
     assert "guitar_gain_db" not in mapping
-    assert mapping["demucs_model"] == "htdemucs"
+    assert mapping["demucs_model"] == "htdemucs_6s"
     assert notices == []
 
 
@@ -133,10 +143,10 @@ def test_guitar_fader_drives_bounded_controls_and_six_stem():
     assert half["guitar_presence_db"] == 2.0 and half["guitar_gain_db"] == 0.0
 
 
-def test_guitar_without_weights_falls_back_with_explicit_notice():
+def test_guitar_without_weights_does_not_change_model():
     mapping, notices = app_main.map_ui_params({"guitar": 0.5}, lambda: False)
-    assert mapping["demucs_model"] == "htdemucs"
-    assert notices and "吉他" in notices[0]
+    assert mapping["demucs_model"] == "htdemucs_6s"
+    assert notices == []
 
 
 def test_explicit_guitar_stem_params_win():

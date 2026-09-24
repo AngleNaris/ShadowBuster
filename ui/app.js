@@ -48,11 +48,18 @@
         processBtn.style.setProperty("--btn-progress", "100%");
         setFileStatus(fi, succeeded ? "done" : "fail");
       });
-      // 质量摘要：逐文件 JSON 报告（守卫连接，旧后端 / 静态预览不崩）
-      if (api.qualitySummary) api.qualitySummary.connect((raw) => onQualitySummary(raw));
-    if (api.previewPeaks) api.previewPeaks.connect((raw) => onPreviewPeaks(raw));
-    if (api.previewDone) api.previewDone.connect((raw) => onPreviewDone(raw));
-    if (api.previewFailed) api.previewFailed.connect((msg) => onPreviewFailed(String(msg)));
+      // 质量摘要经磁盘报告进入报告页；前端不再维护面板载荷（守卫连接已随面板退役）
+    if (api.previewOutputPeaks) api.previewOutputPeaks.connect((raw) => onPreviewOutputPeaks(raw));
+    if (api.draftReady) api.draftReady.connect(onDraftReady);
+    if (api.draftFailed) api.draftFailed.connect(onDraftFailed);
+    if (api.draftChunkReady) api.draftChunkReady.connect(raw=>{
+      const p=JSON.parse(raw); if(p.session!==draft.id || p.generation!==draft.player.generation)return;
+      if(p.error) { draft.player.stop(); draft.ready=false; cacheState('error','试听缓存读取失败'); playerError(p.error); paintTransport(); return; }
+      draft.player.chunk(p);
+    });
+    if (api.draftProgress) api.draftProgress.connect(onDraftProgress);
+    if (api.audioInfoReady) api.audioInfoReady.connect(onAudioInfo);
+    if (api.playerWaveformReady) api.playerWaveformReady.connect(onPlayerWaveform);
       // logLine 不再渲染（UI 禁止显示任何日志）
       api.done.connect((path, ok, fail, errText) => {
         fx.setActive(false);
@@ -83,7 +90,7 @@
       // OS 文件拖入：Qt 层取路径后推给前端队列
       api.filesDropped.connect((paths) => addPaths(paths));
       api.dragHover.connect((on) => {
-        const q = document.querySelector(".queue");
+        const q = $("player-file-picker");
         if (q) q.classList.toggle("drop-hover", !!on);
       });
       api.updateInfo.connect((raw) => onUpdateInfo(raw));
@@ -349,7 +356,7 @@
     return Math.max(min, Math.min(max, snapped));
   }
 
-  function bindKnob(knobEl, valueEl, fmt, storeKey) {
+  function bindKnob(knobEl, valueEl, fmt, storeKey, onChange) {
     const min = +knobEl.dataset.min, max = +knobEl.dataset.max;
     const step = +knobEl.dataset.step, def = +knobEl.dataset.default;
     let value = def;
@@ -365,14 +372,16 @@
       knobEl.setAttribute("aria-valuetext", text);
       valueEl.textContent = text;
       if (storeKey) saveValue(storeKey, value);
+      if (onChange) onChange(value);
     }
     let dragging = false, lastY = 0, dragAccum = 0;
     knobEl.addEventListener("pointerdown", (e) => {
+      if(knobEl.getAttribute('aria-disabled')==='true')return;
       dragging = true; lastY = e.clientY;
       knobEl.setPointerCapture(e.pointerId);
     });
     knobEl.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
+      if (!dragging || knobEl.getAttribute('aria-disabled')==='true') return;
       const dy = lastY - e.clientY; lastY = e.clientY;
       // 慢速：灵敏度 0.35，累加阈值 8px 才步进
       dragAccum += dy * 0.35;
@@ -386,13 +395,15 @@
     const end = () => { dragging = false; dragAccum = 0; };
     knobEl.addEventListener("pointerup", end);
     knobEl.addEventListener("pointercancel", end);
-    knobEl.addEventListener("dblclick", () => { value = def; render(); });
+    knobEl.addEventListener("dblclick", () => { if(knobEl.getAttribute('aria-disabled')==='true')return; value = def; render(); });
     knobEl.addEventListener("wheel", (e) => {
       e.preventDefault();
+      if(knobEl.getAttribute('aria-disabled')==='true')return;
       value = snapToStep(value + (e.deltaY < 0 ? step : -step), min, max, step);
       render();
     }, { passive: false });
     knobEl.addEventListener("keydown", (e) => {
+      if(knobEl.getAttribute("aria-disabled")==="true")return;
       const d = e.key === "ArrowUp" || e.key === "ArrowRight" ? step
               : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -step : 0;
       if (d) { e.preventDefault(); value = snapToStep(value + d, min, max, step); render(); }
@@ -432,9 +443,10 @@
     const end = () => { dragging = false; };
     faderEl.addEventListener("pointerup", end);
     faderEl.addEventListener("pointercancel", end);
-    faderEl.addEventListener("dblclick", () => { value = def; render(); });
+    faderEl.addEventListener("dblclick", () => { if(faderEl.getAttribute('aria-disabled')==='true')return; value = def; render(); });
     faderEl.addEventListener("wheel", (e) => {
       e.preventDefault();
+      if(faderEl.getAttribute('aria-disabled')==='true')return;
       value = snapToStep(value + (e.deltaY < 0 ? step : -step), min, max, step);
       render();
     }, { passive: false });
@@ -684,9 +696,10 @@
     const end = () => { dragging = false; };
     meterEl.addEventListener("pointerup", end);
     meterEl.addEventListener("pointercancel", end);
-    meterEl.addEventListener("dblclick", () => { value = def; render(); });
+    meterEl.addEventListener("dblclick", () => { if(meterEl.getAttribute('aria-disabled')==='true')return; value = def; render(); });
     meterEl.addEventListener("wheel", (e) => {
       e.preventDefault();
+      if(meterEl.getAttribute('aria-disabled')==='true')return;
       value = snapToStep(value + (e.deltaY < 0 ? step : -step), min, max, step);
       render();
     }, { passive: false });
@@ -911,6 +924,112 @@
   /* ─── 队列管理 ─── */
   const fileListEl = $("file-list");
   const clearBtn = $("btn-clear");
+  const fileMenu=$('player-file-menu'),fileTrigger=$('player-file-picker');
+  function placeFileMenu(){
+    const r=$('player-file-picker').getBoundingClientRect(),width=Math.min(420,innerWidth-24);
+    fileMenu.style.width=`${width}px`;
+    fileMenu.style.left=`${Math.max(12,Math.min(r.right-width,innerWidth-width-12))}px`;
+    fileMenu.style.top=`${Math.max(12,Math.min(r.bottom+8,innerHeight-fileMenu.offsetHeight-12))}px`;
+  }
+  fileMenu.addEventListener('toggle',()=>{
+    const open=fileMenu.matches(':popover-open');fileTrigger.setAttribute('aria-expanded',String(open));
+    if(open)placeFileMenu();
+  });
+  fileMenu.addEventListener('beforetoggle',e=>{if(e.newState==='open')placeFileMenu();});
+  window.addEventListener('resize',()=>{if(fileMenu.matches(':popover-open'))placeFileMenu();});
+  $('content').addEventListener('scroll',()=>{if(fileMenu.matches(':popover-open'))placeFileMenu();});
+  let lastFileWheel=0;
+  $('player-file-picker').addEventListener('wheel',e=>{
+    e.preventDefault();
+    if(state.processing||draft.busy||!e.deltaY||state.files.length<2)return;
+    const now=performance.now();if(now-lastFileWheel<140)return;lastFileWheel=now;
+    const index=state.files.indexOf(state.selectedFile),next=Math.max(0,Math.min(state.files.length-1,index+(e.deltaY>0?1:-1)));
+    if(next!==index){state.selectedFile=state.files[next];renderFileList(e.deltaY>0?1:-1);}
+  },{passive:false});
+  /* ─── 名称跑马灯：截断时 hover 快速往返；滚轮换曲时上下滚动交接 ─── */
+  function mqInner(el) { return el ? el.querySelector(".mq") : null; }
+  function mqStart(el) {
+    const inner = mqInner(el);
+    if (!inner) return;
+    const span = inner.scrollWidth - inner.clientWidth;
+    if (span <= 4) return;
+    inner.getAnimations().forEach((a) => a.cancel());
+    inner.classList.add("running");
+    /* 两端各停一拍：只看位移的话，名字的头和尾都只是一闪而过 */
+    inner.animate([
+      { transform: "translateX(0)", offset: 0 },
+      { transform: "translateX(0)", offset: 0.18 },
+      { transform: `translateX(${-span}px)`, offset: 0.5 },
+      { transform: `translateX(${-span}px)`, offset: 0.68 },
+      { transform: "translateX(0)", offset: 1 },
+    ], { duration: Math.max(1600, span * 12), iterations: Infinity, easing: "ease-in-out" });
+  }
+  function mqStop(el) {
+    const inner = mqInner(el);
+    if (!inner) return;
+    inner.getAnimations().forEach((a) => a.cancel());
+    inner.classList.remove("running");
+  }
+  function bindNameMarquee(el) {
+    if (!el || el.dataset.marquee) return;
+    el.dataset.marquee = "1";
+    /* 悬停态自己记：滚轮换曲不产生 pointer 事件，:hover 在 WebEngine 里可能滞后 */
+    el.addEventListener("pointerenter", () => { el.dataset.hovering = "1"; mqStart(el); });
+    el.addEventListener("pointerleave", () => { delete el.dataset.hovering; mqStop(el); });
+  }
+  /* 刻度带跟着换曲方向滚过一个周期；周期与 style.css 的 10px 一致 */
+  function rollTicks(rollDir) {
+    if (!rollDir) return;
+    document.querySelectorAll(".pf-ticks i").forEach((el) => {
+      el.getAnimations().forEach((a) => a.cancel());
+      el.animate([{ transform: "translateY(0)" }, { transform: `translateY(${-10 * rollDir}px)` }],
+        { duration: 260, easing: "cubic-bezier(.25,.6,.35,1)" });
+    });
+  }
+  let nameRollToken = 0, nameRollPending = null;
+  function setPlayerFileName(text, rollDir) {
+    const host = $("player-file-name"), inner = mqInner(host);
+    if (!inner) { if (host) host.textContent = text; return; }
+    if ((nameRollPending ?? inner.textContent) === text) return;
+    if (!rollDir || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      nameRollPending = null; mqStop(host); inner.textContent = text; return;
+    }
+    const token = ++nameRollToken;
+    mqStop(host);
+    rollTicks(rollDir);
+    /* 真滚动：新旧两个名字贴成一条带子（.mq-roll），整条平移正好一个框高。
+       不用透明度——带子是被框沿裁掉的，读起来就是名字从框外滚进来。
+       滚轮比动画快，连着滚时拿上一段的目标名当“旧名”，免得跳过中间那首。 */
+    const box = $("player-file-picker");
+    const outgoing = nameRollPending ?? inner.textContent;
+    nameRollPending = text;
+    box.querySelectorAll(".mq-roll").forEach((el) => el.remove());
+    const from = rollDir > 0 ? 0 : -100, to = rollDir > 0 ? -100 : 0;
+    const roll = document.createElement("span");
+    roll.className = "mq-roll";
+    [outgoing, text].forEach((t) => {
+      const row = document.createElement("span");
+      row.textContent = t;
+      roll.append(row);
+    });
+    if (rollDir < 0) roll.prepend(roll.lastElementChild);   // 上一首从上面下来
+    roll.style.transform = `translateY(${from}%)`;
+    inner.style.visibility = "hidden";
+    box.append(roll);
+    const anim = roll.animate(
+      [{ transform: `translateY(${from}%)` }, { transform: `translateY(${to}%)` }],
+      { duration: 260, easing: "cubic-bezier(.22,.61,.36,1)", fill: "forwards" });
+    const land = () => {
+      roll.remove();
+      if (token !== nameRollToken) return;
+      nameRollPending = null;
+      inner.textContent = text;
+      inner.style.visibility = "";
+      if (host.dataset.hovering) mqStart(host);
+    };
+    anim.finished.then(land, land);
+  }
+  bindNameMarquee($('player-file-name'));
   const FILE_STATUS_LABELS = {
     pending: "待处理",
     processing: "处理中",
@@ -936,7 +1055,7 @@
       });
     }
   }
-  function renderFileList() {
+  function renderFileList(rollDir) {
     fileListEl.innerHTML = "";
     if (!state.files.length) {
       fileListEl.innerHTML = '<span class="file-empty">尚未添加歌曲</span>';
@@ -955,23 +1074,27 @@
       const selected = state.selectedFile === f;
       if (selected) item.classList.add("selected");
       item.innerHTML = `<span class="fi-status" aria-hidden="true"></span>` +
-        `<span class="fi-name" title="${escapeHtml(f)}">${escapeHtml(name)}</span>` +
+        `<button type="button" class="fi-name" title="${escapeHtml(f)}" aria-pressed="${selected}"><span class="mq">${escapeHtml(name)}</span></button>` +
         `<button class="fi-x" aria-label="移除" title="移除">` +
         `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="square"/></svg>` +
         `</button>`;
+      bindNameMarquee(item.querySelector(".fi-name"));
       item.addEventListener("click", (ev) => {
         if (ev.target.closest(".fi-x")) return;    // 移除按钮不触发选中
+        if(state.processing||draft.busy)return;
         if (state.selectedFile !== f) {
           state.selectedFile = f;
           renderFileList();
         }
+        fileMenu.hidePopover();fileTrigger.focus();
       });
       item.querySelector(".fi-x").addEventListener("click", () => {
-        if (state.processing) return;
+        if (state.processing||draft.busy) return;
         item.classList.add("leaving");
         setTimeout(() => {
-          state.files.splice(i, 1);
-          state.fileStatuses.splice(i, 1);
+          const index=state.files.indexOf(f);if(index<0)return;
+          state.files.splice(index, 1);
+          state.fileStatuses.splice(index, 1);
           if (state.selectedFile === f) state.selectedFile = state.files[0] || null;
           renderFileList();
         }, 150);
@@ -979,14 +1102,17 @@
       fileListEl.appendChild(item);
     });
     $("queue-count").textContent = `${state.files.length} 首`;
+    setPlayerFileName(state.selectedFile?.replace(/\\/g,'/').split('/').pop()||'添加歌曲…',rollDir);
+    if(fileMenu.matches(':popover-open'))placeFileMenu();
     refreshPreviewFiles();
+    refreshReportVersions();
     if (state.files.length) {
       const queueCard = document.querySelector(".queue");
       if (queueCard) clearNeed(queueCard);
     }
   }
   function addPaths(paths) {
-    if (state.processing || !paths || !paths.length) return;
+    if (state.processing || draft.busy || !paths || !paths.length) return;
     const additions = paths.filter((p) => !state.files.includes(p));
     if (!additions.length) return;
     state.files.push(...additions);
@@ -995,165 +1121,17 @@
     renderFileList();
   }
   async function addFiles() {
-    if (state.processing) return;
+    if (state.processing||draft.busy) return;
     addPaths(await api.selectInputs());
   }
   $("btn-add").addEventListener("click", addFiles);
   $("btn-clear").addEventListener("click", () => {
-    if (state.processing) return;
+    if (state.processing||draft.busy) return;
     state.files = [];
     state.selectedFile = null;
     state.fileStatuses = [];
     renderFileList();
   });
-
-  /* ─── 输出质量摘要：逐文件实测报告，显式选择查看 ───
-     桥接契约（main.py qualitySummary 信号，JSON 字符串）：
-     { ...summary, input, output, filename }；失败载荷可带 overall:"unavailable" 与 error。
-     面板常驻占位（等待测量 / 未可用），不隐藏避免布局跳变；状态一律中文。
-     数值只取后端实测：缺失 / null / NaN / 非有限值一律显示“不可判定”，
-     不做外推、不虚构达标；全旁路时同样只报告实测，不代后端下处理结论。
-     文件名来自磁盘且长度不定：只经 textContent / title / option.textContent，
-     绝不进 innerHTML 或模板拼接。 */
-  const QUALITY_TP_LIMIT_DBTP = -0.4;   // 与 audio_metrics.assess_quality 的真峰值判定上限一致
-  const QUALITY_STATUS_TEXT = { pass: "达标", warn: "有警告", fail: "未达标", unavailable: "未可用" };
-  const QUALITY_FMT = {
-    lufs: (n) => `${n.toFixed(1)} LUFS`,
-    lu: (n) => `${n.toFixed(1)} LU`,
-    db: (n) => `${n.toFixed(1)} dB`,
-    dbtp: (n) => `${n.toFixed(1)} dBTP`,
-    corr: (n) => n.toFixed(2),            // 相关性至少 2 位小数
-    count: (n) => String(Math.round(n)),
-  };
-  const QUALITY_CELLS = [
-    { id: "q-lufs", fmt: "lufs", value: (p) => p.integrated_lufs ?? qualityMetric(p, "integrated_lufs") },
-    { id: "q-target", fmt: "lufs", value: (p) => p.target_lufs ?? qualityMastering(p, "target_lufs") },
-    { id: "q-delta", fmt: "lu", value: qualityLoudnessDelta },
-    { id: "q-tp", fmt: "dbtp", value: (p) => p.true_peak_4x_dbtp ?? qualityMetric(p, "true_peak_4x_dbtp") },
-    { id: "q-headroom", fmt: "db", value: qualityPeakHeadroom },
-    { id: "q-sp", fmt: "db", value: (p) => p.sample_peak_dbfs ?? qualityMetric(p, "sample_peak_dbfs") },
-    { id: "q-lra", fmt: "lu", value: (p) => p.lra_lu ?? qualityMetric(p, "lra_lu") },
-    { id: "q-crest", fmt: "db", value: (p) => p.crest_factor_db ?? qualityMetric(p, "crest_factor_db") },
-    { id: "q-corr", fmt: "corr", value: (p) => p.stereo_correlation ?? qualityMetric(p, "stereo_correlation") },
-    { id: "q-mono", fmt: "db", value: (p) => p.mono_fold_down_loss_db ?? qualityMetric(p, "mono_fold_down_loss_db") },
-    { id: "q-plim", fmt: "db", value: (p) => p.limiter_p95_db ?? qualityMastering(p, "gain_reduction_p95_db")
-        ?? (qualityMastering(p, "limiter") || {}).gain_reduction_p95_db },
-    { id: "q-clip", fmt: "count", value: (p) => p.clipping_samples ?? qualityMetric(p, "clipping_samples") },
-  ];
-  let qualityReports = [];        // 到达顺序：{ key, name, payload }
-  let qualitySelectedKey = null;  // 当前展示的报告键；null = 尚未选择
-  let qualitySeq = 0;
-
-  function qualityMetric(payload, key) {
-    const m = payload?.output?.metrics;
-    return m ? m[key] : undefined;
-  }
-  function qualityMastering(payload, key) {
-    const m = payload?.mastering;
-    return m && typeof m === "object" ? m[key] : undefined;
-  }
-  // 只有有限数值（或数字字符串）参与展示；null / NaN / ±Inf / 布尔 / 数组 / 对象 → 不可判定
-  function qualityNumber(value) {
-    const t = typeof value;
-    if (t === "number") return Number.isFinite(value) ? value : null;
-    if (t === "string" && value.trim() !== "") {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : null;
-    }
-    return null;
-  }
-  function qualityLoudnessDelta(p) {
-    const err = qualityNumber(qualityMastering(p, "target_error_lu"));
-    if (err !== null) return err;
-    const target = qualityNumber(p.target_lufs ?? qualityMastering(p, "target_lufs"));
-    const measured = qualityNumber(p.integrated_lufs ?? qualityMetric(p, "integrated_lufs"));
-    return target !== null && measured !== null ? measured - target : null;
-  }
-  function qualityPeakHeadroom(p) {
-    const tp = qualityNumber(p.true_peak_4x_dbtp ?? qualityMetric(p, "true_peak_4x_dbtp"));
-    return tp !== null ? QUALITY_TP_LIMIT_DBTP - tp : null;
-  }
-  function qualityBaseName(path) {
-    return String(path ?? "").replace(/\\/g, "/").split("/").pop();
-  }
-  function qualityReportName(payload) {
-    const f = typeof payload.filename === "string" ? payload.filename : "";
-    return qualityBaseName(f)
-      || qualityBaseName(payload.output?.path)
-      || qualityBaseName(payload.input?.path);
-  }
-  function qualityStatusText(payload) {
-    if (!payload) return "等待测量";
-    const overall = payload.overall;
-    return Object.hasOwn(QUALITY_STATUS_TEXT, overall) ? QUALITY_STATUS_TEXT[overall] : "不可判定";
-  }
-  function qualityOption(value, label, selected) {
-    const opt = document.createElement("option");
-    opt.value = value;
-    opt.textContent = label;
-    opt.selected = selected;
-    return opt;
-  }
-  function renderQuality() {
-    const select = $("quality-file-select");
-    const fileEl = $("quality-file");
-    const overallEl = $("quality-overall");
-    const errEl = $("quality-error");
-    if (!select || !fileEl || !overallEl) return;
-    const current = qualityReports.find((r) => r.key === qualitySelectedKey) || null;
-    // 选择器：原生 select 紧凑变体（与 dd-trigger 同规格）；选项只走 textContent
-    select.innerHTML = "";
-    select.disabled = qualityReports.length === 0;
-    if (!qualityReports.length) {
-      select.appendChild(qualityOption("", "等待测量", false));
-    } else {
-      qualityReports.forEach((r) => {
-        select.appendChild(qualityOption(r.key, r.name || "未知文件", r.key === qualitySelectedKey));
-      });
-    }
-    // 文件名独立成行：完整名保存在 DOM 文本与 title 里，超长仅由 CSS 截断
-    const shownName = current ? (current.name || "未知文件") : "";
-    fileEl.textContent = shownName || "—";
-    fileEl.title = shownName;
-    overallEl.textContent = qualityStatusText(current?.payload);
-    QUALITY_CELLS.forEach((cell) => {
-      const el = $(cell.id);
-      if (!el) return;
-      const n = current ? qualityNumber(cell.value(current.payload)) : null;
-      el.textContent = current ? (n === null ? "不可判定" : QUALITY_FMT[cell.fmt](n)) : "—";
-    });
-    if (errEl) {
-      const errText = current && typeof current.payload.error === "string" ? current.payload.error : "";
-      errEl.textContent = errText;
-      errEl.hidden = !errText;
-    }
-  }
-  function onQualitySummary(raw) {
-    let payload = null;
-    try { payload = JSON.parse(raw); } catch (e) { return; }   // 坏报文：忽略，面板保持原状
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
-    const name = qualityReportName(payload);
-    const key = name
-      || String(payload.output?.path || "")
-      || String(payload.input?.path || "")
-      || `__report_${++qualitySeq}`;   // 完全无名：唯一键入列，绝不静默覆盖上一份
-    const report = { key, name, payload };
-    const at = qualityReports.findIndex((r) => r.key === key);
-    if (at >= 0) qualityReports[at] = report;   // 同一文件重复上报：原位更新（缓存回放）
-    else qualityReports.push(report);
-    // 不做“最后到达即展示”的覆盖：仅在没有可展示对象时选中第一份，
-    // 之后展示对象只随用户显式选择变化，批处理中后续报告只进选择列表。
-    if (!qualitySelectedKey) qualitySelectedKey = key;
-    renderQuality();
-  }
-  function clearQualityReports() {
-    qualityReports = [];
-    qualitySelectedKey = null;
-    renderQuality();
-  }
-  // 输出检查面板已并入报告页：质量模块仅保留载荷存储/取值函数，
-  // 不再绑定已移除的 quality-file-select 等展示元素（避免加载期 TypeError）。
-  renderQuality();   // 初始占位：元素缺失时内部守卫直接返回
 
   /* ─── 输出 / 参考音频 ─── */
   state.output = loadValue("output", "");
@@ -1167,10 +1145,12 @@
     if (path) {
       state.output = path; $("output-path").value = path;
       saveValue("output", path); clearNeed($("output-path"));
+      refreshPreviewOutputs();
+      refreshReportVersions();
     }
   }
   async function chooseReference() {
-    if (state.processing) return;
+    if (state.processing || $('ref-card').inert) return;
     const path = await api.selectReference();
     if (path) {
       state.reference = path; $("ref-path").value = path; saveValue("reference", path);
@@ -1192,6 +1172,7 @@
     const hit = document.elementFromPoint(x, y);
     const card = hit && (hit.closest("#output-card") || hit.closest("#ref-card"));
     if (card === $("ref-card")) {
+      if(card.inert)return;
       const audio = paths.find(isAudio);
       if (audio) { state.reference = audio; $("ref-path").value = audio; saveValue("reference", audio); }
       return;
@@ -1358,6 +1339,8 @@
     processBtn.style.setProperty("--btn-progress", "0%");
     btnFx.stop();
     renderCache();   // 恢复缓存行（清空 / 改容量）可用
+    refreshPreviewOutputs();   // 新成品落盘：预览版本选择与报告随之更新
+    refreshReportVersions();
   }
   function setProcessing() {
     state.processing = true;
@@ -1378,16 +1361,16 @@
       api.cancel();
       processLabel.textContent = "停止中…";
       processBtn.disabled = true;
-    } else if (state.view === "preview") {
-      startPreviewRender();
+
     } else {
       startProcess();
     }
   });
 
   function collectParams() {
-    // 面板参数快照：正式批处理与预览渲染共用同一份（保证预览=成品语义）。
+    // Shared controls; live draft processing intentionally approximates export DSP.
     return {
+      reference: state.reference,
       quality: getQuality(), guidance: getGuidance(),
       sub: getSub(), sat: getSat(), punch: getPunch(), trans: getTrans(),
       space: getSpace(), denoise: getDenoise(), guitar: getGuitar(),
@@ -1402,8 +1385,10 @@
   }
 
   async function startProcess() {
+    if (draft.busy) { announce("请先完成或取消草稿准备"); return; }
+    stopTransport();
     // 缺失提示改为控件红框：无歌曲 → BUSTER 红框并打开文件弹窗；无输出目录 → 输出框红框
-    if (!state.files.length) { markNeed(document.querySelector(".queue")); return; }
+    if (!state.files.length) { fileMenu.showPopover();markNeed(fileMenu);return; }
     if (!state.output) { markNeed($("output-path")); return; }
     clearNeed(document.querySelector(".queue"));
     clearNeed($("output-path"));
@@ -1413,7 +1398,6 @@
     state.currentFileIndex = -1;
     state.fileStatuses = state.files.map(() => "pending");
     renderFileList();
-    clearQualityReports();   // 新批次：清空上一批的逐文件质量报告
     fx.setActive(true);
     setProcessing();
     document.querySelectorAll(".stage").forEach((s) => s.classList.remove("active", "done", "error"));
@@ -1433,6 +1417,7 @@
 
   /* ─── 参数说明浮层：打开 / 拖动 / 关闭 ─── */
   const HELP_CONTENT = {
+    player: {title:'试听播放器',html:'<p>在版本选择右侧用滚轮切换歌曲，点击文件名框展开文件列表，可添加、移除或清空。切歌后暂停。原声可直接播放；点击草稿自动准备，准备中再点可取消。就绪后原声与草稿共用播放时钟，切换保持位置。</p><p>时间轴：暗色表示未准备，主题色逐步填充表示准备中，亮起表示缓存就绪，警示色表示需要重新准备。悬停时间轴可查看状态。</p><p>可实时调整重建引导、吉他、Sub、饱和、鼓身、瞬态、人声、声场、宽度、EQ和参考强度。降噪为简化模拟；响度采用正式档位目标和实时测量，实时限幅与正式导出仍有差异。</p><p>在时间尺上方拖选循环区间，拖两端调整、拖中间移动。双击循环带或聚焦后按 Enter 精确编辑；方向键移动区间，Delete 清除。下方时间尺用于播放定位。监听旋钮支持拖动、滚轮与方向键，双击恢复 100%，不影响导出。Δ 按钮仅在草稿就绪并选中时可用，监听草稿减去同步原声的差值（含增益、削减与相位变化），切换音源自动关闭。准备或草稿模式下质量档与参考选择暂时锁定，切回原声可修改；其他旋钮实时生效。</p>'},
     lew: {
       title: "高频 · 怎么调",
       html:
@@ -1470,27 +1455,11 @@
         "<h3>风格强度</h3><p>控制流派母带的处理力度，主要改变压缩、瞬态与密度。<b>它不是干湿混合</b>，调低不会把两条不同相位的波形相加；音色和声场只做有限修正。拿不准就保持默认。</p>" +
         "<h3>怎么选</h3><p><b>先保持默认，再按喜好微调</b>。关闭面板可跳过这一步。</p>",
     },
-    preview: {
-      title: "预览 · 怎么用",
-      html:
-        "<h3>选择</h3><p>点击上方待处理列表<b>选中歌曲</b>；频谱会给出默认片段，<b>拖动片段两侧边缘</b>即可调整范围（不限大小）。</p>" +
-        "<h3>渲染</h3><p>点底部 <b>PREVIEW</b>，用当前面板参数渲染该片段。<b>首次</b>要跑完整链路；之后同片段调参数只重算后段，很快。</p>" +
-        "<h3>试听</h3><p><b>空格</b>播放/暂停；<b>点击频谱任意位置</b>定位播放进度；<b>点左侧轨道标签</b>在原始/预览之间切换对比，播放头始终同步。</p>" +
-        "<h3>提示</h3><p>渲染结果与正式成品<b>同一套处理</b>；调好后回效果器页直接 BUSTER 即可。</p>",
-    },
-    report: {
-      title: "报告 · 怎么看",
-      html:
-        "<h3>指标卡片</h3><p><b>原始 → 成品</b> 的核心指标对比，数据来自成品旁的质量报告，处理完成后自动显示。</p>" +
-        "<h3>频段差异</h3><p>各频段成品相对原始的能量差（dB）：<b>正=更多，负=更少</b>。</p>" +
-        "<h3>声场与宽度</h3><p>立体声相关性与 Side/Mid 宽度的前后对比。处理不会刻意收窄声场，微小变化来自有界预算与响度处理。</p>" +
-        "<h3>约束</h3><p>底部列表是硬约束检查（削波/真峰值/频带预算等），pass 表示安全边界内。</p>",
-    },
   };
   /* 试听说明：所有帮助面板共用一段固定文案。正式批处理不做实时试听；
      片段级快速试听走顶部「预览」视图。文案保持一句、加粗、口语化。 */
   const AUDITION_NOTE =
-    "<h3>试听</h3><p><b>正式批处理不提供实时试听；快速试听片段请用顶部「预览」。处理完成后，请用播放器打开成品比较。</b></p>";
+    "<h3>试听</h3><p><b>在文件列表上方点击草稿准备缓存，即可全曲播放、拖动进度并实时调参。草稿为近似效果，正式成品以导出为准。</b></p>";
   const helpDialog = $("help-dialog");
   const helpTitle = $("help-title");
   const helpBody = $("help-body");
@@ -1609,11 +1578,11 @@
     const lat = String(r.latest || "0").split(".").map(Number);
     const newer = lat[0] > cur[0] || (lat[0] === cur[0] && (lat[1] > cur[1] || (lat[1] === cur[1] && lat[2] > cur[2])));
     if (newer && r.url) {
-      updateStatus.textContent = `发现新版本 v${r.latest}，当前 v${r.current}`;
+      updateStatus.textContent = `发现新版本 V${r.latest}，当前 V${r.current}`;
       openUpdateBtn.hidden = false;
       openUpdateBtn.onclick = () => { if (api && api.openExternal) api.openExternal(r.url); };
     } else {
-      updateStatus.textContent = `已是最新版本 v${r.current}`;
+      updateStatus.textContent = `已是最新版本 V${r.current}`;
       openUpdateBtn.hidden = true;
     }
   }
@@ -1643,8 +1612,8 @@
     if (inst) {
       const loc = GpuState.source === "system" ? "，来自系统环境" : "";
       if (GpuState.dev === "cuda") gpuStatusEl.textContent = `GPU 加速已启用（CUDA${loc}）`;
-      else if (GpuState.dev === "cpu") gpuStatusEl.textContent = `GPU 环境已就绪（v${inst.version || "?"}${loc}），但未检测到可用 NVIDIA GPU`;
-      else gpuStatusEl.textContent = `GPU 环境已就绪（v${inst.version || "?"}${loc}）`;
+      else if (GpuState.dev === "cpu") gpuStatusEl.textContent = `GPU 环境已就绪（V${inst.version || "?"}${loc}），但未检测到可用 NVIDIA GPU`;
+      else gpuStatusEl.textContent = `GPU 环境已就绪（V${inst.version || "?"}${loc}）`;
     }
   }
   function onGpuStatus(raw) {
@@ -1717,7 +1686,7 @@
       GpuState.installed = { version: r.version || "" };
       GpuState.source = "app";
       GpuState.downloading = false;
-      gpuStatusEl.textContent = `GPU 环境安装完成（v${r.version}），重启应用后生效`;
+      gpuStatusEl.textContent = `GPU 环境安装完成（V${r.version}），重启应用后生效`;
       gpuProg.hidden = true;
       gpuDlBtn.hidden = true; gpuCancelBtn.hidden = true;
       gpuRestartBtn.hidden = false; gpuRestartBtn.disabled = false;
@@ -1985,587 +1954,1806 @@
   document.addEventListener("drop", (e) => e.preventDefault());
 
 
-/* ═══════════════ 视图切换 / 文件弹窗 / 预览 / 报告 ═══════════════ */
+/* ═══════════════ 视图切换（连体段控滑块）/ 预览 / 报告 ═══════════════ */
+
+/* ─── 顶栏段控：滑动指示块（此环境 CSS transition 不插值，动画走 WAAPI）─── */
+const tabGlider = $("tab-glider");
+function moveTabGlider(animate) {
+  if (!tabGlider) return;
+  const btn = document.querySelector(".topbar-nav .tab-btn[aria-pressed='true']");
+  if (!btn || !btn.isConnected) return;
+  // 取整到整数像素：此环境下小数定位会让 1px 边框渲染残缺
+  const x = Math.round(btn.offsetLeft), w = Math.round(btn.offsetWidth);
+  if (!w) return;
+  if (animate && tabGlider.offsetWidth &&
+      !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const fromLeft = Math.round(tabGlider.offsetLeft), fromWidth = Math.round(tabGlider.offsetWidth);
+    tabGlider.style.left = x + "px";
+    tabGlider.style.width = w + "px";
+    tabGlider.animate(
+      [{ left: fromLeft + "px", width: fromWidth + "px" },
+       { left: x + "px", width: w + "px" }],
+      { duration: 200, easing: "cubic-bezier(0.25, 0.6, 0.35, 1)" });
+  } else {
+    tabGlider.style.left = x + "px";
+    tabGlider.style.width = w + "px";
+  }
+}
+window.addEventListener("resize", () => moveTabGlider(false));
+moveTabGlider(false);
 
 function openOverlay(which) {
   // 三页切换：效果器（默认）/ 预览 / 报告。文件 UI（待处理队列）始终显示在上方。
   state.view = which;
   const tabs = [["process", "tab-process", "pane-process"],
-                ["preview", "tab-preview", "pane-preview"],
                 ["report", "tab-report", "pane-report"]];
+  const pane = $(tabs.find(([name]) => name === which)[2]);
   tabs.forEach(([name, tabId, paneId]) => {
-    const active = name === which;
-    $(paneId).hidden = !active;
-    $(tabId).setAttribute("aria-pressed", active ? "true" : "false");
+    $(paneId).hidden = name !== which;
+    $(tabId).setAttribute("aria-pressed", name === which ? "true" : "false");
   });
+  moveTabGlider(true);
+  // 面板入场：轻量上浮淡入（WAAPI 驱动）
+  if (pane && !pane.hidden && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    pane.animate([{ opacity: 0, transform: "translateY(8px)" },
+                  { opacity: 1, transform: "none" }],
+                 { duration: 220, easing: "cubic-bezier(0.25, 0.6, 0.35, 1)" });
+  }
   // 底部主按钮随视图切换：效果器=BUSTER!，预览=PREVIEW（渲染入口），
   // 报告页无动作（隐藏）。批处理进行中一律回到 停止 展示。
   const dock = document.querySelector(".dock");
   dock.hidden = which === "report";
   if (!state.processing) {
-    if (which === "preview") {
-      processLabel.textContent = pv.busy ? "渲染中…" : "PREVIEW";
-      processBtn.disabled = pv.busy || !pv.sel;
-    } else {
-      processLabel.textContent = "BUSTER!";
-      processBtn.disabled = false;
-    }
+    processLabel.textContent = "BUSTER!";
+    processBtn.disabled = draft.busy;
+  }
+
+  if (which === "report") {
+    refreshReportVersions("reveal");   // 覆盖启动后直进报告的场景（版本列表兜底刷新）
+    renderReport("reveal");
   }
   $("content").scrollTo(0, 0);
 }
-function closeOverlays() { openOverlay("process"); }
 
 $("tab-process").addEventListener("click", () => openOverlay("process"));
-$("tab-preview").addEventListener("click", () => openOverlay("preview"));
 $("tab-report").addEventListener("click", () => openOverlay("report"));
-$("preview-close").addEventListener("click", () => openOverlay("process"));
-$("report-close").addEventListener("click", () => openOverlay("process"));
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("pane-preview").hidden || !$("pane-report").hidden) openOverlay("process");
+  if (!$("pane-report").hidden) openOverlay("process");
 });
 
-/* ─── 预览：频谱选段 + 渲染 + 播放（DAW 式） ─── */
-const pv = { file: null, duration: 0, spec: null, specOut: null, sel: null,
-             busy: false, dragAnchor: null, peaksReq: 0,
-             track: "src", playing: false, lastT: 0, previewPath: null };
-
-function refreshPreviewFiles() {
-  // 选中文件驱动预览：跟随待处理列表的点击选择。
-  const f = state.selectedFile;
-  const label = $("pv-file-label");
-  if (label) label.textContent = f ? f.replace(/\\/g, "/").split("/").pop() : "未选择文件";
-  if (f !== pv.file) {
-    pv.file = f;
-    pv.duration = 0; pv.spec = null; pv.sel = null;
-    pv.track = "src"; pv.playing = false; pv.lastT = 0; pv.previewPath = null;
-    $("pv-duration").textContent = "—";
-    $("pv-range").textContent = "未选择片段";
-    $("pv-play").disabled = true;
-    $("pv-track-label").textContent = "原始";
-    $("pv-hint").hidden = false;
-    $("pv-audio-src").removeAttribute("src");
-    $("pv-audio-out").removeAttribute("src");
-    drawSpecs();
-    if (f) loadPreviewPeaks(f);
+function normPath(p) { return String(p ?? "").replace(/\\/g, "/"); }
+/* 后端频谱数据以 base64 传输（JSON 整数列表在此体积下解析过慢）；
+   旧版预览缓存里仍是 data 数组，原样透传。 */
+function decodeSpec(spec) {
+  if (spec && typeof spec.b64 === "string") {
+    const bin = atob(spec.b64);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    spec.data = u;
+    delete spec.b64;
   }
+  return spec;
 }
+const specCache = new Map();
+const specRequested = new Set();
+function ensureSpec(path) {
+  const key = normPath(path);
+  if (!key || specCache.has(key) || specRequested.has(key)) return;
+  specRequested.add(key);
+  api.previewLoadOutput(path);
+}
+function onPreviewOutputPeaks(raw) {
+  let p = null;
+  try { p = JSON.parse(raw); } catch (e) { return; }
+  if (!p || !p.path || !p.spec) return;
+  const key = normPath(p.path);
+  const spec = decodeSpec(p.spec);
+  const entry = { spec, duration: Number(spec.duration) || 0 };
+  specCache.set(key, entry);
+  if (state.view === "report") rpSpecFade(() => renderSpectral(), 260);
+}
+
 function fileUrl(path) {
   return "file:///" + encodeURI(String(path).replace(/\\/g, "/"));
 }
-function onPreviewPeaks(raw) {
-  let p = null;
-  try { p = JSON.parse(raw); } catch (e) { return; }
-  if (!p || !p.spec) return;
-  pv.duration = Number(p.duration) || 0;
-  pv.spec = p.spec;
-  $("pv-duration").textContent = `${pv.duration.toFixed(1)} s`;
-  $("pv-hint").hidden = true;
-  if (!pv.sel) setRange(0, Math.min(30, pv.duration));
-  drawSpecs();
-}
-function onPreviewFailed(msg) {
-  pv.busy = false;
-  $("pv-progress").hidden = true;
-  $("btn-process").disabled = false;
-  if (state.view === "preview") processLabel.textContent = "PREVIEW";
-  announce(`预览失败：${msg}`);
-}
-function onPreviewDone(raw) {
-  let p = null;
-  try { p = JSON.parse(raw); } catch (e) { return; }
-  pv.busy = false;
-  $("pv-progress").hidden = true;
-  $("btn-process").disabled = false;
-  if (state.view === "preview") processLabel.textContent = "PREVIEW";
-  pv.specOut = p.spec || null;
-  pv.previewPath = p.output;
-  $("pv-play").disabled = false;
-  const q = p.quality || {};
-  const m = p.metrics || {};
-  const cell = (id, v, fmt) => {
-    const n = typeof v === "number" && Number.isFinite(v) ? v : null;
-    $(id).textContent = n === null ? "—" : fmt(n);
-  };
-  cell("pv-lufs", q.integrated_lufs, (v) => v.toFixed(1) + " LUFS");
-  cell("pv-tp", q.true_peak_4x_dbtp, (v) => v.toFixed(1) + " dBTP");
-  cell("pv-lra", q.lra_lu, (v) => v.toFixed(1) + " LU");
-  cell("pv-crest", q.crest_factor_db, (v) => v.toFixed(1) + " dB");
-  cell("pv-sp", m.sample_peak_dbfs, (v) => v.toFixed(1) + " dBFS");
-  cell("pv-plim", q.limiter_p95_db ?? (p.mastering?.limiter?.gain_reduction_p95_db),
-       (v) => v.toFixed(2) + " dB");
-  cell("pv-clip", m.clipping_samples, (v) => String(v));
-  $("pv-overall").textContent = q.overall ? String(q.overall) : "—";
-  $("pv-metrics").hidden = false;
-  (p.notices || []).forEach((n) => announce(String(n)));
-  drawSpecs();
-}
-
-/* 颜色映射：dB 强度（0=静音）→ 深底 → 主题紫 → 亮白 */
+const SPEC_STOPS = [
+  [0.0, 0, 0, 4], [0.12, 24, 12, 66], [0.25, 74, 12, 107], [0.38, 120, 28, 109],
+  [0.5, 165, 44, 96], [0.63, 207, 68, 70], [0.75, 237, 105, 37],
+  [0.88, 251, 155, 6], [1.0, 252, 255, 164],
+];
 function specColor(v) {
   const t = Math.max(0, Math.min(1, v / 255));
-  if (t < 0.45) {
-    const k = t / 0.45;
-    return [20 + k * 69, 18 + k * 37, 24 + k * 65];        // 底色 → 深紫
+  for (let i = 1; i < SPEC_STOPS.length; i++) {
+    if (t <= SPEC_STOPS[i][0]) {
+      const a = SPEC_STOPS[i - 1], b = SPEC_STOPS[i];
+      const k = (t - a[0]) / (b[0] - a[0]);
+      return [a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k, a[3] + (b[3] - a[3]) * k];
+    }
   }
-  if (t < 0.8) {
-    const k = (t - 0.45) / 0.35;
-    return [89 + k * 20, 55 + k * 30, 89 + k * 95];         // 深紫 → 亮紫
-  }
-  const k = (t - 0.8) / 0.2;
-  return [109 + k * 121, 85 + k * 75, 184 + k * 43];        // 亮紫 → 近白
+  return [252, 255, 164];
 }
-function drawSpec(canvas, spec, t0, t1, opts) {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth * dpr, h = 140 * dpr;
-  if (!w) return;
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#141218";
-  ctx.fillRect(0, 0, w, h);
-  if (!spec || !spec.w) return;
-  const off = document.createElement("canvas");
-  off.width = spec.w; off.height = spec.h;
+/* 频谱位图一次成像、按 spec 缓存：drawSpecs 高频重绘只做贴图。
+   后端下发的行已按对数频率分布（载荷带 fmin），逐行 1:1 取用即可；
+   单行取其覆盖的源行区间最大值，瞬态与谐波峰不被平均抹平。
+   旧版报告下发线性 bin，才需要在显示行上做对数重排。 */
+const SPEC_FMIN = 30;   // 对数轴下限（Hz），上限 = sr/2
+/* Δ 图把相邻源行并成一半显示行取均值：逐 bin 差值里的单点抖动
+   （频谱泄漏、限制器）会被放大成主信号，均值才代表该频段整体移动。 */
+function specDisplayH(spec, half) {
+  const cap = half ? Math.ceil(spec.h / 2) : spec.h;
+  return Math.min(cap, spec.fmin ? 512 : 384);
+}
+/* 显示行 r（0=顶部=最高频）覆盖的源行闭区间，自高频往下 */
+function specSpans(spec, H) {
+  const last = spec.h - 1;
+  const i0 = new Int32Array(H), i1 = new Int32Array(H);
+  const fHi = (spec.sr || 44100) / 2;
+  const fLo = Math.min(SPEC_FMIN, fHi / 2);
+  const edge = (q) => spec.fmin ? (last + 1) * (1 - q / H)
+                                : Math.pow(fLo / fHi, q / H) * last;
+  for (let r = 0; r < H; r++) {
+    let hi = Math.min(last, Math.ceil(edge(r)) - 1);
+    let lo = Math.max(0, Math.min(last, Math.floor(edge(r + 1))));
+    if (hi < lo) hi = lo;
+    i0[r] = lo; i1[r] = hi;
+  }
+  return { i0, i1 };
+}
+const SPEC_LUT = (() => {
+  const l = new Uint8Array(256 * 3);
+  for (let v = 0; v < 256; v++) {
+    const [r, g, b] = specColor(v);
+    l[v * 3] = r; l[v * 3 + 1] = g; l[v * 3 + 2] = b;
+  }
+  return l;
+})();
+const specOffscreen = new WeakMap();
+function ensureOffscreen(spec) {
+  let off = specOffscreen.get(spec);
+  if (off) return off;
+  const H = specDisplayH(spec, false);
+  off = document.createElement("canvas");
+  off.width = spec.w; off.height = H;
   const octx = off.getContext("2d");
-  const img = octx.createImageData(spec.w, spec.h);
+  const img = octx.createImageData(spec.w, H);
   const d = spec.data;
+  const { i0, i1 } = specSpans(spec, H);
   for (let x = 0; x < spec.w; x++) {
-    for (let y = 0; y < spec.h; y++) {
-      const v = d[y * spec.w + x];
-      const [r, g, b] = specColor(v);
-      const row = spec.h - 1 - y;               // 低频在底部
-      const o = (row * spec.w + x) * 4;
-      img.data[o] = r; img.data[o + 1] = g; img.data[o + 2] = b; img.data[o + 3] = 255;
+    const col = x * spec.h;
+    for (let r = 0; r < H; r++) {
+      let v = 0;
+      for (let b = i0[r]; b <= i1[r]; b++) {
+        const val = d[col + b];                       // 时间主序：d[t * h + f]
+        if (val > v) v = val;
+      }
+      const o = (r * spec.w + x) * 4;                 // 显示行 r=0 在图顶部
+      const c = v * 3;
+      img.data[o] = SPEC_LUT[c]; img.data[o + 1] = SPEC_LUT[c + 1];
+      img.data[o + 2] = SPEC_LUT[c + 2]; img.data[o + 3] = 255;
     }
   }
   octx.putImageData(img, 0, 0);
-  const span = t1 - t0;
-  ctx.imageSmoothingEnabled = true;
-  if (spec.w && spec.duration) {
-    // 按时间窗切片绘制：源轨整曲、预览轨只覆盖其片段时长
-    const sx = (t0 / spec.duration) * spec.w;
-    const sw = Math.max(1, ((t1 - t0) / spec.duration) * spec.w);
-    ctx.drawImage(off, sx, 0, sw, spec.h, 0, 0, w, h);
-  } else {
-    ctx.drawImage(off, 0, 0, w, h);
-  }
-  if (opts && opts.sel) {
-    const x0 = ((opts.sel[0] - t0) / span) * w;
-    const x1 = ((opts.sel[1] - t0) / span) * w;
-    ctx.fillStyle = "rgba(230,224,233,0.10)";
-    ctx.fillRect(x0, 0, x1 - x0, h);
-    ctx.fillStyle = "#e6e0e9";
-    ctx.fillRect(x0, 0, 3 * dpr, h);
-    ctx.fillRect(x1 - 3 * dpr, 0, 3 * dpr, h);
-  }
-  if (opts && opts.playhead != null && opts.playhead >= t0 && opts.playhead <= t1) {
-    const x = ((opts.playhead - t0) / span) * w;
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(x, 0, 1.5 * dpr, h);
-  }
+  specOffscreen.set(spec, off);
+  return off;
 }
-function pvCurrentT() {
-  if (pv.playing) {
-    const t = pv.track === "src" ? $("pv-audio-src").currentTime
-            : (pv.sel ? pv.sel[0] : 0) + ($("pv-audio-out").currentTime || 0);
-    if (t) pv.lastT = t;
+/* 选段拖饼几何（CSS px）：位于选段顶部中央，抓取后整体移动范围 */
+const FREQ_TICKS = [20000, 18000, 16000, 14000, 12000, 11000, 10000, 9000, 8000,
+  7000, 6000, 5000, 4000, 3000, 2000, 1000, 500, 400, 300, 200, 100];
+function drawFreqScale(ctx, w, h, dpr, fHi) {
+  if (!fHi || w < 280 * dpr) return;
+  const fLo = Math.min(SPEC_FMIN, fHi / 2);
+  const yOf = (f) => (Math.log(f / fHi) / Math.log(fLo / fHi)) * h;   // 0=顶部(高频)
+  ctx.save();
+  ctx.font = `${9 * dpr}px sans-serif`;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(0,0,0,0.55)";
+  ctx.shadowBlur = 2 * dpr;
+  ctx.fillStyle = cssVar("--c-text", "#e6e0e9");
+  let lastY = -Infinity;
+  let firstY = null;
+  for (const f of FREQ_TICKS) {
+    if (f >= fHi) continue;
+    const y = yOf(f);
+    if (y < 10 * dpr || y > h - 5 * dpr) continue;
+    if (lastY !== -Infinity && y - lastY < 12.5 * dpr) continue;   // 自高频往下、间距不足则跳过
+    if (firstY === null) firstY = y;
+    lastY = y;
+    ctx.fillText(f >= 1000 ? `${f / 1000}k` : String(f), w - 5 * dpr, y);
   }
-  return pv.lastT;
+  if (firstY !== null && firstY > 16 * dpr) {
+    ctx.fillText("Hz", w - 5 * dpr, firstY - 13 * dpr);
+  }
+  ctx.restore();
 }
-function updateTransport() {
-  $("pv-play").textContent = pv.playing ? "⏸" : "▶";
-  $("pv-track-label").textContent = pv.track === "src" ? "原始" : "预览";
-  $("pv-lane-src").classList.toggle("active", pv.track === "src");
-  $("pv-lane-out").classList.toggle("active", pv.track === "out");
+const draft = {id:0,busy:false,ready:false,key:null,player:new DraftPlayer()};
+const transport = {file:null,duration:0,source:'original',versions:[],lastVersion:null,loop:false,range:[0,0],dragging:false,token:0,delta:false};
+const waveCache=new Map();let wavePath=null, waveRms=[], waveAnimation=null, waveRevision=0;
+async function transitionPlayerWaveform(values) {
+  const canvas=$('player-waveform'),revision=++waveRevision;
+  const opacity=getComputedStyle(canvas).opacity;
+  waveAnimation?.cancel();
+  canvas.style.opacity=opacity;
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(!reduced&&waveRms.length&&+opacity>0){
+    waveAnimation=canvas.animate([{opacity},{opacity:0}],{duration:120,fill:'forwards'});
+    await waveAnimation.finished.catch(()=>{});
+    if(revision!==waveRevision)return;
+  }
+  canvas.style.opacity='0';waveAnimation?.cancel();
+  waveRms=values;drawPlayerWaveform();
+  if(!reduced&&values.length){
+    waveAnimation=canvas.animate([{opacity:0},{opacity:1}],{duration:160,fill:'forwards'});
+    await waveAnimation.finished.catch(()=>{});
+    if(revision!==waveRevision)return;
+  }
+  canvas.style.opacity='1';waveAnimation?.cancel();waveAnimation=null;
 }
-function pvPlayPause() {
-  if (!pv.file || !pv.sel) return;
-  const src = $("pv-audio-src"), out = $("pv-audio-out");
-  if (pv.playing) {
-    src.pause(); out.pause();
-    pv.playing = false; pv.lastT = pvCurrentT();
-  } else {
-    const T = pv.lastT || pv.sel[0];
-    if (pv.track === "src") {
-      if (!src.src) src.src = fileUrl(pv.file);
-      src.currentTime = Math.min(Math.max(T, 0), pv.duration || T);
-      src.play().catch(() => announce("音频播放失败"));
-    } else {
-      if (!out.src) out.src = fileUrl(pv.previewPath || "");
-      out.currentTime = Math.max(0, T - pv.sel[0]);
-      out.play().catch(() => announce("音频播放失败"));
+function requestPlayerWaveform() {
+  const path=['original','draft'].includes(transport.source)?transport.file:transport.source;
+  if(path===wavePath)return;
+  wavePath=path;transitionPlayerWaveform(waveCache.get(path)||[]);
+  if(path&&!waveCache.has(path))api?.playerWaveform?.(path);
+}
+function onPlayerWaveform(raw) {
+  const data=JSON.parse(raw);
+  if(data.path!==wavePath)return;
+  const values=data.rms||[];
+  if(!data.error){waveCache.set(data.path,values);if(waveCache.size>4)waveCache.delete(waveCache.keys().next().value);}
+  transitionPlayerWaveform(values);
+}
+function drawPlayerWaveform() {
+  const canvas=$('player-waveform'),r=canvas.getBoundingClientRect(),dpr=devicePixelRatio||1;
+  canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);
+  const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);
+  const color=getComputedStyle(canvas).getPropertyValue('--c-accent-hi');
+  // A single RMS envelope exposes passage dynamics without a second outline.
+  const scale=Math.max(.01,...waveRms);
+  function envelope(values,alpha){
+    if(!values.length)return;
+    ctx.fillStyle=color;ctx.globalAlpha=alpha;ctx.beginPath();
+    for(let side=0;side<2;side++)for(let step=0;step<=Math.ceil(r.width);step++){
+      const x=side?r.width-step:step,index=Math.min(values.length-1,Math.max(0,Math.floor(x/r.width*values.length)));
+      const h=Math.min(1,Math.sqrt((values[index]||0)/scale))*(r.height-2)/2;
+      const y=r.height/2+(side?h:-h);if(!side&&!step)ctx.moveTo(x,y);else ctx.lineTo(x,y);
     }
-    pv.playing = true;
+    ctx.closePath();ctx.fill();
   }
-  updateTransport();
-}
-function pvSelectTrack(track) {
-  if (pv.track === track) return;
-  if (track === "out" && !pv.previewPath) {
-    announce("预览尚未渲染：先点底部 PREVIEW 生成预览，再切换试听");
-    return;
+  envelope(waveRms,.65);
+  // Cut fine transparent gaps on device-pixel boundaries to keep stripes crisp.
+  ctx.setTransform(1,0,0,1,0,0);
+  for(let x=2;x<r.width;x+=3){
+    const left=Math.round(x*dpr),right=Math.round((x+1)*dpr);
+    ctx.clearRect(left,0,right-left,canvas.height);
   }
-  const wasPlaying = pv.playing;
-  const T = pvCurrentT();
-  pv.track = track;
-  $("pv-audio-src").pause();
-  $("pv-audio-out").pause();
-  if (wasPlaying) {
-    if (track === "src") {
-      const s = $("pv-audio-src");
-      if (!s.src) s.src = fileUrl(pv.file);
-      s.currentTime = Math.min(Math.max(T, 0), pv.duration || T);
-      s.play().catch(() => announce("音频播放失败"));
-    } else {
-      const o = $("pv-audio-out");
-      if (!o.src) o.src = fileUrl(pv.previewPath);
-      o.currentTime = Math.max(0, T - pv.sel[0]);
-      o.play().catch(() => announce("音频播放失败"));
-    }
-  } else {
-    pv.lastT = T;
-  }
-  updateTransport();
-  drawSpecs();
 }
-function drawSpecs() {
-  const T = pvCurrentT();
-  drawSpec($("pv-spec-src"), pv.spec, 0, pv.duration || 1,
-           { sel: pv.sel, playhead: T });
-  drawSpec($("pv-spec-out"), pv.specOut || null,
-           pv.sel ? pv.sel[0] : 0, pv.sel ? pv.sel[1] : (pv.duration || 1),
-           { playhead: pv.sel ? Math.min(Math.max(T, pv.sel[0]), pv.sel[1]) : null });
-  $("pv-clock").textContent = `${T.toFixed(1)} s`;
-}
-function pvSeek(t) {
-  pv.lastT = Math.max(0, Math.min(t, pv.duration || t));
-  const src = $("pv-audio-src"), out = $("pv-audio-out");
-  if (pv.track === "src") {
-    if (src.src) src.currentTime = Math.min(Math.max(pv.lastT, 0), pv.duration || 0);
-  } else if (out.src && pv.sel) {
-    out.currentTime = Math.max(0, Math.min(pv.lastT - pv.sel[0], pv.sel[1] - pv.sel[0]));
-  }
-  drawSpecs();
-}
-function setRange(lo, hi) {
-  lo = Math.max(0, Math.min(lo, pv.duration - 0.2));
-  hi = Math.max(lo + 0.2, Math.min(hi, pv.duration));
-  pv.sel = [Number(lo.toFixed(2)), Number(hi.toFixed(2))];
-  $("pv-range").textContent =
-    `${pv.sel[0].toFixed(1)}s – ${pv.sel[1].toFixed(1)}s（${(pv.sel[1] - pv.sel[0]).toFixed(1)}s）`;
-  drawSpecs();
-}
-(() => {
-  const wave = $("pv-spec-src");
-  const EDGE_PX = 8;
-  let mode = null, edge = null, downX = null;
-  const timeAt = (e) => {
-    const rect = wave.getBoundingClientRect();
-    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    return frac * pv.duration;
-  };
-  const nearEdge = (e) => {
-    if (!pv.sel) return null;
-    const rect = wave.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const w = rect.width;
-    if (Math.abs(x - (pv.sel[0] / pv.duration) * w) <= EDGE_PX) return "lo";
-    if (Math.abs(x - (pv.sel[1] / pv.duration) * w) <= EDGE_PX) return "hi";
-    return null;
-  };
-  wave.addEventListener("pointerdown", (e) => {
-    if (!pv.duration || pv.busy) return;
-    const t = timeAt(e);
-    edge = nearEdge(e);
-    if (edge) {
-      mode = "edge";
-      wave.setPointerCapture(e.pointerId);
-      if (edge === "lo") setRange(t, pv.sel[1]); else setRange(pv.sel[0], t);
-    } else {
-      mode = "seek";
-      pvSeek(t);
-    }
-  });
-  wave.addEventListener("pointermove", (e) => {
-    if (mode === null) {
-      wave.style.cursor = nearEdge(e) ? "ew-resize" : "text";
-      return;
-    }
-    const t = timeAt(e);
-    if (mode === "edge") {
-      if (edge === "lo") setRange(Math.min(t, pv.sel[1] - 0.2), pv.sel[1]);
-      else setRange(pv.sel[0], Math.max(t, pv.sel[0] + 0.2));
-    } else {
-      pvSeek(t);
-    }
-  });
-  const end = () => { mode = null; edge = null; };
-  wave.addEventListener("pointerup", end);
-  wave.addEventListener("pointercancel", end);
-  window.addEventListener("resize", drawSpecs);
-  setInterval(() => {
-    if (!$("pane-preview").hidden) drawSpecs();
-  }, 120);
-})();
-// 点击预览轨（下 lane）定位：绝对时间 = 片段起点 + 片段内比例
-$("pv-lane-out").addEventListener("pointerdown", (e) => {
-  if (!pv.specOut || !pv.sel) return;
-  const rect = $("pv-spec-out").getBoundingClientRect();
-  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  pvSeek(pv.sel[0] + frac * (pv.sel[1] - pv.sel[0]));
+document.addEventListener('sb-theme',drawPlayerWaveform);
+const nativeAudio = $('player-audio');
+const getMonitorVolume=bindKnob($('player-volume'),$('player-volume-value'),v=>`${v}%`,null,value=>{
+  nativeAudio.volume=value/100;draft.player.volume(value/100);
 });
-// 轨道切换：点击左侧标签（原始/预览）
-$("pv-lane-src").querySelector(".spec-tag").addEventListener("click", (e) => {
-  e.stopPropagation();
-  pvSelectTrack("src");
+function draftTime(t) { t=Math.max(0,Math.floor(t||0));return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`; }
+function preciseTime(t) { const ms=Math.round(Math.max(0,t||0)*1000);return `${String(Math.floor(ms/60000)).padStart(2,'0')}:${String(Math.floor(ms/1000)%60).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`; }
+function paintPlayerTime(t) {
+  $('draft-time').textContent=preciseTime(t);$('player-total').textContent=` / ${draftTime(transport.duration).padStart(5,'0')}`;
+  $('player-playhead').style.left=`${transport.duration?t/transport.duration*100:0}%`;
+}
+function renderPlayerRuler() {
+  const ruler=$('player-ruler'), duration=transport.duration; ruler.innerHTML='';
+  const wanted=duration/Math.max(2,Math.floor(ruler.clientWidth/85));
+  const step=[1,2,5,10,15,30,60,120,300,600,1800,3600].find(v=>v>=wanted)||Math.ceil(wanted/3600)*3600;
+  if(!duration)return;
+  for(let t=0;t<=duration;t+=step/4) {
+    const tick=document.createElement('i');tick.className='player-tick';tick.style.left=`${t/duration*100}%`;
+    if(Math.abs(t/step-Math.round(t/step))<.001){tick.classList.add('major');const label=document.createElement('span');label.textContent=draftTime(t);if(t/duration>.94)label.style.transform='translateX(-100%)';tick.appendChild(label);}
+    ruler.appendChild(tick);
+  }
+}
+function usesDraftEngine(){return draft.ready&&['original','draft'].includes(transport.source);}
+function playerPosition() { return usesDraftEngine() ? draft.player.currentPosition() : nativeAudio.currentTime||0; }
+function playerPlaying() { return usesDraftEngine() ? draft.player.playing : !nativeAudio.paused; }
+function playerError(message) { $('draft-status').textContent=message; $('draft-status').hidden=!message; }
+let cacheStateToken=0, cacheFraction=0;
+function cacheState(status, text, progress=0) {
+  cacheStateToken++;   // 任何一次状态更新都作废尚未到期的「错误闪回」
+  cacheFraction=Math.max(0,Math.min(1,progress));
+  $('player').dataset.cache=status;
+  /* 进度写在 #player 上：整条时间轴的进度底、底部的状态线都从这一处读 */
+  $('player').style.setProperty('--cache-progress',`${cacheFraction*100}%`);
+  /* 还没有任何进度时（fraction 仍为 0）用扫光替进度条表态 */
+  $('player').dataset.cacheSweep=String(status==='preparing' && cacheFraction<=0);
+  $('player-track').title=text; $('player-cache-description').textContent=text;
+  const button=$('player-sources').querySelector('[data-source=draft]');
+  if(button){button.textContent=draftButtonLabel();button.title=text;}
+}
+function draftButtonLabel(){return draft.busy?'取消创建':draft.ready?'草稿':'创建缓存';}
+/* 取消或失败都不弹文字：红线在时间轴上闪 1 秒就收回，说明「这次没成」即可，
+   不留一条要用户自己消化的常驻警示；闪回期间任何新状态都会作废这次恢复。 */
+function flashCacheError(){
+  cacheState('error','缓存准备失败');
+  const token=cacheStateToken;
+  setTimeout(()=>{if(token===cacheStateToken)cacheState('empty','缓存尚未准备');},1000);
+}
+function paintPlaybackPosition(){
+  if(transport.dragging)return;
+  const t=playerPosition();$('draft-seek').value=t;paintPlayerTime(t);
+  $('draft-seek').setAttribute('aria-valuetext',`${draftTime(t)}，总长 ${draftTime(transport.duration)}`);
+}
+function paintTransport() {
+  const t=playerPosition();
+  const filesLocked=state.processing||draft.busy;
+  $('btn-add').disabled=filesLocked;$('btn-clear').disabled=filesLocked||!state.files.length;
+  fileListEl.querySelectorAll('button').forEach(button=>{button.disabled=filesLocked;});
+  const deltaAvailable=transport.source==='draft'&&draft.ready;
+  if(!deltaAvailable&&transport.delta){transport.delta=false;draft.player.delta(false);}
+  $('player-delta').disabled=!deltaAvailable;
+  $('player-delta').setAttribute('aria-pressed',String(transport.delta));
+  $('draft-play').dataset.playing=String(playerPlaying());
+  $('draft-play').setAttribute('aria-label',playerPlaying()?'暂停':'播放');
+  $('draft-play').disabled=!transport.file || (transport.source==='draft'&&!draft.ready);
+  $('draft-loop').disabled=!transport.duration;
+  if(!state.processing)processBtn.disabled=draft.busy;
+  const locked=draft.busy||transport.source==='draft';
+  $('knob-quality').setAttribute('aria-disabled',String(locked));
+  $('ref-card').inert=locked;
+  $('ref-card').setAttribute('aria-disabled',String(locked));
+  $('dd-genre').inert=locked&&!!state.reference;
+  $('player-start').disabled=!transport.duration;
+  $('draft-seek').disabled=!transport.duration || (transport.source==='draft'&&!draft.ready);
+  $('draft-seek').max=transport.duration||1;
+  if(!transport.dragging) {
+    $('draft-seek').value=t;
+    paintPlayerTime(t);
+  }
+  $('draft-seek').setAttribute('aria-valuetext',`${draftTime(t)}，总长 ${draftTime(transport.duration)}`);
+}
+function stopTransport() { nativeAudio.pause();draft.player.stop();paintTransport(); }
+function setPlayerLoop() {
+  const duration=transport.duration;
+  let [a,b]=transport.range;
+  a=Math.max(0,Math.min(a,duration));b=Math.max(a,Math.min(b,duration));
+  if(b<=a)transport.loop=false;
+  transport.range=[a,b];
+  $('draft-loop').setAttribute('aria-pressed',String(transport.loop));
+  paintLoopRange();
+  if(draft.ready)draft.player.loop(transport.loop?[a,b]:null);
+  if(transport.loop && !usesDraftEngine() && (playerPosition()<a || playerPosition()>=b))nativeAudio.currentTime=a;
+}
+function paintLoopRange() {
+  const [a,b]=transport.range,d=transport.duration,band=$('player-loop-region');
+  band.hidden=!d||b<=a;band.dataset.active=String(transport.loop);
+  band.style.left=`${d?a/d*100:0}%`;band.style.width=`${d?(b-a)/d*100:0}%`;
+  $('player-loop-label').textContent=`${draftTime(a)} — ${draftTime(b)}`;
+  $('player-loop-label').style.visibility=d && (b-a)/d*$('player-loop-lane').clientWidth>=100?'visible':'hidden';
+  band.title=`${preciseTime(a)} — ${preciseTime(b)}；双击精确编辑`;
+  $('player-loop-lane').setAttribute('aria-label',`循环区间 ${preciseTime(a)} 至 ${preciseTime(b)}；Enter 精确编辑，方向键移动，Delete 清除`);
+}
+function seekPlayer(t) {
+  t=Math.max(0,Math.min(transport.duration,t));
+  if(transport.loop && (t<transport.range[0] || t>=transport.range[1])) {transport.loop=false;setPlayerLoop();}
+  if(usesDraftEngine())draft.player.seek(t);
+  else if(nativeAudio.readyState)nativeAudio.currentTime=t;
+  paintTransport();
+}
+async function chooseSource(source,keepPlaying=true) {
+  if(source==='draft'&&!draft.ready)return;
+  const time=playerPosition(), playing=keepPlaying&&playerPlaying(), token=++transport.token;
+  const shared=usesDraftEngine()&&['original','draft'].includes(source);
+  if(!shared)stopTransport();
+  transport.source=source;if(!['original','draft'].includes(source))transport.lastVersion=source;
+  renderPlayerSources();syncReportSelection();requestPlayerWaveform();playerError('');paintTransport();
+  if(shared){draft.player.original(source==='original');return;}
+  if(usesDraftEngine()) {
+    draft.player.original(source==='original');draft.player.seek(time);draft.player.params(collectParams());draft.player.volume(getMonitorVolume()/100);
+    setPlayerLoop();if(playing)await draft.player.play(true);
+  } else {
+    const path=source==='original'?transport.file:source;
+    if(!path)return;
+    nativeAudio.src=fileUrl(path);nativeAudio.volume=getMonitorVolume()/100;
+    try {
+      await new Promise((resolve,reject)=>{
+        const done=()=>{nativeAudio.removeEventListener('loadedmetadata',ok);nativeAudio.removeEventListener('error',fail);};
+        const ok=()=>{done();resolve();};const fail=()=>{done();reject(new Error('音频无法播放，请检查文件'));};
+        nativeAudio.addEventListener('loadedmetadata',ok);nativeAudio.addEventListener('error',fail);
+      });
+      if(token!==transport.token)return;
+      nativeAudio.currentTime=Math.min(time,Math.max(0,nativeAudio.duration-.001));
+      if(playing)await nativeAudio.play();
+    } catch(e) {if(token===transport.token)playerError(String(e));}
+  }
+  paintTransport();
+}
+const versionMenu=$('player-version-menu');
+function placeVersionMenu(){
+  const button=$('player-version-arrow');if(!button)return;
+  const r=button.getBoundingClientRect(),width=Math.max(160,versionMenu.offsetWidth);
+  versionMenu.style.left=`${Math.max(12,Math.min(r.right-width,innerWidth-width-12))}px`;
+  versionMenu.style.top=`${Math.max(12,Math.min(r.bottom+8,innerHeight-versionMenu.offsetHeight-12))}px`;
+}
+versionMenu.addEventListener('toggle',()=>{
+  const open=versionMenu.matches(':popover-open');$('player-version-arrow')?.setAttribute('aria-expanded',String(open));
+  if(open){placeVersionMenu();(versionMenu.querySelector('[aria-selected="true"]')||versionMenu.querySelector('button'))?.focus();}
 });
-$("pv-lane-out").querySelector(".spec-tag").addEventListener("click", (e) => {
-  e.stopPropagation();
-  pvSelectTrack("out");
+versionMenu.addEventListener('beforetoggle',e=>{if(e.newState==='open')placeVersionMenu();});
+versionMenu.addEventListener('keydown',e=>{
+  const items=[...versionMenu.querySelectorAll('button')],index=items.indexOf(document.activeElement);
+  if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){
+    e.preventDefault();const next=e.key==='Home'?0:e.key==='End'?items.length-1:(index+(e.key==='ArrowDown'?1:-1)+items.length)%items.length;items[next]?.focus();
+  }else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();versionMenu.hidePopover();$('player-version-arrow')?.focus();}
 });
-document.addEventListener("keydown", (e) => {
-  if (e.code !== "Space" || $("pane-preview").hidden) return;
-  const tag = e.target && e.target.tagName;
-  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") return;
+window.addEventListener('resize',()=>{if(versionMenu.matches(':popover-open'))placeVersionMenu();});
+$('content').addEventListener('scroll',()=>{if(versionMenu.matches(':popover-open'))placeVersionMenu();});
+function renderPlayerSources() {
+  const wrap=$('player-sources');
+  function button(key){
+    let b=wrap.querySelector(`[data-source="${key}"]`);
+    if(!b){b=document.createElement('button');b.type='button';b.className='player-source';b.dataset.source=key;wrap.appendChild(b);}
+    return b;
+  }
+  for(const [key,label] of [['original','原声'],['draft',draftButtonLabel()]]){
+    const b=button(key);b.textContent=label;b.setAttribute('aria-pressed',String(transport.source===key));
+    b.disabled=!transport.file||(key==='draft'&&state.processing);
+    b.onclick=()=>key==='draft'&&(draft.busy||!draft.ready)?startDraft():chooseSource(key);
+  }
+  const selected=transport.versions.find(v=>v.path===transport.lastVersion)||transport.versions.reduce((a,b)=>!a||+b.version>+a.version?b:a,null);
+  const main=button('versions');main.textContent='成品';main.disabled=!selected;
+  main.setAttribute('aria-pressed',String(!['original','draft'].includes(transport.source)));
+  main.title=selected?`切换到成品 V${selected.version}`:'尚无成品';main.onclick=()=>{if(selected)chooseSource(selected.path);};
+  const arrow=button('version-menu');arrow.id='player-version-arrow';arrow.classList.add('player-version-arrow');
+  arrow.setAttribute('aria-label','选择成品版本');arrow.setAttribute('aria-haspopup','listbox');arrow.setAttribute('aria-controls','player-version-menu');arrow.setAttribute('aria-expanded',String(versionMenu.matches(':popover-open')));
+  arrow.disabled=!selected;
+  if(!arrow.firstChild)arrow.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+  /* 声明式 invoker：浏览器自己处理「再点一次关掉」。JS 里 togglePopover 不行——
+     第二次按下时 light-dismiss 先把菜单关了，click 处理器再 toggle 又把它开回来。 */
+  arrow.setAttribute('popovertarget','player-version-menu');
+  arrow.onkeydown=e=>{if(e.key==='ArrowDown'){e.preventDefault();versionMenu.showPopover();}};
+  const signature=JSON.stringify(transport.versions.map(v=>[v.path,v.version]));
+  if(versionMenu.dataset.versions!==signature){
+    versionMenu.dataset.versions=signature;versionMenu.replaceChildren();
+    for(const v of transport.versions){
+      const option=document.createElement('button');option.type='button';option.role='option';option.textContent=`成品 V${v.version}`;option.dataset.path=v.path;
+      option.onclick=()=>{versionMenu.hidePopover();chooseSource(v.path);arrow.focus();};versionMenu.appendChild(option);
+    }
+  }
+  for(const option of versionMenu.children)option.setAttribute('aria-selected',String(option.dataset.path===selected?.path));
+  $('player-mode').textContent=transport.source==='original'?'原声':transport.source==='draft'?'草稿':`成品 V${selected?.version||''}`;
+}
+function refreshPreviewFiles() {
+  const file=state.selectedFile;if(file===transport.file)return;
+  stopTransport();draft.id++;draft.busy=false;transport.dragging=false;seekPointer=null;transport.token++;transport.file=file;transport.source='original';transport.duration=0;
+  transport.range=[0,0];transport.loop=false;transport.versions=[];transport.lastVersion=null;requestPlayerWaveform();$('player-loop-editor').close();renderPlayerRuler();
+  draft.ready=false;nativeAudio.removeAttribute('src');nativeAudio.load();
+  setPlayerLoop();cacheState('empty','缓存尚未准备');playerError('');paintTransport();renderPlayerSources();
+  if(file){api.audioInfo(file);chooseSource('original',false);refreshPreviewOutputs();restoreDraftForFile(file);}
+}
+async function restoreDraftForFile(file){
+  const id=draft.id,key=draftKey();draft.key=key;
+  try{
+    const raw=await api.draftLookup?.(file,collectParams(),id);
+    if(id!==draft.id||file!==transport.file||key!==draftKey())return;
+    const payload=raw?JSON.parse(raw):null;
+    if(payload)await onDraftReady(JSON.stringify(payload));
+  }catch(e){if(id===draft.id)playerError('读取已准备缓存失败：'+String(e));}
+}
+function onAudioInfo(raw) {
+  const p=JSON.parse(raw);if(normPath(p.path)!==normPath(transport.file))return;
+  if(p.error){playerError('无法读取歌曲：'+p.error);return;}
+  transport.duration=p.duration;transport.range=[0,0];setPlayerLoop();renderPlayerRuler();paintTransport();
+}
+async function refreshPreviewOutputs() {
+  const file=state.selectedFile;let outs=[];
+  try {if(file&&state.output)outs=JSON.parse(await api.listOutputs(state.output,stemOf(file))).outputs||[];}catch(e){}
+  if(file!==transport.file)return;
+  transport.versions=outs;
+  if(!['original','draft'].includes(transport.source)&&!outs.some(x=>x.path===transport.source))chooseSource('original',false);
+  renderPlayerSources();
+}
+function draftKey() {
+  const p=collectParams();return JSON.stringify([state.selectedFile,p.quality,p.reference,p.style_mode==='styled'&&!p.reference,(p.bypass||[]).includes('lew')]);
+}
+async function startDraft() {
+  if(draft.busy){api.cancel();cacheState('preparing','正在取消准备',cacheFraction);return;}
+  if(state.processing||!transport.file){playerError('请先选择歌曲，并等待当前处理完成');return;}
+  if(!transport.duration){playerError('正在读取歌曲，请稍后重试');return;}
+  stopTransport();draft.ready=false;draft.busy=true;draft.key=draftKey();draft.id++;
+  cacheState('preparing','正在准备试听缓存');playerError('');renderPlayerSources();paintTransport();
+  api.draftPrepare(state.selectedFile,0,transport.duration,collectParams(),draft.id);
+}
+async function onDraftReady(raw) {
+  const p=JSON.parse(raw);if(p.id!==draft.id)return;
+  if(draft.key!==draftKey()){draft.busy=false;cacheState('stale','输入或精度已变化，请准备缓存');paintTransport();renderPlayerSources();return;}
+  try {
+    await draft.player.load(p);
+    if(p.id!==draft.id||draft.key!==draftKey()){draft.player.stop();draft.busy=false;cacheState('stale','输入或精度已变化，请准备缓存');paintTransport();renderPlayerSources();return;}
+    const resumeAt=playerPosition(),resumePlaying=playerPlaying();if(!p.restored||['original','draft'].includes(transport.source))nativeAudio.pause();
+    draft.busy=false;draft.ready=true;if(!p.restored)transport.source='draft';draft.player.original(transport.source==='original');
+    draft.player.params(collectParams());draft.player.volume(getMonitorVolume()/100);draft.player.seek(resumeAt);
+    transport.duration=draft.player.duration;renderPlayerRuler();
+    cacheState('ready','试听缓存就绪',1);playerError('');
+    renderPlayerSources();setPlayerLoop();if(resumePlaying&&usesDraftEngine())await draft.player.play(true);paintTransport();
+  }catch(e){onDraftFailed(JSON.stringify({id:p.id,error:String(e)}));}
+}
+function onDraftFailed(raw) {
+  const p=JSON.parse(raw);if(p.id!==draft.id)return;
+  draft.busy=false;draft.ready=false;playerError('');flashCacheError();renderPlayerSources();paintTransport();
+}
+function onDraftProgress(raw) {const p=JSON.parse(raw);if(p.id===draft.id&&draft.key===draftKey())cacheState('preparing',`${p.label} · ${Math.round(p.fraction*100)}%`,p.fraction);}
+async function togglePlayer() {
+  if(!transport.file)return;
+  playerError('');
+  try {
+    if(usesDraftEngine()) {
+      if(draft.player.position>=draft.player.duration)draft.player.seek(transport.loop?transport.range[0]:0);
+      const pending=draft.player.play(!draft.player.playing);paintTransport();await pending;
+    }else if(nativeAudio.paused)await nativeAudio.play();else nativeAudio.pause();
+  }catch(e){playerError('播放失败：'+String(e));}
+  paintTransport();
+}
+draft.player.onneed=p=>api.draftReadChunk(draft.id,p.index,p.generation);
+draft.player.onposition=p=>{if(usesDraftEngine()){if($('draft-play').dataset.playing!==String(p.playing))paintTransport();else paintPlaybackPosition();}};
+$('draft-play').addEventListener('click',togglePlayer);
+$('player-start').addEventListener('click',()=>seekPlayer(0));
+const seekInput=$('draft-seek');let seekPointer=null;
+function previewSeekPointer(e){
+  const r=seekInput.getBoundingClientRect();
+  seekInput.value=Math.max(0,Math.min(transport.duration,(e.clientX-r.left)/r.width*transport.duration));
+  paintPlayerTime(+seekInput.value);
+}
+seekInput.addEventListener('pointerdown',e=>{
+  if(e.button!==0||seekInput.disabled)return;
+  e.preventDefault();seekInput.focus();seekPointer=e.pointerId;transport.dragging=true;
+  seekInput.setPointerCapture(e.pointerId);previewSeekPointer(e);
+});
+seekInput.addEventListener('pointermove',e=>{if(e.pointerId===seekPointer)previewSeekPointer(e);});
+seekInput.addEventListener('pointerup',e=>{
+  if(e.pointerId!==seekPointer)return;
+  previewSeekPointer(e);const target=+seekInput.value;seekPointer=null;transport.dragging=false;
+  seekInput.releasePointerCapture(e.pointerId);seekPlayer(target);
+});
+function cancelSeek(){if(seekPointer!==null){seekPointer=null;transport.dragging=false;paintPlaybackPosition();}}
+seekInput.addEventListener('pointercancel',cancelSeek);
+seekInput.addEventListener('lostpointercapture',cancelSeek);
+seekInput.addEventListener('input',()=>{transport.dragging=true;paintPlayerTime(+seekInput.value);});
+seekInput.addEventListener('change',()=>{transport.dragging=false;seekPlayer(+seekInput.value);});
+$('draft-loop').addEventListener('click',()=>{
+  if(!transport.duration)return;
+  if(transport.range[1]<=transport.range[0])transport.range=[0,transport.duration];
+  transport.loop=!transport.loop;setPlayerLoop();
+});
+const loopLane=$('player-loop-lane');let loopGesture=null;
+loopLane.addEventListener('pointerdown',e=>{
+  if(e.button!==0||!transport.duration)return;
+  const rect=loopLane.getBoundingClientRect(),time=Math.max(0,Math.min(transport.duration,(e.clientX-rect.left)/rect.width*transport.duration));
+  loopGesture={x:e.clientX,time,range:[...transport.range],active:transport.loop,mode:e.target.dataset.edge||(e.target.closest('#player-loop-region')?'move':'create'),rect,moved:false};
+  loopLane.setPointerCapture(e.pointerId);loopLane.focus();e.preventDefault();
+});
+loopLane.addEventListener('pointermove',e=>{
+  const g=loopGesture;if(!g)return;
+  if(Math.abs(e.clientX-g.x)<3&&!g.moved)return;g.moved=true;
+  const d=transport.duration,t=Math.max(0,Math.min(d,(e.clientX-g.rect.left)/g.rect.width*d));
+  let [a,b]=g.range;const minimum=Math.min(.05,d);
+  if(g.mode==='create'){a=Math.min(t,g.time);b=Math.max(t,g.time);}
+  else if(g.mode==='a')a=Math.min(t,b-minimum);
+  else if(g.mode==='b')b=Math.max(t,a+minimum);
+  else {const delta=Math.max(-a,Math.min(d-b,t-g.time));a+=delta;b+=delta;}
+  transport.range=[Math.max(0,a),Math.min(d,b)];transport.loop=true;paintLoopRange();
+});
+function finishLoopGesture(cancel=false) {
+  const g=loopGesture;if(!g)return;loopGesture=null;
+  if(cancel||!g.moved){transport.range=g.range;transport.loop=g.active;}
+  setPlayerLoop();
+}
+loopLane.addEventListener('pointerup',()=>finishLoopGesture());
+loopLane.addEventListener('pointercancel',()=>finishLoopGesture(true));
+loopLane.addEventListener('lostpointercapture',()=>finishLoopGesture(true));
+let loopEditorTrigger=null;
+function openLoopEditor() {
+  if(!transport.duration)return;
+  loopEditorTrigger=document.activeElement;
+  const [a,b]=transport.range;$('player-a').value=preciseTime(a);$('player-b').value=preciseTime(b>a?b:transport.duration);
+  $('player-loop-error').textContent='';$('player-loop-editor').showModal();$('player-a').focus();
+}
+$('player-loop-editor').addEventListener('close',()=>{
+  if(loopEditorTrigger?.isConnected)loopEditorTrigger.focus();
+});
+loopLane.addEventListener('dblclick',openLoopEditor);
+loopLane.addEventListener('keydown',e=>{
+  if(e.key==='Enter'){e.preventDefault();openLoopEditor();}
+  else if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();transport.range=[0,0];transport.loop=false;setPlayerLoop();}
+  else if(['ArrowLeft','ArrowRight'].includes(e.key)){
+    e.preventDefault();const [a,b]=transport.range,delta=Math.max(-a,Math.min(transport.duration-b,(e.key==='ArrowLeft'?-1:1)*(e.shiftKey?10:1)));
+    transport.range=[a+delta,b+delta];setPlayerLoop();
+  }
+});
+$('player-loop-cancel').addEventListener('click',()=>$('player-loop-editor').close());
+$('player-loop-form').addEventListener('submit',e=>{
   e.preventDefault();
-  pvPlayPause();
+  const parse=value=>{const v=value.trim();if(!/^(?:\d+:)?\d+(?:\.\d+)?$/.test(v))return NaN;const p=v.split(':').map(Number);return p.length===2?(p[1]<60?p[0]*60+p[1]:NaN):p[0];};
+  const a=parse($('player-a').value),b=parse($('player-b').value);
+  if(!Number.isFinite(a)||!Number.isFinite(b)||a<0||b<=a||b>transport.duration){$('player-loop-error').textContent='请输入有效时间，终点须晚于起点且不超过歌曲时长。';return;}
+  transport.range=[a,b];transport.loop=true;setPlayerLoop();$('player-loop-editor').close();
 });
-function loadPreviewPeaks(path) {
-  pv.file = path;
-  const req = ++pv.peaksReq;
-  api.previewLoad(path);
-  setTimeout(() => {
-    if (req === pv.peaksReq && !pv.spec) announce("频谱读取中…（大文件可能需要几秒）");
-  }, 600);
+new ResizeObserver(()=>{renderPlayerRuler();drawPlayerWaveform();paintLoopRange();paintPlaybackPosition();}).observe($('player-track'));
+$('player-delta').addEventListener('click',()=>{
+  if(transport.source!=='draft'||!draft.ready)return;
+  transport.delta=!transport.delta;draft.player.delta(transport.delta);paintTransport();
+});
+for(const event of ['play','pause','ended','loadedmetadata'])nativeAudio.addEventListener(event,paintTransport);
+function nativeTick(){
+  if(usesDraftEngine()){if(draft.player.playing)paintPlaybackPosition();}
+  else if(!nativeAudio.paused){
+    const active=loopGesture?loopGesture.active:transport.loop;
+    const range=loopGesture?loopGesture.range:transport.range;
+    if(active&&nativeAudio.currentTime>=range[1])nativeAudio.currentTime=range[0];
+    paintPlaybackPosition();
+  }
+  requestAnimationFrame(nativeTick);
 }
-function startPreviewRender() {
-  if (pv.busy || !pv.file || !pv.sel) return;
-  pv.busy = true;
-  $("btn-process").disabled = true;
-  processLabel.textContent = "渲染中…";
-  $("pv-progress").hidden = false;
-  $("pv-progress-fill").style.width = "8%";
-  announce("预览渲染中：首次渲染需跑完整链路，之后同片段调参数会快很多");
-  api.previewRender(pv.file, pv.sel[0], pv.sel[1], collectParams());
+requestAnimationFrame(nativeTick);
+document.addEventListener('keydown',e=>{
+  if(e.code!=='Space')return;
+  e.preventDefault();e.stopImmediatePropagation();if(!e.repeat)togglePlayer();
+},true);
+document.addEventListener('keyup',e=>{if(e.code==='Space'){e.preventDefault();e.stopImmediatePropagation();}},true);
+let lastDraftParams='';
+setInterval(()=>{
+  if(!draft.ready)return;
+  if(draft.key!==draftKey()){
+    draft.player.stop();draft.ready=false;cacheState('stale','输入、精度或参考已变化，请重新准备');
+    if(transport.source==='draft')chooseSource('original',false);
+    playerError('输入、精度或参考已变化，请重新准备。');
+    renderPlayerSources();paintTransport();return;
+  }
+  const p=collectParams(),key=JSON.stringify(p);if(key!==lastDraftParams){lastDraftParams=key;draft.player.params(p);}
+},50);
+renderPlayerSources();
+
+const rp = { versions: [], sel: null, reports: new Map() };
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+function stemOf(path) {
+  return String(path || "").replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "");
+}
+function syncReportSelection(mode){
+  const previous=rp.sel;
+  rp.versions=transport.versions;
+  const selected=rp.versions.find(v=>v.path===transport.lastVersion)||rp.versions.reduce((a,b)=>!a||+b.version>+a.version?b:a,null);
+  rp.sel=selected?.path||null;
+  if(previous!==rp.sel&&!mode)renderReport("morph");else renderReport(mode);
+}
+async function refreshReportVersions(mode){
+  await refreshPreviewOutputs();syncReportSelection(mode);
+}
+async function loadReportData() {
+  if (!rp.sel || rp.reports.has(rp.sel)) return;
+  const path=rp.sel;
+  let report = null;
+  try {
+    const raw = await api.reportLoad(path + ".quality.json");
+    const parsed = JSON.parse(raw || "null");
+    if (parsed && typeof parsed === "object" && !parsed.error) report = parsed;
+  } catch (e) { /* 无报告：图表回退为频谱对比 */ }
+  rp.reports.set(path, report);
+}
+/* 曲线数据：原始 + 选中版本（原始取自 compare.input_db，与成品同一条输入） */
+function reportCurves() {
+  const cmp = rp.sel && rp.reports.get(rp.sel) && rp.reports.get(rp.sel).compare;
+  if (!cmp || !Array.isArray(cmp.centers) || !cmp.centers.length ||
+      !Array.isArray(cmp.input_db) || !Array.isArray(cmp.output_db)) return { centers: null, curves: [] };
+  const ver = (rp.versions.find((v) => v.path === rp.sel) || {}).version;
+  return {
+    centers: cmp.centers,
+    curves: [{ label: "原始", base: true, db: cmp.input_db },
+             { label: `V${ver}`, db: cmp.output_db }],
+  };
+}
+/* ── 报告画布 hover 提示：指标含义 + 数值 ── */
+const rpHitZones = new WeakMap();   // canvas → [{y0, y1, title, tip, rows: [{label, text}]}]
+function rpTipFor(canvas) {
+  const fig = canvas.closest(".rp-fig");
+  if (!fig) return null;
+  let tip = fig.querySelector(".rp-tip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.className = "rp-tip";
+    fig.appendChild(tip);
+  }
+  return tip;
+}
+function attachRpTip(canvas) {
+  canvas.addEventListener("pointermove", (e) => {
+    const tip = rpTipFor(canvas);
+    if (!tip) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    const dpr = window.devicePixelRatio || 1;
+    const zones = rpHitZones.get(canvas) || [];
+    const zone = zones.find((z) => y * dpr >= z.y0 && y * dpr < z.y1);
+    if (!zone) { tip.classList.remove("show"); return; }
+    tip.innerHTML = "";
+    const title = document.createElement("b");
+    title.textContent = zone.title;
+    tip.appendChild(title);
+    if (zone.tip) {
+      const desc = document.createElement("span");
+      desc.textContent = zone.tip;
+      tip.appendChild(desc);
+    }
+    zone.rows.forEach((r) => {
+      const row = document.createElement("i");
+      row.textContent = `${r.label}：${r.text}`;
+      tip.appendChild(row);
+    });
+    tip.classList.add("show");
+    const fig = canvas.closest(".rp-fig");
+    const fr = fig.getBoundingClientRect();
+    const tx = Math.min(Math.max(0, x + 14), fr.width - tip.offsetWidth - 4);
+    const ty = Math.min(Math.max(0, y + 14), fr.height - tip.offsetHeight - 4);
+    tip.style.left = tx + "px";
+    tip.style.top = ty + "px";
+  });
+  canvas.addEventListener("pointerleave", () => {
+    const tip = rpTipFor(canvas);
+    if (tip) tip.classList.remove("show");
+  });
 }
 
-/* ─── 报告：前后指标卡片 + 频段/声场图表（数据来自质量报告） ─── */
-function openReportPane() {
-  openOverlay("report");
-  renderReport();
-}
-function selectedReport() {
-  const sel = state.selectedFile;
-  if (!sel) return null;
-  // 归一化匹配：去掉目录/扩展名/_shadowbuster 后缀并忽略大小写——
-  // 质量摘要的上报名是输入文件名，磁盘扫描名是输出文件名，两者都能命中。
-  const norm = (p) => String(p).replace(/\\/g, "/").split("/").pop()
-      .replace(/\.wav$/i, "").replace(/_shadowbuster$/i, "").toLowerCase();
-  const target = norm(sel);
-  let entry = qualityReports.find((r) => norm(r.name) === target
-      || norm(r.payload && r.payload.filename) === target
-      || norm(r.payload && r.payload.output && r.payload.output.path) === target);
-  if (entry) return entry.payload;
-  if (!state.output) return null;
-  try {
-    const scan = JSON.parse(api.reportsScan(state.output) || "{}");
-    const hit = (scan.reports || []).find((r) => norm(r.name) === target);
-    if (hit) {
-      const payload = JSON.parse(api.reportLoad(hit.path));
-      const report = { key: hit.name, name: hit.name, payload };
-      qualityReports.push(report);
-      return payload;
-    }
-  } catch (e) { /* 扫描失败按无报告处理 */ }
-  return null;
-}
-function fmtDb(v) { return v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)} dB`; }
-function renderReport() {
-  const sel = state.selectedFile;
-  $("rp-file-label").textContent =
-    sel ? sel.replace(/\\/g, "/").split("/").pop() : "未选择文件";
-  const p = selectedReport();
-  const cards = $("rp-cards");
-  cards.innerHTML = "";
-  if (!p) {
-    const empty = document.createElement("div");
-    empty.className = "rc-row";
-    let note = sel
-      ? "该文件尚未处理（或输出目录里没有它的质量报告）。处理完成后这里会自动显示前后对比。"
-      : "先在上方待处理列表点击选择一首歌。";
-    try {
-      if (sel && state.output) {
-        const scan = JSON.parse(api.reportsScan(state.output) || "{}");
-        const n = (scan.reports || []).length;
-        if (n > 0) note += `（输出目录里有 ${n} 份报告，但没有属于当前文件的）`;
-      }
-    } catch (e) {}
-    cards.appendChild(empty);
-    bandDiffCanvas($("rp-bands"), [], []);
-    widthCanvas($("rp-width"), null);
-    $("rp-config").textContent = "";
-    $("rp-constraints").innerHTML = "";
-    return;
+/* ── 频谱曲线：对数频率轴 + 非线性纵轴 + 滚轮缩放 / 拖拽平移 / 双击复位 ──
+   左侧低频天然陡峭，固定全频段视野会吃掉中高频差异；缩放后纵轴只按可见频段
+   重新划段，远离核心区的两端按 1/8 倍率压缩，局部差异被放大到整个坐标系。 */
+const rpZoom = { f0: 20, f1: 20000 };
+const FLOOR_DB = -96;   // 压缩段下限，与后端 -90 dB 动态范围留余量
+/* 内边距与横轴刻度由骨架和实图共用：两套数值一旦不同，数据到达的瞬间整幅会跳位 */
+const rpPlotPad = (dpr) => ({ padL: 36 * dpr, padR: 12 * dpr, padT: 8 * dpr, padB: 18 * dpr });
+const RP_FREQ_TICKS = [10, 15, 20, 30, 40, 50, 70, 100, 150, 200, 300, 400, 500, 700, 1000,
+  1500, 2000, 3000, 4000, 5000, 7000, 10000, 15000, 20000];
+function rpFreqTicks(ctx, X, dpr, h, faint) {
+  ctx.textAlign = "center";
+  let lastX = -Infinity;
+  for (const f of RP_FREQ_TICKS) {
+    if (f < rpZoom.f0 || f > rpZoom.f1) continue;
+    const x = X(f);
+    if (x - lastX < 34 * dpr) continue;
+    lastX = x;
+    ctx.fillStyle = faint;
+    ctx.fillText(f >= 1000 ? `${f / 1000}k` : String(f), x, h - 6 * dpr);
   }
-  const inM = (p.input && p.input.metrics) || {};
-  const outM = (p.output && p.output.metrics) || {};
-  const mas = p.mastering || {};
-  const cardsDef = [
-    ["实测响度", inM.integrated_lufs, outM.integrated_lufs, (v) => `${v.toFixed(1)} LUFS`],
-    ["目标响度", null, mas.target_lufs, (v) => `${v.toFixed(1)} LUFS`],
-    ["真峰值", inM.true_peak_4x_dbtp, outM.true_peak_4x_dbtp, (v) => `${v.toFixed(1)} dBTP`],
-    ["动态 LRA", inM.lra_lu, outM.lra_lu, (v) => `${v.toFixed(1)} LU`],
-    ["峰值因数", inM.crest_factor_db, outM.crest_factor_db, (v) => `${v.toFixed(1)} dB`],
-    ["采样峰值", inM.sample_peak_dbfs, outM.sample_peak_dbfs, (v) => `${v.toFixed(1)} dBFS`],
-    ["立体声相关性", inM.stereo_correlation, outM.stereo_correlation,
-     (v) => v.toFixed(2)],
-    ["单声道损失", inM.mono_fold_down_loss_db, outM.mono_fold_down_loss_db,
-     (v) => `${v.toFixed(2)} dB`],
-    ["限制器 P95", null, (mas.limiter || {}).gain_reduction_p95_db,
-     (v) => `${v.toFixed(2)} dB`],
-    ["削波样本", inM.clipping_samples, outM.clipping_samples, (v) => String(v)],
-  ];
-  cardsDef.forEach(([label, before, after, fmt]) => {
-    const card = document.createElement("div");
-    card.className = "metric-card";
-    const title = document.createElement("span");
-    title.className = "mc-label";
-    title.textContent = label;
-    const vals = document.createElement("span");
-    vals.className = "mc-vals";
-    const b = (before == null || !Number.isFinite(Number(before))) ? "—" : fmt(Number(before));
-    const a = (after == null || !Number.isFinite(Number(after))) ? "—" : fmt(Number(after));
-    vals.textContent = `${b} → ${a}`;
-    card.appendChild(title);
-    card.appendChild(vals);
-    cards.appendChild(card);
-  });
-  let labels, diffs;
-  const cmp = p.compare || null;
-  if (cmp && Array.isArray(cmp.centers) && cmp.centers.length) {
-    labels = cmp.centers.map(String);
-    diffs = cmp.centers.map((_, i) => {
-      const a = cmp.input_db[i], b = cmp.output_db[i];
-      return a == null || b == null ? 0 : b - a;
-    });
-  } else {
-    labels = Object.keys(inM.band_energies || {});
-    diffs = labels.map((k) => {
-      const a = inM.band_energies[k] && inM.band_energies[k].relative_energy_db;
-      const b = outM.band_energies[k] && outM.band_energies[k].relative_energy_db;
-      return a == null || b == null ? 0 : b - a;
-    });
-  }
-  bandDiffCanvas($("rp-bands"), labels, diffs);
-  widthCanvas($("rp-width"), {
-    corr: [inM.stereo_correlation, outM.stereo_correlation],
-    sideMid: [inM.side_mid, outM.side_mid],
-    lowSideMid: [inM.low_band_side_mid, outM.low_band_side_mid],
-  });
-  const cfgRows = [];
-  const pr = p.processing || {};
-  ["demucs_model", "noise_mode", "noise_low_hz", "noise_high_hz", "loudness",
-   "eq_profile", "style_mode", "style_blend", "vocal_comp_amount",
-   "vocal_air_db", "output_subtype"].forEach((k) => {
-    if (pr[k] !== undefined) cfgRows.push(`${k} = ${pr[k]}`);
-  });
-  if (pr.stems) cfgRows.push(`stems = ${JSON.stringify(pr.stems)}`);
-  $("rp-config").textContent = cfgRows.join("  ·  ") || "—";
-  const cons = $("rp-constraints");
-  cons.innerHTML = "";
-  Object.entries((p.quality && p.quality.constraints) || {}).forEach(([name, c]) => {
-    const row = document.createElement("div");
-    row.className = "rc-row";
-    const st = document.createElement("span");
-    st.className = `rc-status rc-${c.status || "unknown"}`;
-    st.textContent = c.status || "unknown";
-    const body = document.createElement("span");
-    body.textContent = `${name}${c.reason ? ` — ${c.reason}` : ""}`;
-    row.appendChild(st); row.appendChild(body);
-    cons.appendChild(row);
-  });
 }
-function widthCanvas(canvas, w) {
+/* 占位骨架：先把坐标框、dB 网格与频率刻度画出来，再落一条中性参考线。
+   空态不该是一句漂浮的文案——看着框就知道这里会放什么（与声场钻石同理）。 */
+function drawFreqSkeleton(ctx, w, h, dpr) {
+  const { padL, padR, padT, padB } = rpPlotPad(dpr);
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  if (plotW <= 0 || plotH <= 0) return;
+  const fMin = Math.log10(rpZoom.f0), fMax = Math.log10(rpZoom.f1);
+  const X = (f) => padL + ((Math.log10(Math.max(rpZoom.f0, Math.min(rpZoom.f1, f))) - fMin) / (fMax - fMin)) * plotW;
+  const light = document.documentElement.dataset.mode === "light";
+  const faint = cssVar("--c-text-faint", "#6b6378");
+  ctx.font = `${10.5 * dpr}px sans-serif`;
+  ctx.textAlign = "right";
+  for (let v = -10; v >= -60; v -= 10) {
+    const y = padT + ((-5 - v) / 60) * plotH;
+    ctx.strokeStyle = light ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.06)";
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillStyle = faint;
+    ctx.fillText(String(v), padL - 6 * dpr, y + 3 * dpr);
+  }
+  const y0 = padT + plotH / 2;
+  ctx.strokeStyle = light ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.14)";
+  ctx.lineWidth = dpr;
+  ctx.beginPath(); ctx.moveTo(padL, y0); ctx.lineTo(w - padR, y0); ctx.stroke();
+  rpFreqTicks(ctx, X, dpr, h, faint);
+  ctx.textAlign = "center";
+  ctx.fillText("处理完成后显示「原始 / 处理后」两条曲线", padL + plotW / 2, y0 - 9 * dpr);
+}
+function drawSpectrumChart(canvas, anim) {
+  if (canvas) rpClipAt(canvas, anim && anim.reveal != null ? anim.reveal : 1);
   const dpr = window.devicePixelRatio || 1;
-  const width = canvas.clientWidth * dpr, h = canvas.height * dpr;
-  canvas.width = width; canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, width, h);
-  ctx.font = `${11 * dpr}px sans-serif`;
-  if (!w) {
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text-faint") || "#6b6378";
-    ctx.fillText("处理完成后显示", 10 * dpr, h / 2);
-    return;
-  }
-  const rows = [
-    ["立体声相关性（0–1，越高越开阔一致）", w.corr, (v) => v.toFixed(3), false],
-    ["整体宽度 Side/Mid（dB，越高越宽）", w.sideMid, (v) => `${v.toFixed(2)} dB`, true],
-    ["低频宽度 Side/Mid（dB，越高越宽）", w.lowSideMid, (v) => `${v.toFixed(2)} dB`, true],
-  ];
-  rows.forEach(([label, pair, fmt, dB], i) => {
-    const y = (i + 0.7) * (h / rows.length);
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text") || "#e6e0e9";
-    ctx.fillText(label, 10 * dpr, y - 8 * dpr);
-    const [before, after] = pair.map((v) => (v == null || !Number.isFinite(Number(v))) ? null : Number(v));
-    const lo = Math.min(before ?? 0, after ?? 0), hi = Math.max(before ?? 1, after ?? 1);
-    const span = Math.max(0.001, hi - lo);
-    const barY = y + 4 * dpr, barH = 8 * dpr, barW = width - 20 * dpr;
-    ctx.fillStyle = "#35323f";
-    ctx.fillRect(10 * dpr, barY, barW, barH);
-    const draw = (v, color) => {
-      if (v == null) return;
-      const k = (v - lo) / span;
-      ctx.fillStyle = color;
-      ctx.fillRect(10 * dpr, barY, Math.max(2 * dpr, barW * (dB ? Math.abs(k) : k)), barH);
-      ctx.fillText(fmt(v), 10 * dpr + Math.max(2 * dpr, barW * Math.abs(k)) + 6 * dpr,
-                   barY + barH);
-    };
-    draw(before, "#3d6fb4");
-    draw(after, "#6d55b8");
-  });
-}
-function bandDiffCanvas(canvas, labels, values) {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth * dpr, h = canvas.height * dpr;
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, w, h);
-  if (!values.length) {
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text-faint") || "#6b6378";
-    ctx.fillText("处理完成后显示", 10 * dpr, h / 2);
+  ctx.font = `${10.5 * dpr}px sans-serif`;
+  const { centers, curves } = reportCurves();
+  if (!centers) {
+    drawFreqSkeleton(ctx, w, h, dpr);
     return;
   }
-  const maxAbs = Math.max(0.5, ...values.map((v) => Math.abs(v)));
-  const mid = h / 2;
-  const bw = w / values.length;
-  const stride = Math.max(1, Math.ceil(values.length / 14));
-  ctx.font = `${11 * dpr}px sans-serif`;
-  ctx.textAlign = "center";
-  values.forEach((v, i) => {
-    const x = i * bw + bw * 0.2, width = bw * 0.6;
-    const bh = (Math.abs(v) / maxAbs) * (h * 0.42);
-    ctx.fillStyle = v >= 0 ? "#6d55b8" : "#3d6fb4";
-    ctx.fillRect(x, v >= 0 ? mid - bh : mid, width, bh);
-    if (i % stride === 0) {
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text-dim") || "#9a91a8";
-      ctx.fillText(labels[i], x + width / 2, h - 4 * dpr);
+  /* 换版本时传进来的处理后曲线是前后两版的插值：纵轴量程由插值后的数据反推，
+     于是曲线和刻度一起平滑走到新状态，而不是硬切一张新图。 */
+  const shown = anim && anim.outDb;
+  const plot = shown
+    ? curves.map((c) => (c.base || c.db.length !== shown.length ? c : { ...c, db: shown }))
+    : curves;
+  const fMin = Math.log10(rpZoom.f0), fMax = Math.log10(rpZoom.f1);
+  const { padL, padR, padT, padB } = rpPlotPad(dpr);
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const X = (f) => padL + ((Math.log10(Math.max(rpZoom.f0, Math.min(rpZoom.f1, f))) - fMin) / (fMax - fMin)) * plotW;
+  /* 纵轴非线性：全曲低频滚降动辄 −90 dB，与可听段等比例会把曲线压成一条平线。
+     按可见采样的百分位划出「核心区」，两端离群段以 1/8 倍率折进窄带，
+     于是每格 dB 的高度不相等——差异读得出来，代价是轴必须标出分段边界。 */
+  const vis = [];
+  plot.forEach((c) => centers.forEach((f, k) => {
+    const v = c.db[k];
+    if (Number.isFinite(v) && f >= rpZoom.f0 && f <= rpZoom.f1) vis.push(v);
+  }));
+  const TAIL = 8;
+  let coreHi = -20, coreLo = -40, hi = 0, lo = -90;
+  if (vis.length > 3) {
+    const sorted = vis.slice().sort((a, b) => a - b);
+    const at = (q) => sorted[Math.max(0, Math.min(sorted.length - 1, Math.round(q * (sorted.length - 1))))];
+    coreHi = at(0.96); coreLo = at(0.04);
+    const pad = Math.min(6, Math.max(2, (coreHi - coreLo) * 0.08));
+    coreHi += pad; coreLo -= pad;
+    hi = Math.max(coreHi, at(1) + 1);
+    lo = Math.min(coreLo, Math.max(FLOOR_DB, at(0) - 2));
+    if (coreHi - coreLo < 6) { const m = (coreHi + coreLo) / 2; coreHi = m + 3; coreLo = m - 3; }
+  }
+  const coreSpan = Math.max(1e-6, coreHi - coreLo);
+  const upTail = Math.max(0, hi - coreHi), dnTail = Math.max(0, coreLo - lo);
+  const coreH = plotH / (1 + (upTail + dnTail) / (coreSpan * TAIL));
+  const tailPx = plotH - coreH;
+  const upPx = tailPx > 0 && (upTail + dnTail) > 0 ? tailPx * upTail / (upTail + dnTail) : 0;
+  const dnPx = tailPx - upPx;
+  const yCoreHi = padT + upPx, yCoreLo = yCoreHi + coreH;
+  const Y = (v) => {
+    if (v >= coreHi) return padT + (1 - (v - coreHi) / Math.max(1e-6, hi - coreHi)) * upPx;
+    if (v <= coreLo) return yCoreLo + Math.min(1, (coreLo - v) / Math.max(1e-6, coreLo - lo)) * dnPx;
+    return yCoreHi + (coreHi - v) / coreSpan * coreH;
+  };
+  const light = document.documentElement.dataset.mode === "light";
+  const faint = cssVar("--c-text-faint", "#6b6378");
+  const pal = rpThemeColors();
+  const step = [1, 2, 3, 5, 6, 10, 15, 20, 30].find((s) => coreSpan / s <= 8) || 40;
+  const gridVals = [];
+  for (let v = Math.ceil(coreLo / step) * step; v <= coreHi; v += step) gridVals.push(v);
+  /* 压缩段按各自窄带可用高度反推档距，且不贴着边界（会与分段边界线叠在一起） */
+  [[lo, coreLo, dnPx], [coreHi, hi, upPx]].forEach(([a, b, px]) => {
+    const span = b - a;
+    if (!(span > 0 && px > 14 * dpr)) return;
+    const room = Math.max(1, Math.floor(px / (16 * dpr)));
+    const s = [1, 2, 5, 10, 20, 30].find((x) => span / x <= room) || 40;
+    for (let v = Math.ceil((a + span * 0.15) / s) * s; v < b - span * 0.1; v += s) gridVals.push(v);
+  });
+  ctx.textAlign = "right";
+  gridVals.forEach((v) => {
+    const y = Y(v);
+    ctx.strokeStyle = light ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.06)";
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillStyle = faint;
+    ctx.fillText(String(Math.round(v)), padL - 6 * dpr, y + 3 * dpr);
+  });
+  /* 分段边界：让「这段被压过」在图上可读，而不是悄悄改了比例 */
+  const edge = (v) => {
+    const y = Y(v);
+    ctx.strokeStyle = light ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.16)";
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    if (y - padT > 12 * dpr && padT + plotH - y > 12 * dpr) {
+      ctx.fillStyle = faint; ctx.font = `${9 * dpr}px sans-serif`;
+      ctx.fillText("1:8", w - padR - 2 * dpr, y - 5 * dpr);
+      ctx.font = `${10.5 * dpr}px sans-serif`;
     }
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text") || "#e6e0e9";
-    if (Math.abs(v) / maxAbs > 0.12 || i % stride === 0) {
-      ctx.fillText(`${v >= 0 ? "+" : ""}${v.toFixed(2)}`, x + width / 2,
-                   v >= 0 ? mid - bh - 5 * dpr : mid + bh + 13 * dpr);
+  };
+  if (dnPx > 0) edge(coreLo);
+  if (upPx > 0) edge(coreHi);
+  /* 差异直接落在两条曲线之间：处理后高于原始=提升色，低于=衰减色 */
+  const base = plot.find((c) => c.base), after = plot.find((c) => !c.base);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(padL, padT, plotW, plotH); ctx.clip();
+  if (base && after) {
+    const pts = [];
+    centers.forEach((f, k) => {
+      const a = base.db[k], b = after.db[k];
+      if (Number.isFinite(a) && Number.isFinite(b) && f >= rpZoom.f0 && f <= rpZoom.f1)
+        pts.push([X(f), Y(a), Y(b), b - a]);
+    });
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, a0, b0, d0] = pts[i - 1], [x1, a1, b1, d1] = pts[i];
+      ctx.beginPath();
+      ctx.moveTo(x0, a0); ctx.lineTo(x1, a1); ctx.lineTo(x1, b1); ctx.lineTo(x0, b0);
+      ctx.closePath();
+      ctx.globalAlpha = 0.34;
+      ctx.fillStyle = (d0 + d1) / 2 >= 0 ? pal.boost : pal.cut;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+  /* 一律实线：原始=中性色，处理后=主题色，处理后高出原始的段落再叠一遍对比色。
+     提升位置因此直接落在曲线上，不需要再对一张独立的 Δ 子图。 */
+  const EPS_DB = 0.2;
+  const strokeSegments = (pts, keep) => {
+    ctx.beginPath();
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i - 1], q = pts[i];
+      if (!p || !q || (keep && !keep(i))) continue;
+      ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]);
+    }
+    ctx.stroke();
+  };
+  ctx.lineCap = "round";
+  plot.forEach((c) => {
+    const pts = [];
+    centers.forEach((f, k) => {
+      const v = c.db[k];
+      // 视野外的频点记 null 而非钳到画布边缘，否则会画出两端假的垂直线
+      if (!Number.isFinite(v) || f < rpZoom.f0 || f > rpZoom.f1) { pts.push(null); return; }
+      const bv = c.base || !base ? null : base.db[k];
+      pts.push([X(f), Y(v), Number.isFinite(bv) ? v - bv : 0]);
+    });
+    ctx.lineWidth = 1.6 * dpr;
+    ctx.strokeStyle = c.base ? pal.before : pal.after;
+    strokeSegments(pts);
+    if (!c.base && base) {
+      ctx.strokeStyle = pal.boost;
+      strokeSegments(pts, (i) => (pts[i - 1][2] + pts[i][2]) / 2 > EPS_DB);
     }
   });
-  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--c-text-faint") || "#6b6378";
-  ctx.fillRect(0, mid, w, 1);
+  ctx.restore();
+  rpFreqTicks(ctx, X, dpr, h, faint);   // 共享 X 轴刻度（画布最底部）
+  /* 重放钩子：整幅图只是一次数据快照，逐帧改的仍是「画哪条曲线、画到哪儿」 */
+  const target = (curves.find((c) => !c.base) || {}).db || null;
+  const prev = rpShown && rpShown.outDb;
+  const canMorph = target && prev && prev.length === target.length;
+  rpHook((u, reveal) => {
+    drawSpectrumChart(canvas, {
+      outDb: reveal || !canMorph ? null : target.map((v, i) => rpLerp(prev[i], v, u)),
+      reveal: reveal ? u : null,
+    });
+  });
+  if (rpPending) rpPending.outDb = target ? target.slice() : null;
 }
-$("rp-file-label") && setInterval(() => {
-  if (!$("pane-report").hidden) renderReport();
-}, 1500);
+/* 缩放/平移交互：只绑定一次；hover 提示也在此时挂载 */
+(() => {
+  const canvas = $("rp-spectrum");
+  if (!canvas) return;
+  const L0 = Math.log(20), L1 = Math.log(20000);
+  /* 最小跨度 2.5 倍 ≈ 4 个 1/3 倍频程中心；再窄就只剩一两个点，
+     曲线退化成一截竖线，缩放反而让人误判成渲染故障。 */
+  const MIN_SPAN = Math.log(2.5);
+  let zoomAnim = null;
+  /* 对数域内先定跨度、再平移窗口回域内：钳位只移动中心、不改变跨度。
+     旧写法逐端钳位会让锚点偏向的一侧反复吃掉跨度，放大后缩不回全域。 */
+  const setView = (c0, c1, instant) => {
+    const span = Math.min(L1 - L0, Math.max(MIN_SPAN, c1 - c0));
+    const mid = Math.min(L1 - span / 2, Math.max(L0 + span / 2, (c0 + c1) / 2));
+    const to = { f0: mid - span / 2, f1: mid + span / 2 };
+    if (instant) {
+      if (zoomAnim) { cancelAnimationFrame(zoomAnim); zoomAnim = null; }
+      rpZoom.f0 = Math.exp(to.f0); rpZoom.f1 = Math.exp(to.f1);
+      drawSpectrumChart(canvas);
+      return;
+    }
+    /* 视野突变会让曲线整片跳动；用一小段缓动把频率与纵轴量程一起推过去，
+       读得出「是视野变了」而不是「图坏了」。再次操作时从当前动画位置取向。 */
+    const from = { f0: Math.log(rpZoom.f0), f1: Math.log(rpZoom.f1) };
+    if (Math.abs(from.f0 - to.f0) < 1e-4 && Math.abs(from.f1 - to.f1) < 1e-4) return;
+    const t0 = performance.now(), dur = 190;
+    if (zoomAnim) cancelAnimationFrame(zoomAnim);
+    const step = (now) => {
+      const u = Math.min(1, (now - t0) / dur);
+      const e = 1 - Math.pow(1 - u, 3);
+      rpZoom.f0 = Math.exp(from.f0 + (to.f0 - from.f0) * e);
+      rpZoom.f1 = Math.exp(from.f1 + (to.f1 - from.f1) * e);
+      drawSpectrumChart(canvas);
+      zoomAnim = u < 1 ? requestAnimationFrame(step) : null;
+    };
+    zoomAnim = requestAnimationFrame(step);
+  };
+  const fAt = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    // 绘图内边距以 CSS 像素为基准（绘制时才乘 dpr），这里与 rect 同单位
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left - 36) / Math.max(1, rect.width - 48)));
+    const a = Math.log(rpZoom.f0), b = Math.log(rpZoom.f1);
+    return Math.exp(a + (b - a) * frac);   // 按当前视野反解，不能用固定全域
+  };
+  canvas.addEventListener("wheel", (e) => {
+    if ($("pane-report").hidden) return;
+    e.preventDefault();
+    const anchor = Math.log(Math.min(20000, Math.max(20, fAt(e))));
+    const k = e.deltaY > 0 ? 1.25 : 1 / 1.25;
+    setView(anchor + (Math.log(rpZoom.f0) - anchor) * k,
+            anchor + (Math.log(rpZoom.f1) - anchor) * k);
+  }, { passive: false });
+  let panning = false, panX = 0;
+  canvas.addEventListener("pointerdown", (e) => {
+    panning = true; panX = e.clientX;
+    canvas.setPointerCapture(e.pointerId);
+    canvas.style.cursor = "grabbing";
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!panning) {
+      canvas.style.cursor = "grab";
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const dLog = ((e.clientX - panX) / Math.max(1, rect.width - 48))
+      * (Math.log(rpZoom.f1) - Math.log(rpZoom.f0));
+    panX = e.clientX;
+    setView(Math.log(rpZoom.f0) - dLog, Math.log(rpZoom.f1) - dLog, true);
+  });
+  const end = () => { panning = false; canvas.style.cursor = "grab"; };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+  canvas.addEventListener("dblclick", () => setView(L0, L1));
+  attachRpTip(canvas);
+})();
+
+/* ── 报告数据配对：原始（首个有报告的选中版本的 input.metrics）+ 其 output ── */
+function rpNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+function rpBandWidth(m, key) {
+  const b = m && m.band_widths && m.band_widths[key];
+  return rpNum(b && b.width);
+}
+/* 分频段 S/M 电平比（dB）＝听感宽度的直接读数：宽度比 sideE/(midE+sideE) 是它
+   的非线性压缩，同一件事 0.03→0.02 只有 −1.4 dB，写成 −23% 会把轻微收窄读成
+   大幅收窄。报告没有该字段（旧成品）时由宽度比反推，读数口径不变。 */
+function rpBandSmDb(m, key) {
+  const b = m && m.band_widths && m.band_widths[key];
+  const db = rpNum(b && b.side_mid_db);
+  if (db != null) return db;
+  const w = rpNum(b && b.width);
+  return (w == null || !(w > 0) || w >= 1) ? null : 10 * Math.log10(w / (1 - w));
+}
+function rpPair() {
+  const rep = rp.sel && rp.reports.get(rp.sel);
+  const outM = rep && ((rep.output && rep.output.metrics) || null);
+  if (!outM) return null;
+  const ver = (rp.versions.find((v) => v.path === rp.sel) || {}).version;
+  return { inM: (rep.input && rep.input.metrics) || null, outM, ver, path: rp.sel };
+}
+/* 1/3 倍频程相对能量（响度无关）→ 指定频段能量变化 dB */
+function rpBandDelta(lo, hi) {
+  const { centers, curves } = reportCurves();
+  const base = curves.find((c) => c.base), after = curves.find((c) => !c.base);
+  if (!centers || !base || !after) return null;
+  let si = 0, so = 0;
+  for (let k = 0; k < centers.length; k++) {
+    const f = centers[k];
+    if (f < lo || f >= hi) continue;
+    const a = base.db[k], b = after.db[k];
+    if (Number.isFinite(a) && Number.isFinite(b)) { si += Math.pow(10, a / 10); so += Math.pow(10, b / 10); }
+  }
+  return si > 0 && so > 0 ? 10 * Math.log10(so / si) : null;
+}
+
+/* ── 处理摘要 KPI ── */
+const RP_KPI_ICONS = {
+  bass: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h2l2-6 3 15 3-11 2 6h6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  air: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 14c4 0 4-6 8-6s4 6 8 6" stroke-linecap="round"/><circle cx="12" cy="17.5" r="1.4" fill="currentColor" stroke="none"/></svg>',
+  dyn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18V6M9 18V9M14 18v-6M19 18V4" stroke-linecap="round"/></svg>',
+  wide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M6 8l-3 4 3 4M18 8l3 4-3 4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+function rpDuration(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+function renderHead() {
+  const name = $("rp-name"), chips = $("rp-mchips"), time = $("rp-time");
+  if (!name || !chips) return;
+  const pair = rpPair();
+  const rep = pair && rp.reports.get(pair.path);
+  const fmt = (rep && rep.meta && rep.meta.output_format) || null;
+  name.textContent = pair ? stemOf(pair.path) : "未选择成品";
+  const meta = (rep && rep.meta) || {};
+  const items = [];
+  if (fmt) {
+    items.push(fmt.format || "WAV");
+    items.push(`${(fmt.sample_rate / 1000).toFixed(1)} kHz`);
+    if (fmt.bit_depth) items.push(`${fmt.bit_depth} bit`);
+    items.push(fmt.channels === 1 ? "单声" : "立体声");
+    items.push(rpDuration(fmt.duration_seconds));
+  }
+  chips.innerHTML = "";
+  items.forEach((text) => {
+    const c = document.createElement("span");
+    c.className = "rp-mchip";
+    c.textContent = text;
+    chips.appendChild(c);
+  });
+  if (!items.length) {
+    const c = document.createElement("span");
+    c.className = "rp-mchip";
+    c.textContent = pair ? "该成品无格式信息（报告版本较早）" : "处理完成后显示";
+    chips.appendChild(c);
+  }
+  const gen = String(meta.generated_at || "");
+  time.textContent = gen.length >= 16 ? `${gen.slice(0, 10)} ${gen.slice(11, 16)}` : "—";
+}
+/* ── 报告动效：数字与图形都只是数据的一次快照 ──
+   reveal（从别的页切进来）：数字从 0 长到显示值，画布按左右顺序画出来；
+   morph（换成品版本）：所有数值、曲线、钻石从上一次真正画出来的状态插值到新状态。
+   给整块卡片套淡入是没用的——那只说明"换了张图"，读不出数值怎么变的。 */
+let rpShown = null;      // 上一次画到屏幕上的数值（morph 的起点）
+let rpPending = null;    // 本次渲染算出的数值，渲染结束后提交为 rpShown
+let rpHooks = [];        // 本次渲染登记的重放钩子 (u, reveal) => void
+let rpRaf = 0;           // 当前重放的帧句柄
+let rpGuard = 0;         // 收尾兜底定时器（rAF 不推进时也要落到终态）
+const rpEase = (t) => 1 - Math.pow(1 - t, 3);
+const rpLerp = (a, b, u) => (a == null || b == null ? b : a + (b - a) * u);
+function rpHook(fn) { if (rpPending) rpHooks.push(fn); }
+
+function rpRunAnim(mode) {
+  const hooks = rpHooks;
+  rpHooks = [];
+  clearTimeout(rpGuard);
+  cancelAnimationFrame(rpRaf);
+  if (!hooks.length || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const reveal = mode === "reveal";
+  const t0 = performance.now(), ms = reveal ? 620 : 420;
+  const finish = () => {
+    cancelAnimationFrame(rpRaf);
+    hooks.forEach((h) => h(1, reveal));
+  };
+  const frame = (now) => {
+    const t = Math.min(1, (now - t0) / ms), u = rpEase(t);
+    hooks.forEach((h) => h(u, reveal));
+    if (t < 1) rpRaf = requestAnimationFrame(frame);
+  };
+  hooks.forEach((h) => h(0, reveal));      // 先落到起点，否则首帧会闪一下终态
+  rpRaf = requestAnimationFrame(frame);
+  /* 窗口被遮挡时 rAF 可以整段不推进，重放会停在起点（读数全是 0）。
+     定时器仍会触发，兜底把最后一帧补上。 */
+  rpGuard = setTimeout(finish, ms + 250);
+}
+/* 「画出来」用的是裁剪而不是重绘整幅：位图和曲线都只写一次，逐帧推进的是遮挡边界 */
+function rpClipAt(el, u) {
+  if (el) el.style.clipPath = u >= 1 ? "" : `inset(0 ${((1 - u) * 100).toFixed(2)}% 0 0)`;
+}
+/* 换频谱视图整幅渐变，不做左右擦除：把当前画面拍成快照盖在新画面上淡出（dissolve），
+   新画面本身一次性画好，读起来是「这一幅换成那一幅」而不是「又画了一遍」。 */
+let rpSpecSnap = null;
+function rpSpecFade(apply, ms = 240) {
+  const canvas = $("rp-spec");
+  rpSpecSnap?.remove();
+  rpSpecSnap = null;
+  if (!canvas || !canvas.width || !canvas.height ||
+      matchMedia("(prefers-reduced-motion: reduce)").matches) { apply(); return; }
+  const snap = document.createElement("canvas");
+  snap.width = canvas.width;
+  snap.height = canvas.height;
+  snap.getContext("2d").drawImage(canvas, 0, 0);
+  snap.style.cssText =
+    "position:absolute;pointer-events:none;z-index:1;" +
+    `left:${canvas.offsetLeft + canvas.clientLeft}px;top:${canvas.offsetTop + canvas.clientTop}px;` +
+    `width:${canvas.clientWidth}px;height:${canvas.clientHeight}px;`;
+  canvas.parentElement.appendChild(snap);
+  rpSpecSnap = snap;
+  apply();
+  const anim = snap.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms, easing: "ease" });
+  const done = () => { if (rpSpecSnap === snap) rpSpecSnap = null; snap.remove(); };
+  anim.finished.then(done, done);
+}
+function renderSummary() {
+  const wrap = $("rp-summary");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  const pair = rpPair();
+  const lra = pair && pair.inM && rpNum(pair.outM.lra_lu) != null && rpNum(pair.inM.lra_lu) != null
+    ? pair.outM.lra_lu - pair.inM.lra_lu : null;
+  let wide = null;
+  const rpSigned = (v, dp) => (v == null ? "—"
+    : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(dp));
+  /* 宽度按中/高频各自 S/M 比（dB）等权平均后再取前后差：
+     能量加权的总宽几乎只跟中频走（中频能量远高于高频），高频的实际
+     拓宽被中频吃掉；低频则被刻意 mono 化，计入只会永远读出变窄。 */
+  const smDb = (m, key) => rpBandSmDb(m, key);
+  if (pair) {
+    const parts = ["mid", "high"].map((k) => {
+      const a = smDb(pair.inM, k), b = smDb(pair.outM, k);
+      return a == null || b == null ? null : b - a;
+    }).filter((v) => v != null);
+    wide = parts.length ? parts.reduce((s, v) => s + v, 0) / parts.length : null;
+  }
+  const cards = [
+    { ic: "bass", label: "低频能量", sub: "20–250 Hz 变化", v: rpBandDelta(20, 250), unit: "dB", dp: 1 },
+    { ic: "air", label: "空气感能量", sub: "3–8 kHz 变化", v: rpBandDelta(3000, 8000), unit: "dB", dp: 1 },
+    { ic: "dyn", label: "动态范围", sub: "LRA 变化", v: lra, unit: "LU", dp: 1, eps: 0.05 },
+    { ic: "wide", label: "立体声宽度", sub: "中/高频 S/M 变化", v: wide, unit: "dB", dp: 2, eps: 0.05 },
+  ];
+  cards.forEach((c) => {
+    const el = document.createElement("div");
+    const eps = c.eps == null ? 0.05 : c.eps;
+    const dir = c.v == null ? "flat" : c.v > eps ? "up" : c.v < -eps ? "down" : "flat";
+    el.className = "rp-kpi " + dir;
+    /* 方向不另印箭头：数字自带正负号，颜色已经表态，右侧再挂一只三角只是噪声 */
+    const val = rpSigned(c.v, c.dp);
+    el.innerHTML =
+      `<span class="rp-kpi-ic">${RP_KPI_ICONS[c.ic]}</span>` +
+      `<span class="rp-kpi-txt"><span class="rp-kpi-label">${c.label}</span>` +
+      `<span class="rp-kpi-sub">${c.sub}</span></span>` +
+      `<span class="rp-kpi-val"><span class="rp-kpi-num">${val}</span>` +
+      `<span class="rp-kpi-unit">${c.v == null ? "" : c.unit}</span></span>`;
+    wrap.appendChild(el);
+  });
+  const nums = [...wrap.querySelectorAll(".rp-kpi-num")];
+  const prevK = rpShown && rpShown.kpi;
+  rpHook((u, reveal) => {
+    cards.forEach((c, i) => {
+      const from = reveal ? 0 : (prevK ? prevK[i] : null);
+      nums[i].textContent = rpSigned(rpLerp(from, c.v, u), c.dp);
+    });
+  });
+  if (rpPending) rpPending.kpi = cards.map((c) => c.v);
+}
+
+/* ── 响度与动态：哑铃行（每行用该属性的常用总量程） ── */
+const RP_DYN = [
+  { label: "响度", sub: "LUFS", key: "integrated_lufs", dp: 1, ref: [-20, -6],
+    tip: "整合响度（LUFS）：整曲感知响度，流媒体目标常约 -14。" },
+  { label: "真实峰值", sub: "dBTP", key: "true_peak_4x_dbtp", dp: 1, ref: [-6, 0],
+    tip: "4x 过采样真峰值（dBTP）：超过 0 会削波失真。" },
+  { label: "动态范围", sub: "LU", key: "lra_lu", dp: 1, ref: [0, 12],
+    tip: "响度范围（LU）：最响与最静段落差距，越大越有起伏。" },
+  { label: "峰值响度比", sub: "dB", key: "crest_factor_db", dp: 1, ref: [6, 18],
+    tip: "峰值与平均能量之比：越高越有冲击力，越低越压。" },
+  { label: "立体声相关性", sub: "", key: "stereo_correlation", dp: 2, ref: [-1, 1],
+    tip: "左右相关：近 1 声像稳，近 0 更宽散，负值提示反相风险。" },
+];
+const rpNiceStep = (range, want) => {
+  const raw = range / want;
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  return [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => s >= raw) || p * 10;
+};
+const rpNumLabel = (v, dp) => (v < 0 ? `−${Math.abs(v).toFixed(dp)}` : v.toFixed(dp));
+function renderDynamics() {
+  const wrap = $("rp-dyn");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  const pair = rpPair();
+  const rows = [];
+  RP_DYN.forEach((d) => {
+    const b = pair && pair.inM ? rpNum(pair.inM[d.key]) : null;
+    const a = pair ? rpNum(pair.outM[d.key]) : null;
+    const fmt = (v) => (v == null ? "—" : rpNumLabel(v, d.dp));
+    /* 量程取该属性的常用总范围：换一首歌轴不会变，圆点位置读得出绝对高低，
+       不同文件之间也能横向比较。只有取值超出默认范围时才带余量外扩。 */
+    let lo = d.ref[0], hi = d.ref[1];
+    const vals = [b, a].filter((v) => v != null);
+    if (vals.length) {
+      const margin = (hi - lo) * 0.04;
+      lo = Math.min(lo, Math.min(...vals) - margin);
+      hi = Math.max(hi, Math.max(...vals) + margin);
+    }
+    const pct = (v) => Math.max(0, Math.min(1, (v - lo) / (hi - lo))) * 100;
+    const step = rpNiceStep(hi - lo, 4);
+    const tdp = Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+    const xb = b == null ? null : pct(b), xa = a == null ? null : pct(a);
+    /* 圆点读数先算好：刻度与某个圆点同值且几乎同位时不再重复印一遍 */
+    const marks0 = [[b, xb], [a, xa]].filter(([, x]) => x != null);
+    const halfLsb = Math.pow(10, -d.dp) / 2;
+    let ticks = "";
+    for (let v = Math.ceil(lo / step) * step; v <= hi + step * 0.01; v += step) {
+      const x = pct(v);
+      const align = x <= 2 ? "start" : x >= 98 ? "end" : "mid";
+      const dup = marks0.some(([mv, mx]) => Math.abs(mx - x) < 6 && Math.abs(v - mv) < halfLsb);
+      ticks += `<span class="rp-dyn-tick" style="left:${x}%"></span>` +
+        (dup ? "" : `<span class="rp-dyn-sl rp-dyn-sl-${align}" style="left:${x}%">${rpNumLabel(v, tdp)}</span>`);
+    }
+    let conn = "";
+    if (b != null && a != null) {
+      const x0 = Math.min(pct(b), pct(a)), x1 = Math.max(pct(b), pct(a));
+      conn = `<span class="rp-dyn-conn" style="left:${x0}%;width:${x1 - x0}%"></span>`;
+    }
+    /* 圆点 + 上方数值：越界读数钳位在轨道两端，数字仍显示真实值。
+       前后距离小于一个读数宽度时两个上标会叠成一团，合并成居中「前 → 后」。 */
+    const dot = (cls, x) => `<span class="rp-dyn-dot ${cls}" style="left:${x}%"></span>`;
+    const num = (cls, x, txt) => `<span class="rp-dyn-num ${cls}` +
+      `${x < 9 ? " rn-start" : x > 91 ? " rn-end" : ""}" style="left:${x}%">${txt}</span>`;
+    /* 行方向决定「处理后」一侧的颜色：升=对比色、降=主题色。差值小于半个末位
+       读数时两个数字印出来一样，按持平处理，避免读数不变而颜色却在表态。 */
+    const dv = (b == null || a == null) ? null : a - b;
+    const dir = dv == null || Math.abs(dv) < halfLsb ? "flat" : dv > 0 ? "up" : "down";
+    let marks = (xb != null ? dot("before", xb) : "") + (xa != null ? dot("after", xa) : "");
+    if (xb == null && xa == null) {
+      /* 空态：读数槽留在原位（与声场卡「— → —」同一读法）。不复用 .both，
+         它那侧的颜色是方向色，会把「还没数据」读成「衰减」。 */
+      marks = `<span class="rp-dyn-num empty">— → —</span>`;
+    } else if (xb != null && xa != null && Math.abs(xb - xa) < 11) {
+      const mid = (xb + xa) / 2;
+      const align = mid < 12 ? " rn-start" : mid > 88 ? " rn-end" : "";
+      marks += `<span class="rp-dyn-num both${align}" style="left:${mid}%">` +
+        `<i>${fmt(b)}</i> → <b>${fmt(a)}</b></span>`;
+    } else {
+      if (xb != null) marks += num("before", xb, fmt(b));
+      if (xa != null) marks += num("after", xa, fmt(a));
+    }
+    const row = document.createElement("div");
+    row.className = "rp-dyn-row " + dir;
+    row.title = d.tip;
+    row.innerHTML =
+      `<div class="rp-dyn-label"><b>${d.label}</b>${d.sub ? `<i>${d.sub}</i>` : ""}</div>` +
+      `<div class="rp-dyn-track">${ticks}${conn}${marks}</div>`;
+    wrap.appendChild(row);
+    rows.push({ d, b, a, lo, hi,
+      dotB: row.querySelector(".rp-dyn-dot.before"), dotA: row.querySelector(".rp-dyn-dot.after"),
+      conn: row.querySelector(".rp-dyn-conn"),
+      numB: row.querySelector(".rp-dyn-num.before"), numA: row.querySelector(".rp-dyn-num.after"),
+      both: row.querySelector(".rp-dyn-num.both") });
+  });
+  const prevD = rpShown && rpShown.dyn;
+  if (pair) rpHook((u, reveal) => {
+    const pctOf = (r, v) => Math.max(0, Math.min(1, (v - r.lo) / (r.hi - r.lo))) * 100;
+    rows.forEach((r, i) => {
+      const f = prevD && prevD[i];
+      const b = reveal ? rpLerp(0, r.b, u) : rpLerp(f && f[0], r.b, u);
+      const a = reveal ? rpLerp(0, r.a, u) : rpLerp(f && f[1], r.a, u);
+      const xb = b == null ? null : pctOf(r, b), xa = a == null ? null : pctOf(r, a);
+      const fmt = (v) => (v == null ? "—" : rpNumLabel(v, r.d.dp));
+      if (r.dotB) r.dotB.style.left = xb + "%";
+      if (r.dotA) r.dotA.style.left = xa + "%";
+      if (r.conn && xb != null && xa != null) {
+        r.conn.style.left = Math.min(xb, xa) + "%";
+        r.conn.style.width = Math.abs(xa - xb) + "%";
+      }
+      if (r.numB) { r.numB.textContent = fmt(b); r.numB.style.left = xb + "%"; }
+      if (r.numA) { r.numA.textContent = fmt(a); r.numA.style.left = xa + "%"; }
+      if (r.both) {
+        r.both.style.left = (xb + xa) / 2 + "%";
+        r.both.innerHTML = `<i>${fmt(b)}</i> → <b>${fmt(a)}</b>`;
+      }
+    });
+  });
+  if (rpPending) rpPending.dyn = rows.map((r) => [r.b, r.a]);
+}
+
+/* ── 立体声场：3 频段钻石图（底角=听者，两侧角=本域角度上限，顶角=中置） ── */
+const RP_FANS = [
+  { key: "low", label: "低频", range: "20–250 Hz" },
+  { key: "mid", label: "中频", range: "250 Hz–4 kHz" },
+  { key: "high", label: "高频", range: "4–20 kHz" },
+];
+const rpFanDelta = (wi, wo) =>
+  (wi == null || wo == null || !(wi > 0)) ? null : (wo - wi) / wi * 100;
+/* 底部读数取 S/M 电平比的前后差（dB）：与听感宽度近似线性。宽度比百分比只在
+   没有 dB 字段可读时兜底，绝不作为主读数列出（−23% 与 −1.4 dB 是同一件事，
+   前者会让人以为声场被大幅收窄）。±0.5 dB 内读作持平。 */
+const RP_FAN_FLAT_DB = 0.5;
+const rpFanDb = (di, dok) => (di == null || dok == null ? null : dok - di);
+const rpFanDbText = (d) => (d == null ? "—"
+  : `${d > 0 ? "+" : d < 0 ? "−" : ""}${Math.abs(d).toFixed(1)} dB`);
+const rpFanPctText = (d) => (d == null ? "—"
+  : `${d > 0 ? "+" : d < 0 ? "−" : ""}${Math.abs(d).toFixed(0)}%`);
+function renderStereoFans() {
+  const wrap = $("rp-fans");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  const pair = rpPair();
+  const pal = rpThemeColors();
+  const before = pal.before;
+  const fans = [];
+  RP_FANS.forEach((f) => {
+    const wi = pair ? rpBandWidth(pair.inM, f.key) : null;
+    const wo = pair ? rpBandWidth(pair.outM, f.key) : null;
+    const di = pair ? rpBandSmDb(pair.inM, f.key) : null;
+    const dok = pair ? rpBandSmDb(pair.outM, f.key) : null;
+    const db = rpFanDb(di, dok);
+    const delta = rpFanDelta(wi, wo);
+    const dir = db == null ? "flat"
+      : db > RP_FAN_FLAT_DB ? "up" : db < -RP_FAN_FLAT_DB ? "down" : "flat";
+    /* 变宽=对比色、变窄=主题色，与频响、哑铃行、KPI 同一套读法 */
+    const afterCol = dir === "up" ? pal.boost : pal.after;
+    const block = document.createElement("div");
+    block.className = "rp-fan " + dir;
+    block.title = "钻石张角 = 该频段 Side/Mid 等效声像角；标题行为宽度比 "
+      + "sideE/(midE+sideE)，底部为该频段 S/M 电平变化 dB（±0.5 dB 内读作持平），"
+      + "角度域按本频段前后取值自动取档。";
+    block.innerHTML =
+      `<div class="rp-fan-hd"><b>${f.label}</b><i>${f.range}</i>` +
+      `<span class="rp-fan-num"><span class="before">${wi == null ? "—" : wi.toFixed(2)}</span>` +
+      `<span class="arrow">→</span><span class="after">${wo == null ? "—" : wo.toFixed(2)}</span></span></div>` +
+      `<canvas></canvas>` +
+      `<div class="rp-fan-ft">${db == null ? rpFanPctText(delta) : rpFanDbText(db)}</div>`;
+    wrap.appendChild(block);
+    const canvas = block.querySelector("canvas");
+    /* 角度档位按最终取值定死并带进动画：否则钻石从 0 长出来时会边长边换档，
+       框线一跳一跳，读起来像图坏了而不是声场在展开。 */
+    const peak = Math.max(rpHalfAngle(wi) || 0, rpHalfAngle(wo) || 0) * 180 / Math.PI;
+    const dom = RP_FAN_DOMAINS.find((d) => d >= peak * 1.15) || 45;
+    drawFieldDiamond(canvas, wi, wo, before, afterCol, dom);
+    fans.push({ canvas, wi, wo, di, dok, col: afterCol, dom, db,
+      bEl: block.querySelector(".rp-fan-num .before"),
+      aEl: block.querySelector(".rp-fan-num .after"),
+      ftEl: block.querySelector(".rp-fan-ft") });
+  });
+  const prev = rpShown && rpShown.bands;
+  const num = (v) => (v == null ? "—" : v.toFixed(2));
+  rpHook((u, reveal) => {
+    fans.forEach((r, i) => {
+      const p = prev && prev[i];
+      const wi = reveal ? rpLerp(0, r.wi, u) : rpLerp(p && p[0], r.wi, u);
+      const wo = reveal ? rpLerp(0, r.wo, u) : rpLerp(p && p[1], r.wo, u);
+      drawFieldDiamond(r.canvas, wi, wo, before, r.col, r.dom);
+      if (r.bEl) r.bEl.textContent = num(wi);
+      if (r.aEl) r.aEl.textContent = num(wo);
+      /* 底部 dB：换版本时随当帧的前后取值走（差值本身在动），
+         进页面时钻石是整体展开，比值恒定，按最终值从 0 长上来更诚实。 */
+      if (r.ftEl) r.ftEl.textContent = r.db == null
+        ? rpFanPctText(rpFanDelta(wi, wo))
+        : rpFanDbText(reveal ? r.db * u : rpFanDb(r.di, r.dok));
+    });
+  });
+  if (rpPending) rpPending.bands = fans.map((r) => [r.wi, r.wo]);
+}
+/* width∈[0,1] → S/M 幅度比 sqrt(w/(1-w)) → 等效半张角 atan(...)；width≥1 记满 45° */
+function rpHalfAngle(wd) {
+  if (wd == null || !(wd >= 0) || wd >= 1) return wd == null ? null : Math.PI / 4;
+  return Math.atan(Math.sqrt(wd / (1 - wd)));
+}
+const RP_FAN_DOMAINS = [15, 20, 25, 30, 40, 45];   // 度：外框两侧角对应的半张角档位
+function drawFieldDiamond(canvas, wBefore, wAfter, before, after, fixedDom) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (!w || !h) return;
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  const light = document.documentElement.dataset.mode === "light";
+  const hb = rpHalfAngle(wBefore), ha = rpHalfAngle(wAfter);
+  const peakDeg = Math.max(hb || 0, ha || 0) * 180 / Math.PI;
+  const domDeg = fixedDom || (RP_FAN_DOMAINS.find((d) => d >= peakDeg * 1.15) || 45);
+  const dom = domDeg * Math.PI / 180;
+  /* 顶角（中）— 底角（听者）为 boxH，L/R 恒落在半高处。宽度原先按
+     tan(域角)×高度 定，15° 一档只有二十来 px，图基本看不清。 */
+  const padX = 15 * dpr, padY = 10 * dpr;
+  const cx = w / 2;
+  const availH = h - padY * 2;
+  let halfW = w / 2 - padX;
+  if (!(availH > 20 * dpr && halfW > 8 * dpr)) return;
+  /* 钻石框保持正方形：域角张满整幅宽度在宽窗口下会把图拉成扁宽一只（宽近高的两倍），
+     高度不够时让宽度收回来，两侧留白好过声场形状失真。 */
+  if (availH < halfW * 2) halfW = availH / 2;
+  const boxH = Math.min(availH, halfW * 2);
+  const top = padY + (availH - boxH) / 2;
+  const ay = top + boxH, midY = top + boxH / 2;
+  const A = [cx, ay], T = [cx, top];
+  const tanDom = Math.tan(dom);
+  /* q = tanθ / tan(域角)：θ=域角落在 L/R 角点，θ=0 落在顶角，中间按正切比例 */
+  const rayPoint = (theta, side) => {
+    const q = Math.max(0, Math.min(1, Math.tan(Math.min(theta, dom)) / tanDom));
+    return [cx + side * halfW * q, midY - (1 - q) * boxH / 2];
+  };
+  const L = rayPoint(dom, -1), R = rayPoint(dom, 1);
+  const frame = light ? "rgba(0,0,0,0.24)" : "rgba(255,255,255,0.22)";
+  const faint = cssVar("--c-text-faint", "#6b6378");
+  const label = (txt, x, y, color, align) => {
+    ctx.font = `${8.5 * dpr}px sans-serif`; ctx.textAlign = align || "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round"; ctx.lineWidth = 3 * dpr;
+    ctx.strokeStyle = cssVar("--c-bg", "#121014");
+    ctx.strokeText(txt, x, y);
+    ctx.fillStyle = color; ctx.fillText(txt, x, y);
+  };
+  /* 导引视线：域中值一档，读得出角度尺度 */
+  ctx.save();
+  ctx.setLineDash([2 * dpr, 3 * dpr]);
+  ctx.lineWidth = dpr;
+  ctx.strokeStyle = light ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.1)";
+  const midA = dom / 2;
+  [rayPoint(midA, -1), rayPoint(midA, 1)].forEach((p) => {
+    ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(p[0], p[1]); ctx.stroke();
+  });
+  ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(T[0], T[1]); ctx.stroke();
+  ctx.restore();
+  /* 外框钻石 */
+  ctx.lineWidth = dpr;
+  ctx.strokeStyle = frame;
+  ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(L[0], L[1]);
+  ctx.lineTo(T[0], T[1]); ctx.lineTo(R[0], R[1]); ctx.closePath(); ctx.stroke();
+  const kite = (theta, color, fillA) => {
+    if (theta == null) return;
+    const pl = rayPoint(theta, -1), pr = rayPoint(theta, 1);
+    ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(pl[0], pl[1]);
+    ctx.lineTo(T[0], T[1]); ctx.lineTo(pr[0], pr[1]); ctx.closePath();
+    ctx.globalAlpha = fillA; ctx.fillStyle = color; ctx.fill();
+    ctx.globalAlpha = 0.95; ctx.strokeStyle = color; ctx.lineWidth = 1.6 * dpr;
+    ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(pl[0], pl[1]); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(pr[0], pr[1]); ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+  kite(hb, before, 0.13);
+  kite(ha, after, 0.22);
+  label("L", L[0] - 6 * dpr, L[1], faint, "right");
+  label("R", R[0] + 6 * dpr, R[1], faint, "left");
+  label("中", T[0], T[1] - 5 * dpr, faint);
+  ctx.fillStyle = cssVar("--c-text-dim", "#9a91a8");
+  ctx.beginPath(); ctx.arc(A[0], A[1], 3 * dpr, 0, Math.PI * 2); ctx.fill();   // 听者
+}
+/* ── 频谱变化：原始 / 处理后 / 变化(Δ) 三视图 + 发散色标 ──
+   Δ 图逐格取前后 dB 差，只有当两图时间-频率网格一致（同时长、同 bin 数）
+   时才成立；否则退回提示，不做插值对齐以免画出假的能量变化。 */
+const SPEC_DELTA_RANGE = 12;   // Δ 色标满量程（dB）
+const DELTA_DEADBAND = 0.4;    // 该量级以内的逐格差值不落色（前后处理的噪声底）
+let rpSpecMode = "delta";
+
+function hexToRgb(hex) {
+  const s = String(hex || "").trim();
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s);
+  if (!m) return [128, 128, 128];
+  let h = m[1];
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex(c) {
+  const h = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${h(c[0])}${h(c[1])}${h(c[2])}`;
+}
+function mixRgb(a, b, t) { return [0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * t); }
+/* 色相旋转：对比色取 ±180°，饱和度与明度沿用主题色，
+   因此换 accent 或切浅色模式时整套配色自动跟着走，无需逐主题配平。 */
+function hueRotate(rgb, deg) {
+  const r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  if (d === 0) return rgb.slice();
+  const l = (mx + mn) / 2;
+  const s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const h0 = mx === r ? (g - b) / d + (g < b ? 6 : 0)
+    : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  const h = ((h0 * 60 + deg) / 360) % 1;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const f = (t) => {
+    t = (t + 1) % 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [f(h + 1 / 3), f(h), f(h - 1 / 3)].map((v) => Math.round(v * 255));
+}
+let RP_PUB_KEY = "";
+/* 相对亮度与对比度：色相旋转沿用主题色的明度，浅色主题下对比色可能几乎浮在
+   面板上（indigo 的对比色 gold 在 #fafafa 上只有 2.1:1）。这里不逐主题凑色，
+   只按对比度把推导色向文字色回推到刚好读得出，色相不变。 */
+function relLum(c) {
+  const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+}
+function contrastRatio(a, b) {
+  const x = relLum(a), y = relLum(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+function ensureSep(c, face, ink, minCr) {
+  if (contrastRatio(c, face) >= minCr) return c;
+  for (let i = 1; i <= 8; i++) {
+    const m = mixRgb(c, ink, i / 8);
+    if (contrastRatio(m, face) >= minCr) return m;
+  }
+  return mixRgb(c, ink, 1);
+}
+function rpThemeColors() {
+  const base = cssVar("--c-bg", "#121014");
+  const themeHex = cssVar("--c-accent-hi", "#6d55b8");
+  const neutralHex = cssVar("--c-text-dim", "#9a91a8");
+  const panel = hexToRgb(cssVar("--c-panel", "#211f26")), ink = hexToRgb(cssVar("--c-text", "#e6e0e9"));
+  const th = hexToRgb(themeHex);
+  const co = hueRotate(th, 180);
+  const sep = (c) => rgbToHex(ensureSep(c, panel, ink, 2.6));
+  const cutHex = sep(th);
+  /* 全站只有三个语义色，图元与数字共用同一套：
+       原始 / 处理前 = 中性色；处理后 / 衰减 = 主题色；提升 = 主题色的对比色。
+     处理后与衰减本来就是同一个东西（成品相对原始偏低就是衰减），故同值。
+     提升与衰减必须分属两个色相——同色相只差饱和时 Δ 频谱会糊成一片读不出正负。 */
+  const out = {
+    before: neutralHex, after: cutHex,
+    boost: sep(co), cut: cutHex,
+    base,
+  };
+  /* DOM 侧（KPI 箭头）与画布必须同源取色，否则主题一换画布跟着变、箭头仍是写死的绿/蓝。 */
+  const key = out.boost + "|" + out.cut;
+  if (key !== RP_PUB_KEY) {
+    RP_PUB_KEY = key;
+    const rs = document.documentElement.style;
+    rs.setProperty("--rp-boost", out.boost);
+    rs.setProperty("--rp-cut", out.cut);
+  }
+  return out;
+}
+/* 发散色标：中心为面板底色，正向取对比色（提升）、负向取主题色（衰减）；
+   低端留暗部，使 ±1dB 的弱变化不至于把整张图染成一片色。 */
+function buildDeltaLut(t) {
+  const cool = hexToRgb(t.cut), warm = hexToRgb(t.boost), mid = hexToRgb(t.base);
+  const lut = new Uint8Array(256 * 3);
+  for (let u = 0; u < 256; u++) {
+    const db = (u - 128) * (SPEC_DELTA_RANGE / 127);
+    const c = db < 0 ? cool : warm;
+    const k = Math.max(0, Math.abs(db) - DELTA_DEADBAND) / (SPEC_DELTA_RANGE - DELTA_DEADBAND);
+    /* 实测逐格差值集中在 ±1~3 dB，线性映射到 ±12 满量程会把整张图压成黑色，
+       所以先扣死区再用小指数伽马抬升低幅值：单调性不变，只是把可见范围让给真实变化区间。
+       死区不可省——衰减色现在是饱和主题色，0.5dB 以内的噪声底不染掉，
+       浅色模式（近白面板）会把整张图糊成一片淡红，「没变」和「微降」看着一样。 */
+    const a = Math.pow(k, 0.55) * 0.92;
+    lut[u * 3] = mid[0] + (c[0] - mid[0]) * a;
+    lut[u * 3 + 1] = mid[1] + (c[1] - mid[1]) * a;
+    lut[u * 3 + 2] = mid[2] + (c[2] - mid[2]) * a;
+  }
+  return lut;
+}
+let DELTA_LUT = buildDeltaLut(rpThemeColors());
+const deltaOffCache = new WeakMap();
+function ensureDeltaOff(inSpec, outSpec) {
+  if (!inSpec || !outSpec) return null;
+  if (inSpec.w !== outSpec.w || inSpec.h !== outSpec.h) return null;
+  const lutKey = DELTA_LUT[3] + ":" + DELTA_LUT[255 * 3] + ":" + DELTA_LUT[128 * 3];
+  const hit = deltaOffCache.get(outSpec);
+  if (hit && hit.key === lutKey) return hit.off;
+  const H = specDisplayH(outSpec, true);
+  const off = document.createElement("canvas");
+  off.width = outSpec.w; off.height = H;
+  const octx = off.getContext("2d");
+  const img = octx.createImageData(outSpec.w, H);
+  const a = inSpec.data, b = outSpec.data, h = outSpec.h;
+  const toDb = (v) => v * (90 / 255) - 90;
+  const scale = 127 / SPEC_DELTA_RANGE;
+  const { i0, i1 } = specSpans(outSpec, H);
+  for (let x = 0; x < outSpec.w; x++) {
+    const col = x * h;
+    for (let r = 0; r < H; r++) {
+      // 差值图取均值：绝对频谱取最大值是为了保住瞬态，但逐 bin 差值里的
+      // 单点抖动（泄漏、限制器）会被极值放大成主信号，均值才代表该时频域整体移动。
+      let sum = 0, cnt = 0;
+      for (let k = i0[r]; k <= i1[r]; k++) {
+        sum += toDb(b[col + k]) - toDb(a[col + k]);
+        cnt++;
+      }
+      const mean = cnt ? sum / cnt : 0;
+      let u = Math.round(128 + Math.max(-SPEC_DELTA_RANGE,
+                                        Math.min(SPEC_DELTA_RANGE, mean)) * scale);
+      if (u < 0) u = 0; else if (u > 255) u = 255;
+      const o = (r * outSpec.w + x) * 4, c = u * 3;
+      img.data[o] = DELTA_LUT[c]; img.data[o + 1] = DELTA_LUT[c + 1];
+      img.data[o + 2] = DELTA_LUT[c + 2]; img.data[o + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  deltaOffCache.set(outSpec, { off, key: lutKey });
+  return off;
+}
+function rpSpecPair() {
+  const pair = rpPair();
+  const rep = pair && rp.reports.get(pair.path);
+  const inPath = (rep && rep.input && rep.input.path) || state.selectedFile;
+  const get = (path) => {
+    if (!path) return null;
+    ensureSpec(path);
+    const e = specCache.get(normPath(path));
+    return e && e.spec && e.spec.w ? e.spec : null;
+  };
+  return { inSpec: get(inPath), outSpec: get(pair && pair.path) };
+}
+function drawSpecBitmap(canvas, off, fHi, duration, note, anim) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (!w || !h) return;
+  rpClipAt(canvas, anim && anim.reveal != null ? anim.reveal : 1);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = cssVar("--c-bg", "#121014");
+  ctx.fillRect(0, 0, w, h);
+  if (off) {
+    ctx.imageSmoothingEnabled = true;
+    /* 换成品版本：先把上一版铺满，再按进度叠新版，读得出整幅频谱在换手 */
+    const prev = anim && anim.fadeFrom && anim.fadeFrom !== off ? anim.fadeFrom : null;
+    if (prev) {
+      ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, w, h);
+      ctx.globalAlpha = anim.u;
+    }
+    ctx.drawImage(off, 0, 0, off.width, off.height, 0, 0, w, h);
+    ctx.globalAlpha = 1;
+    drawFreqScale(ctx, w, h, dpr, fHi);
+    if (duration > 0 && w > 200 * dpr) {
+      ctx.save();
+      ctx.font = `${9 * dpr}px sans-serif`;
+      ctx.textBaseline = "bottom";
+      ctx.shadowColor = "rgba(0,0,0,0.55)";
+      ctx.shadowBlur = 2 * dpr;
+      ctx.fillStyle = cssVar("--c-text", "#e6e0e9");
+      for (let i = 0; i <= 5; i++) {
+        const x = (i / 5) * w;
+        ctx.textAlign = i === 0 ? "left" : i === 5 ? "right" : "center";
+        ctx.fillText(rpDuration((i / 5) * duration), Math.min(Math.max(x, 3 * dpr), w - 3 * dpr),
+                     h - 2 * dpr);
+      }
+      ctx.restore();
+    }
+  } else {
+    /* 没有位图也先把频率标尺画出来：这一格是频谱图，读标尺就看得出来 */
+    drawFreqScale(ctx, w, h, dpr, fHi);
+    ctx.fillStyle = cssVar("--c-text-faint", "#6b6378");
+    ctx.font = `${10.5 * dpr}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText(note || "频谱读取中…", w / 2 - 14 * dpr, h / 2);
+  }
+}
+function renderSpectral() {
+  const canvas = $("rp-spec");
+  if (!canvas) return;
+  const { inSpec, outSpec } = rpSpecPair();
+  let off = null, fHi = 22050, dur = 0, note = "";
+  if (rpSpecMode === "in" && inSpec) {
+    off = ensureOffscreen(inSpec); fHi = (inSpec.sr || 44100) / 2; dur = inSpec.duration || 0;
+  } else if (rpSpecMode === "out" && outSpec) {
+    off = ensureOffscreen(outSpec); fHi = (outSpec.sr || 44100) / 2; dur = outSpec.duration || 0;
+  } else {
+    off = ensureDeltaOff(inSpec, outSpec);
+    dur = (outSpec && outSpec.duration) || (inSpec && inSpec.duration) || 0;
+    if (!off) {
+      note = !(inSpec && outSpec) ? "处理完成后可见逐格变化"
+        : "前后频谱网格不一致，无法逐格求差";
+    }
+  }
+  drawSpecBitmap(canvas, off, fHi, dur, note);
+  /* 重放钩子只在真正要动画时改画法，静态重绘（缩放、换主题）仍走上面的终态 */
+  const prevOff = rpShown && rpShown.specOff;
+  rpHook((u, reveal) => {
+    drawSpecBitmap(canvas, off, fHi, dur, note, reveal
+      ? { reveal: u }
+      : (prevOff && prevOff !== off ? { fadeFrom: prevOff, u } : null));
+  });
+  if (rpPending) rpPending.specOff = off;
+  else if (rpShown) rpShown.specOff = off;   // 静态重绘也要记下「屏幕上是什么」
+}
+/* 图例：色块 + 说明 */
+function fillLegend(id, items) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = "";
+  items.forEach(([text, color]) => {
+    const item = document.createElement("span");
+    item.className = "rp-legend-item";
+    if (color) {
+      const sw = document.createElement("span");
+      sw.className = "rp-swatch";
+      sw.style.background = color;
+      item.appendChild(sw);
+    }
+    item.appendChild(document.createTextNode(text));
+    el.appendChild(item);
+  });
+}
+function renderReportLegend() {
+  const t = rpThemeColors();
+  fillLegend("rp-legend", [["原始", t.before], ["处理后 / 衰减", t.after], ["提升", t.boost]]);
+}
+document.querySelectorAll("#rp-spec-tabs .rp-spec-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.mode === rpSpecMode) return;
+    rpSpecMode = btn.dataset.mode;
+    document.querySelectorAll("#rp-spec-tabs .rp-spec-tab").forEach((b) => {
+      b.setAttribute("aria-pressed", b === btn ? "true" : "false");
+    });
+    rpSpecFade(() => renderSpectral(), 240);
+  });
+});
+async function renderReport(mode) {
+  await loadReportData();
+  if (state.view !== "report") return;   // 异步加载期间用户已切走
+  DELTA_LUT = buildDeltaLut(rpThemeColors());
+  rpHooks = [];
+  rpPending = {};                        // 渲染器据此登记重放钩子，并写下本帧数据
+  renderHead();
+  renderSummary();
+  drawSpectrumChart($("rp-spectrum"));
+  renderDynamics();
+  renderStereoFans();
+  renderSpectral();
+  renderReportLegend();
+  rpShown = rpPending;
+  rpPending = null;
+  /* 各图先按终态画好（ resize / 换主题等静态重绘就走这条路），
+     要动画时再由钩子逐帧改写回起点。 */
+  if (mode) rpRunAnim(mode);
+}
 
 window.addEventListener("resize", () => {
   if (!$("pane-report").hidden) renderReport();
-  if (!$("pane-preview").hidden) drawSpecs();
+});
+/* 报告配色全部由 CSS 变量推导，主题一换必须重绘，否则画布仍是旧主题色 */
+document.addEventListener("sb-theme", () => {
+  if (!$("pane-report").hidden) renderReport();
 });
 
 })();
