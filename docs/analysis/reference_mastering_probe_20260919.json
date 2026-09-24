@@ -1,0 +1,164 @@
+{
+  "reference_sha256": "7368516f04c4b522998e73a6b11072610455788d0b1c1c042d04b83a3a2fc434",
+  "samples": {
+    "set_1": {
+      "source_sha256": "4753efddc0c752d41c8913dd17ce904aaf59941aab5565d62fec90e7ce9237b5",
+      "runs": {
+        "off": {
+          "actual_lufs": -11.451166201193296,
+          "true_peak_dbtp": -0.4997062764346759,
+          "target_lufs": -9.2,
+          "target_status": "below_target",
+          "seconds": 7.382185800001025,
+          "status": "disabled",
+          "accepted_strength": 0.0,
+          "reason": null,
+          "attempts": null,
+          "final_violations": []
+        },
+        "reference_035": {
+          "actual_lufs": -11.170633319573392,
+          "true_peak_dbtp": -0.49931035379349925,
+          "target_lufs": -9.2,
+          "target_status": "below_target",
+          "seconds": 16.31919419998303,
+          "status": "accepted",
+          "accepted_strength": 0.35,
+          "reason": null,
+          "attempts": [
+            {
+              "strength": 0.35,
+              "violations": []
+            }
+          ],
+          "final_violations": []
+        },
+        "reference_085": {
+          "actual_lufs": -10.745018330354837,
+          "true_peak_dbtp": -0.4993487388551089,
+          "target_lufs": -9.2,
+          "target_status": "below_target",
+          "seconds": 15.940330599987647,
+          "status": "accepted",
+          "accepted_strength": 0.85,
+          "reason": null,
+          "attempts": [
+            {
+              "strength": 0.85,
+              "violations": []
+            }
+          ],
+          "final_violations": []
+        },
+        "reference_100": {
+          "actual_lufs": -11.041437836953596,
+          "true_peak_dbtp": -0.4993213209366494,
+          "target_lufs": -9.2,
+          "target_status": "below_target",
+          "seconds": 16.274106400000164,
+          "status": "accepted",
+          "accepted_strength": 0.5,
+          "reason": null,
+          "attempts": [
+            {
+              "strength": 1,
+              "violations": [
+                "side_mid_change"
+              ]
+            },
+            {
+              "strength": 0.5,
+              "violations": []
+            }
+          ],
+          "final_violations": []
+        }
+      }
+    },
+    "set_2": {
+      "source_sha256": "966a4c4c03228560ac26ab4945772f252ff4659e895ac64e6aeb30868c07f726",
+      "runs": {
+        "off": {
+          "actual_lufs": -9.200000001776141,
+          "true_peak_dbtp": -0.6331971668046863,
+          "target_lufs": -9.2,
+          "target_status": "met",
+          "seconds": 1.1252861999964807,
+          "status": "disabled",
+          "accepted_strength": 0.0,
+          "reason": null,
+          "attempts": null,
+          "final_violations": []
+        },
+        "reference_035": {
+          "actual_lufs": -9.298718157969008,
+          "true_peak_dbtp": -0.5199998181685779,
+          "target_lufs": -9.2,
+          "target_status": "met",
+          "seconds": 3.578983099985635,
+          "status": "accepted",
+          "accepted_strength": 0.35,
+          "reason": null,
+          "attempts": [
+            {
+              "strength": 0.35,
+              "violations": []
+            }
+          ],
+          "final_violations": []
+        },
+        "reference_085": {
+          "actual_lufs": -9.199999999141406,
+          "true_peak_dbtp": -0.6331961572383626,
+          "target_lufs": -9.2,
+          "target_status": "met",
+          "seconds": 4.660816299990984,
+          "status": "fallback",
+          "accepted_strength": 0.0,
+          "reason": "final_output_budget",
+          "attempts": [
+            {
+              "strength": 0.85,
+              "violations": [
+                "side_mid_change"
+              ]
+            },
+            {
+              "strength": 0.425,
+              "violations": []
+            }
+          ],
+          "final_violations": [
+            "tone_budget:20-22k"
+          ]
+        },
+        "reference_100": {
+          "actual_lufs": -9.200000002136372,
+          "true_peak_dbtp": -0.6331974183089277,
+          "target_lufs": -9.2,
+          "target_status": "met",
+          "seconds": 4.190515700000105,
+          "status": "fallback",
+          "accepted_strength": 0.0,
+          "reason": "final_output_budget",
+          "attempts": [
+            {
+              "strength": 1,
+              "violations": [
+                "side_mid_change",
+                "stereo_correlation"
+              ]
+            },
+            {
+              "strength": 0.5,
+              "violations": []
+            }
+          ],
+          "final_violations": [
+            "tone_budget:20-22k"
+          ]
+        }
+      }
+    }
+  }
+}

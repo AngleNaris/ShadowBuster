@@ -167,6 +167,11 @@ Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApoll
 Copy-Item "$srcApollo\look2hear" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 
+# Independent no-style mastering runs under the audio interpreter, not Qt.
+New-Item -ItemType Directory -Force -Path "$stage\mastering" | Out-Null
+Copy-Item "$root\mastering\*.py" "$stage\mastering\" -ErrorAction Stop
+Copy-Item "$root\audio_metrics.py" "$stage\" -ErrorAction Stop
+
 Write-Host "[2/5] 拷贝 Soren 母带链 ..."
 Copy-Item "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" -ErrorAction Stop
 Copy-Item "$root\packaging\soren_original.py" "$stage\Soren_src\soren_original.py" -ErrorAction Stop
@@ -189,6 +194,7 @@ if ($LASTEXITCODE -ne 0) { throw "torch $expectTorch 安装失败(exit=$LASTEXIT
     "torch==$expectTorch" "torchaudio==$expectTorch" `
     numpy==2.5.2 soundfile==0.14.0 scipy==1.18.0 librosa==1.0.0 `
     numba==0.67.0 llvmlite==0.49.0 statsmodels==0.14.6 pyloudnorm==0.2.0 `
+    matchering==2.0.6 resampy==0.4.3 `
     joblib==1.5.3 cryptography==50.0.0 setuptools==78.1.0 `
     demucs==4.1.0 einops==0.8.2 julius==0.2.8 lameenc==1.8.4 tqdm==4.70.0 `
     huggingface_hub==0.36.2 soxr==1.1.0 `
@@ -250,7 +256,7 @@ $env:HF_HOME = $hfHome
 & "$stage\env\python.exe" -m demucs --two-stems bass -n htdemucs -o "$seed\_out" "$seed.wav"
 $demucsRc = $LASTEXITCODE
 if ($demucsRc -ne 0) { throw "Demucs 权重预置失败(exit=$demucsRc)" }
-# 六轨 opt-in 模型（htdemucs_6s，HF 量化 ~53MB）同样预置进 hf_home，安装后离线可用。
+# 默认六轨模型（htdemucs_6s，HF 量化 ~53MB）同样预置进 hf_home，安装后离线可用。
 & "$stage\env\python.exe" -m demucs --two-stems bass -n htdemucs_6s -o "$seed\_out6" "$seed.wav"
 $demucsRc = $LASTEXITCODE
 if ($demucsRc -ne 0) { throw "Demucs 六轨权重预置失败(exit=$demucsRc)" }
@@ -292,12 +298,13 @@ if ($offlineModelRc -ne 0) { throw "Demucs 六轨离线模型加载失败(exit=$
 Write-Host "  [5a] 验证运行时依赖与关键文件 ..."
 $requiredImports = @(
     "torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy", "librosa",
-    "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography", "look2hear.models"
+    "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography", "look2hear.models",
+    "matchering", "resampy", "mastering.pipeline"
 )
 $importNames = $requiredImports -join ","
 $importProbe = "import importlib,torch,torchaudio; [importlib.import_module(n) for n in '$importNames'.split(',')]; assert torch.__version__ == '$expectTorch', torch.__version__; assert torchaudio.__version__ == '$expectTorch', torchaudio.__version__; print('runtime imports OK', torch.__version__)"
 $previousPythonPath = $env:PYTHONPATH
-$env:PYTHONPATH = "$stage\Apollo;$stage\Soren_src"
+$env:PYTHONPATH = "$stage;$stage\Apollo;$stage\Soren_src"
 & "$stage\env\python.exe" -c $importProbe
 $importRc = $LASTEXITCODE
 if ($null -eq $previousPythonPath) {
@@ -321,6 +328,10 @@ Assert-SameFile "$appApollo\stem_enhance.py" "$stage\Apollo\stem_enhance.py" "�
 Assert-SameFile "$appApollo\vocal_adjust.py" "$stage\Apollo\vocal_adjust.py" "人声入口"
 Assert-SameFile "$appApollo\audio_validation.py" "$stage\Apollo\audio_validation.py" "音频校验"
 Assert-SameFile "$appApollo\stage_metadata.py" "$stage\Apollo\stage_metadata.py" "阶段 metadata"
+Get-ChildItem -LiteralPath "$root\mastering" -Filter "*.py" -File | ForEach-Object {
+    Assert-SameFile $_.FullName (Join-Path "$stage\mastering" $_.Name) "独立母带源码"
+}
+Assert-SameFile "$root\audio_metrics.py" "$stage\audio_metrics.py" "母带测量"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"
 Assert-SameFile "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
@@ -336,6 +347,7 @@ Assert-SameFile $ffmpeg "$stage\ffmpeg\bin\ffmpeg.exe" "ffmpeg"
 $manifestPath = "$stage\critical-manifest.sha256"
 $manifestRoots = @(
     "$stage\env\python.exe", "$site\numpy", "$site\numpy.libs",
+    "$stage\mastering", "$stage\audio_metrics.py",
     "$stage\Apollo\lew_upscale.py", "$stage\Apollo\bass_enhance.py",
     "$stage\Apollo\drum_enhance.py", "$stage\Apollo\soundstage_reshape.py", "$stage\Apollo\noise_profile.py",
     "$stage\Apollo\stem_enhance.py",

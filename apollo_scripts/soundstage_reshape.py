@@ -476,9 +476,12 @@ def main():
     ap.add_argument("--noise-low-hz", type=float, default=8000.0)
     ap.add_argument("--noise-high-hz", type=float, default=20000.0)
     ap.add_argument("--noise-max-attenuation-db", type=float, default=6.0)
+    ap.add_argument("--stem-scale", type=float, default=1.0, help="累计上游混音缩放")
     ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
+    if not np.isfinite(args.stem_scale) or not 0.0 <= args.stem_scale <= 1.0:
+        ap.error("--stem-scale must be finite and within [0, 1]")
     if not np.isfinite(args.wet) or not 0.0 <= args.wet <= 1.0:
         ap.error("--wet must be finite and within [0, 1]")
     if not np.isfinite(args.space_amount) or not 0.0 <= args.space_amount <= 1.0:
@@ -532,6 +535,7 @@ def main():
                                 secondary_name="in-mix", require_sr=sr)
         except ValueError as exc:
             raise SystemExit(str(exc))
+        other_raw = other_raw * args.stem_scale
         other_stem_processed = spatial_unmask_other(
             other_raw, sr, args.space_amount, report=unmask_report)
         if unmask_report.get("applied"):
@@ -550,6 +554,7 @@ def main():
             validate_audio_pair(stem, out, s_sr, primary_name=name, secondary_name="in-mix")
         except ValueError as exc:
             raise SystemExit(str(exc))
+        stem = stem * args.stem_scale
         if name == "other" and other_stem_processed is not None \
                 and unmask_report.get("applied"):
             stem = other_stem_processed    # 宽度作用于去拥挤后的 other（串联）
@@ -589,6 +594,7 @@ def main():
             stem, s_sr = sf.read(path, always_2d=True, dtype="float64")
             validate_audio_pair(stem, mix, s_sr, primary_name=name,
                                 secondary_name="in-mix", require_sr=sr)
+            stem = stem * args.stem_scale
             stats = {}
             # 人声轨参与降噪（AI 人声的嘶声烙在人声内容里，分离后主要落在
             # vocals 轨），但最大衰减减半：气声/齿音由瞬态与谐波保护负责，
@@ -600,13 +606,13 @@ def main():
             denoise_delta += cleaned - stem
             noise_report["stems"][name] = stats
         denoise_delta, noise_report["mix_budget"] = constrain_noise_delta(
-            mix, denoise_delta, sr, args.noise_low_hz, args.noise_high_hz,
+            out, denoise_delta, sr, args.noise_low_hz, args.noise_high_hz,
             args.noise_max_attenuation_db * args.other_denoise_amount)
         noise_report["applied"] = noise_report["mix_budget"]["applied"]
     else:
         noise_report.update(applied=bool(np.any(denoise_delta)),
                             reason="legacy_other" if args.other_denoise_amount else "disabled")
-    base = mix + denoise_delta
+    base = out + denoise_delta
     accepted, budget = constrain_width_delta(base, width_delta, sr)
     out = base + accepted
     print(f"  自适应宽度预算: {budget}")

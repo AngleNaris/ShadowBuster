@@ -124,6 +124,9 @@ cp "$APP_APOLLO/bass_enhance.py" "$APP_APOLLO/drum_enhance.py" \
    "$APP_APOLLO/vocal_config.py" "$STAGE/Apollo/"
 cp -R "$SB_APOLLO/look2hear" "$STAGE/Apollo/look2hear"
 cp -R "$SB_APOLLO/ckpts" "$STAGE/Apollo/ckpts"
+mkdir -p "$STAGE/mastering"
+cp "$REPO_ROOT/mastering/"*.py "$STAGE/mastering/"
+cp "$REPO_ROOT/audio_metrics.py" "$STAGE/"
 
 log "[2/5] 拷贝 Soren 母带链"
 cp "$REPO_ROOT/packaging/soren_core.py" "$STAGE/Soren_src/core_decrypted.py"
@@ -151,6 +154,8 @@ uv venv --python 3.12 "$STAGE/env"
 uv pip install --python "$STAGE/env/bin/python" \
     --no-index --find-links "$WHEELS_DIR" -r "$REQS" \
     || fail "推理依赖安装失败"
+uv pip install --python "$STAGE/env/bin/python" --no-index --find-links "$WHEELS_DIR" \
+    "matchering==2.0.6" "resampy==0.4.3" || fail "Matchering wheels 缺失，请先加入离线 wheels 目录"
 
 log "[4b] 体积裁剪（__pycache__ / torch/include / wheel 残留）"
 find "$STAGE/env" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
@@ -171,6 +176,12 @@ TORCH_HOME="$STAGE/torch_home" HF_HOME="$STAGE/hf_home" \
 TORCH_HOME="$STAGE/torch_home" HF_HOME="$STAGE/hf_home" HF_HUB_OFFLINE=1 \
     "$STAGE/env/bin/python" -c "from demucs.pretrained import get_model; m=get_model('htdemucs'); print('offline htdemucs models', len(m.models))" \
     || fail "Demucs 离线模型加载失败"
+TORCH_HOME="$STAGE/torch_home" HF_HOME="$STAGE/hf_home" \
+    "$STAGE/env/bin/python" -m demucs --two-stems bass -n htdemucs_6s -o "$SEED\_out6" "$SEED.wav" \
+    || fail "Demucs 六轨权重预置失败"
+TORCH_HOME="$STAGE/torch_home" HF_HOME="$STAGE/hf_home" HF_HUB_OFFLINE=1 \
+    "$STAGE/env/bin/python" -c "from demucs.pretrained import get_model; m=get_model('htdemucs_6s'); assert len(m.sources)==6; print('offline six-stem OK')" \
+    || fail "Demucs 六轨离线模型加载失败"
 
 log "[5a] 验证关键依赖可导入"
 PYTHONPATH="$STAGE/Apollo:$STAGE/Soren_src" "$STAGE/env/bin/python" - <<'EOF' || fail "关键依赖 import 验证失败"
@@ -196,6 +207,6 @@ find "$STAGE/env/lib/python3.12/site-packages/numpy" "$STAGE/Apollo" "$STAGE/Sor
 done
 assert_nonempty_file "$MANIFEST" "关键 manifest"
 
-rm -rf "$SEED" "$SEED.wav" "$SEED\_out" 2>/dev/null || true
+rm -rf "$SEED" "$SEED.wav" "$SEED\_out" "$SEED\_out6" 2>/dev/null || true
 log "runtime 装配完成: $STAGE"
 log "下一步: bash packaging/build_macos.sh 生成 ShadowBuster.app"

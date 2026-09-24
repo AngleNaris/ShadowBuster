@@ -75,10 +75,13 @@ class VocalPipelineRoutingTests(unittest.TestCase):
                                 bypass.append("soren")
                             folder = root / f"run_{reshape_off}_{master_off}_{gain}"
                             with self.subTest(reshape_off=reshape_off, master_off=master_off, gain=gain):
+                                # 卫生滤波（母带前默认 40Hz 低切 + 20kHz 低通）是本测试
+                                # 之外的另一条契约，这里显式关闭以保留旁路链路的逐字节中性
                                 studio_backend.run_pipeline(
-                                    source, folder, bypass=bypass, vocal_gain_db=gain,
+                                    source, folder, demucs_model="htdemucs", bypass=bypass, vocal_gain_db=gain,
                                     space_wet=0.6, space_width_db=6.0, space_denoise=0.0,
-                                    balance_target_db=None, balance_mode=None)
+                                    balance_target_db=None, balance_mode=None,
+                                    hygiene_low_cut_hz=0, hygiene_lowpass_hz=0)
                                 final = folder / "song_shadowbuster.wav"
                                 outputs[gain], _ = sf.read(final, always_2d=True)
                                 if not master_off:
@@ -110,8 +113,8 @@ class VocalPipelineRoutingTests(unittest.TestCase):
                  mock.patch.object(studio_backend, 'ffmpeg_convert', side_effect=copy) as decode, \
                  mock.patch.object(studio_backend, 'stage_demucs') as separate, \
                  mock.patch.object(studio_backend, 'stage_vocals', vocals):
-                studio_backend.run_pipeline(source, root/'out',
-                    bypass=('bass','drums','reshape','soren'))
+                studio_backend.run_pipeline(source, root/'out', demucs_model="htdemucs",
+                    bypass=('bass','drums','reshape','soren'), guidance=2.0)
             decode.assert_called_once()
             # macOS TCC 中性化会先把输入复制到临时目录：断言内容一致而非路径相同
             self.assertEqual(decode.call_args.args[0].read_bytes(), source.read_bytes())

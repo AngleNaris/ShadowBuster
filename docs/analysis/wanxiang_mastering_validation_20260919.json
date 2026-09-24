@@ -1,0 +1,1057 @@
+{
+  "source_unchanged": true,
+  "samples": {
+    "01_clip": {
+      "source": "D:\\_4.Projects\\_MY\\万象婆娑\\1.太虚引.wav",
+      "scope": "clip",
+      "runs": {
+        "off_Neutral": {
+          "lufs": -9.178631991621709,
+          "true_peak_dbtp": -0.4947291958925305,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.326252700004261,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.0,
+            0.0
+          ]
+        },
+        "off_Warm": {
+          "lufs": -9.22624056734199,
+          "true_peak_dbtp": -0.5200003795902751,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.3300828999490477,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            1.2837436300228702,
+            -0.001883797047197433
+          ]
+        },
+        "off_Bright": {
+          "lufs": -9.227493100587127,
+          "true_peak_dbtp": -0.49395223119789616,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.077810800052248,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            -0.062391913131869536,
+            1.1140886506517864
+          ]
+        },
+        "off_Fusion": {
+          "lufs": -9.203284737638844,
+          "true_peak_dbtp": -0.4943666662700237,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.373882700048853,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.6858186100729697,
+            0.5931335058249463
+          ]
+        },
+        "ref_000_Neutral": {
+          "lufs": -9.17863199613419,
+          "true_peak_dbtp": -0.4947302346503788,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.0,
+          "accepted_strength": 0.0,
+          "reason": "zero_strength",
+          "seconds": 4.582967399968766,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            -2.045004610096157e-09,
+            -1.0180816190086261e-09
+          ]
+        },
+        "ref_025_Neutral": {
+          "lufs": -9.184278275675531,
+          "true_peak_dbtp": -0.49473919683518136,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.25,
+          "accepted_strength": 0.25,
+          "reason": null,
+          "seconds": 9.360311299969908,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.17122750518501118,
+            0.22235107802081444
+          ]
+        },
+        "ref_050_Neutral": {
+          "lufs": -9.188346894957633,
+          "true_peak_dbtp": -0.49474916896611093,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 9.365284300001804,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.3421611255415127,
+            0.4448091043259872
+          ]
+        },
+        "ref_100_Neutral": {
+          "lufs": -9.191660854493337,
+          "true_peak_dbtp": -0.4947690701384582,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 1.0,
+          "accepted_strength": 1.0,
+          "reason": null,
+          "seconds": 9.087858200015035,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.6830579099496021,
+            0.8899270514104209
+          ]
+        },
+        "ref_050_Bright": {
+          "lufs": -9.24001236088087,
+          "true_peak_dbtp": -0.49397885536409997,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 8.624612999963574,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.2820790726940916,
+            1.5601116395401693
+          ]
+        }
+      },
+      "zero_strength_max_sample_difference": 2.384185791015625e-07,
+      "reference_bright_high_delta_db": 1.115302535214182
+    },
+    "02_clip": {
+      "source": "D:\\_4.Projects\\_MY\\万象婆娑\\1.太虚引_Famle.wav",
+      "scope": "clip",
+      "runs": {
+        "off_Neutral": {
+          "lufs": -9.22670643999878,
+          "true_peak_dbtp": -0.4749014146527983,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.369809700001497,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.0,
+            0.0
+          ]
+        },
+        "off_Warm": {
+          "lufs": -9.21560938552985,
+          "true_peak_dbtp": -0.4883643748164872,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.329337399976794,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            1.337161024130701,
+            0.011326565764180785
+          ]
+        },
+        "off_Bright": {
+          "lufs": -9.26813820752267,
+          "true_peak_dbtp": -0.46981397496141863,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.358912300027441,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            -0.05581515998396025,
+            1.1387919646137803
+          ]
+        },
+        "off_Fusion": {
+          "lufs": -9.225091566951317,
+          "true_peak_dbtp": -0.47301580353730055,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.593077600002289,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.7189440277617098,
+            0.6346247649519503
+          ]
+        },
+        "ref_000_Neutral": {
+          "lufs": -9.226706439214146,
+          "true_peak_dbtp": -0.47490136053910315,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.0,
+          "accepted_strength": 0.0,
+          "reason": "zero_strength",
+          "seconds": 4.342163100023754,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            1.198676713443092e-09,
+            -2.442696711568715e-09
+          ]
+        },
+        "ref_025_Neutral": {
+          "lufs": -9.224293551206124,
+          "true_peak_dbtp": -0.47374950336728844,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.25,
+          "accepted_strength": 0.25,
+          "reason": null,
+          "seconds": 9.32333149999613,
+          "peak_rss_mib": null,
+          "low_high_vs_neutral_db": [
+            0.18029050852735296,
+            0.11870893995833853
+          ]
+        },
+        "ref_050_Neutral": {
+          "lufs": -9.22179796009575,
+          "true_peak_dbtp": -0.4725461562962179,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 9.349331800010987,
+          "peak_rss_mib": 544.30078125,
+          "low_high_vs_neutral_db": [
+            0.36059431483477233,
+            0.23784741685768296
+          ]
+        },
+        "ref_100_Neutral": {
+          "lufs": -9.220349141366775,
+          "true_peak_dbtp": -0.4850414434582057,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 1.0,
+          "accepted_strength": 1.0,
+          "reason": null,
+          "seconds": 9.32533170003444,
+          "peak_rss_mib": 507.27734375,
+          "low_high_vs_neutral_db": [
+            0.7244200080251453,
+            0.4747507938448221
+          ]
+        },
+        "ref_050_Bright": {
+          "lufs": -9.256478040729032,
+          "true_peak_dbtp": -0.46760427743286226,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 9.35763580002822,
+          "peak_rss_mib": 508.15625,
+          "low_high_vs_neutral_db": [
+            0.30790778237152416,
+            1.3802937732770646
+          ]
+        }
+      },
+      "zero_strength_max_sample_difference": 2.384185791015625e-07,
+      "reference_bright_high_delta_db": 1.1424463564193816
+    },
+    "03_clip": {
+      "source": "D:\\_4.Projects\\_MY\\万象婆娑\\2.万象婆娑.wav",
+      "scope": "clip",
+      "runs": {
+        "off_Neutral": {
+          "lufs": -9.109384808845682,
+          "true_peak_dbtp": -0.4898863086911126,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.5819352000253275,
+          "peak_rss_mib": 333.62109375,
+          "low_high_vs_neutral_db": [
+            0.0,
+            0.0
+          ]
+        },
+        "off_Warm": {
+          "lufs": -9.29211746369706,
+          "true_peak_dbtp": -0.4966119968697807,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.584492299996782,
+          "peak_rss_mib": 386.6875,
+          "low_high_vs_neutral_db": [
+            1.2523576104633385,
+            0.02035977821979884
+          ]
+        },
+        "off_Bright": {
+          "lufs": -9.117706306754037,
+          "true_peak_dbtp": -0.4819728485506296,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.635091800009832,
+          "peak_rss_mib": 311.453125,
+          "low_high_vs_neutral_db": [
+            -0.055258049021600364,
+            1.0686563158807267
+          ]
+        },
+        "off_Fusion": {
+          "lufs": -9.288744937069696,
+          "true_peak_dbtp": -0.4890983064298376,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.359580299991649,
+          "peak_rss_mib": 386.98046875,
+          "low_high_vs_neutral_db": [
+            0.6694405940874635,
+            0.598827571515244
+          ]
+        },
+        "ref_000_Neutral": {
+          "lufs": -9.109384805733596,
+          "true_peak_dbtp": -0.4898873538213707,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.0,
+          "accepted_strength": 0.0,
+          "reason": "zero_strength",
+          "seconds": 3.5960375999566168,
+          "peak_rss_mib": 352.2734375,
+          "low_high_vs_neutral_db": [
+            -9.86017134607664e-09,
+            5.955854476269451e-09
+          ]
+        },
+        "ref_025_Neutral": {
+          "lufs": -9.104325472689904,
+          "true_peak_dbtp": -0.4899730746357174,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.25,
+          "accepted_strength": 0.25,
+          "reason": null,
+          "seconds": 7.846131100028288,
+          "peak_rss_mib": 509.83984375,
+          "low_high_vs_neutral_db": [
+            0.09238915858529362,
+            0.10948206128181859
+          ]
+        },
+        "ref_050_Neutral": {
+          "lufs": -9.28867882286539,
+          "true_peak_dbtp": -0.4900587864548862,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 8.648587899981067,
+          "peak_rss_mib": 500.33984375,
+          "low_high_vs_neutral_db": [
+            0.1717504484643988,
+            0.23231036375788428
+          ]
+        },
+        "ref_100_Neutral": {
+          "lufs": -9.286332035287838,
+          "true_peak_dbtp": -0.49022843928944426,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 1.0,
+          "accepted_strength": 1.0,
+          "reason": null,
+          "seconds": 8.627866900002118,
+          "peak_rss_mib": 504.828125,
+          "low_high_vs_neutral_db": [
+            0.35700325184915727,
+            0.4621761606556838
+          ]
+        },
+        "ref_050_Bright": {
+          "lufs": -9.111288419047058,
+          "true_peak_dbtp": -0.48196819343265984,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 7.8532833000062965,
+          "peak_rss_mib": 492.30859375,
+          "low_high_vs_neutral_db": [
+            0.1288194127824318,
+            1.2872479277579885
+          ]
+        }
+      },
+      "zero_strength_max_sample_difference": 2.384185791015625e-07,
+      "reference_bright_high_delta_db": 1.0549375640001042
+    },
+    "04_clip": {
+      "source": "D:\\_4.Projects\\_MY\\万象婆娑\\3.山海谣.wav",
+      "scope": "clip",
+      "runs": {
+        "off_Neutral": {
+          "lufs": -9.259687306350559,
+          "true_peak_dbtp": -0.481681891878035,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.363128099997994,
+          "peak_rss_mib": 436.1015625,
+          "low_high_vs_neutral_db": [
+            0.0,
+            0.0
+          ]
+        },
+        "off_Warm": {
+          "lufs": -9.27652327884853,
+          "true_peak_dbtp": -0.4835972577130544,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.333658899995498,
+          "peak_rss_mib": 421.609375,
+          "low_high_vs_neutral_db": [
+            1.192383029780669,
+            -0.009121244759707992
+          ]
+        },
+        "off_Bright": {
+          "lufs": -9.284757329183579,
+          "true_peak_dbtp": -0.47464891719456515,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.338880600000266,
+          "peak_rss_mib": 411.51953125,
+          "low_high_vs_neutral_db": [
+            -0.1981944569045746,
+            1.0417536855976088
+          ]
+        },
+        "off_Fusion": {
+          "lufs": -9.263860066405377,
+          "true_peak_dbtp": -0.47869902682662807,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.345471699954942,
+          "peak_rss_mib": 416.61328125,
+          "low_high_vs_neutral_db": [
+            0.6228501053826268,
+            0.5950900894052324
+          ]
+        },
+        "ref_000_Neutral": {
+          "lufs": -9.259687307209223,
+          "true_peak_dbtp": -0.48168350396038645,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.0,
+          "accepted_strength": 0.0,
+          "reason": "zero_strength",
+          "seconds": 4.34425680001732,
+          "peak_rss_mib": 417.08984375,
+          "low_high_vs_neutral_db": [
+            5.4799755844214815e-09,
+            -1.3315037961092457e-08
+          ]
+        },
+        "ref_025_Neutral": {
+          "lufs": -9.250035625241525,
+          "true_peak_dbtp": -0.48141122893222316,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.25,
+          "accepted_strength": 0.25,
+          "reason": null,
+          "seconds": 9.33989569998812,
+          "peak_rss_mib": 494.14453125,
+          "low_high_vs_neutral_db": [
+            0.24509384929533562,
+            0.026474780009506205
+          ]
+        },
+        "ref_050_Neutral": {
+          "lufs": -9.248846423839327,
+          "true_peak_dbtp": -0.48284363776630146,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 9.355793300026562,
+          "peak_rss_mib": 510.42578125,
+          "low_high_vs_neutral_db": [
+            0.47763945416325493,
+            0.04365923045980935
+          ]
+        },
+        "ref_100_Neutral": {
+          "lufs": -9.24884642287636,
+          "true_peak_dbtp": -0.4828442166377525,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 1.0,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 9.87527289998252,
+          "peak_rss_mib": 532.75,
+          "low_high_vs_neutral_db": [
+            0.47763944968675576,
+            0.043659236931565815
+          ]
+        },
+        "ref_050_Bright": {
+          "lufs": -9.268403776564389,
+          "true_peak_dbtp": -0.4738161917356466,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 9.369855800003279,
+          "peak_rss_mib": 526.8125,
+          "low_high_vs_neutral_db": [
+            0.2979976866226939,
+            1.1059151038480355
+          ]
+        }
+      },
+      "zero_strength_max_sample_difference": 2.384185791015625e-07,
+      "reference_bright_high_delta_db": 1.0622558733882261
+    },
+    "05_clip": {
+      "source": "D:\\_4.Projects\\_MY\\万象婆娑\\4.反相.wav",
+      "scope": "clip",
+      "runs": {
+        "off_Neutral": {
+          "lufs": -9.213280788141946,
+          "true_peak_dbtp": -0.4826672290874484,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.5906294000451453,
+          "peak_rss_mib": 416.9453125,
+          "low_high_vs_neutral_db": [
+            0.0,
+            0.0
+          ]
+        },
+        "off_Warm": {
+          "lufs": -9.216825863109328,
+          "true_peak_dbtp": -0.4850904790903292,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.560903600009624,
+          "peak_rss_mib": 431.40625,
+          "low_high_vs_neutral_db": [
+            1.1237926088715406,
+            0.0014817101591564352
+          ]
+        },
+        "off_Bright": {
+          "lufs": -9.177554627522932,
+          "true_peak_dbtp": -0.48002304367215803,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.633932300028391,
+          "peak_rss_mib": 380.546875,
+          "low_high_vs_neutral_db": [
+            -0.22667376892156899,
+            1.016565400347094
+          ]
+        },
+        "off_Fusion": {
+          "lufs": -9.228421693459545,
+          "true_peak_dbtp": -0.4811710203361053,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.8549053999595344,
+          "peak_rss_mib": 314.69921875,
+          "low_high_vs_neutral_db": [
+            0.6026469251270123,
+            0.5837229410911462
+          ]
+        },
+        "ref_000_Neutral": {
+          "lufs": -9.21328078824733,
+          "true_peak_dbtp": -0.4826672290874484,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.0,
+          "accepted_strength": 0.0,
+          "reason": "zero_strength",
+          "seconds": 3.597529999969993,
+          "peak_rss_mib": 343.5078125,
+          "low_high_vs_neutral_db": [
+            -8.661147354871446e-09,
+            -1.689171114094279e-08
+          ]
+        },
+        "ref_025_Neutral": {
+          "lufs": -9.208705864948847,
+          "true_peak_dbtp": -0.48327695060223824,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.25,
+          "accepted_strength": 0.25,
+          "reason": null,
+          "seconds": 8.07216460001655,
+          "peak_rss_mib": 530.98046875,
+          "low_high_vs_neutral_db": [
+            0.37161634165948865,
+            0.23281689473875744
+          ]
+        },
+        "ref_050_Neutral": {
+          "lufs": -9.211802706790403,
+          "true_peak_dbtp": -0.4827843535976095,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 8.105575099994894,
+          "peak_rss_mib": 481.6953125,
+          "low_high_vs_neutral_db": [
+            0.7460606744326697,
+            0.46627785485981654
+          ]
+        },
+        "ref_100_Neutral": {
+          "lufs": -9.211802711437612,
+          "true_peak_dbtp": -0.4827854482266483,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 1.0,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 8.37655139999697,
+          "peak_rss_mib": 507.140625,
+          "low_high_vs_neutral_db": [
+            0.7460606680947244,
+            0.4662778316305225
+          ]
+        },
+        "ref_050_Bright": {
+          "lufs": -9.172128994650885,
+          "true_peak_dbtp": -0.478621382766935,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 8.099485100014135,
+          "peak_rss_mib": 463.48828125,
+          "low_high_vs_neutral_db": [
+            0.5219957377843807,
+            1.4884193183795382
+          ]
+        }
+      },
+      "zero_strength_max_sample_difference": 2.384185791015625e-07,
+      "reference_bright_high_delta_db": 1.0221414635197217
+    },
+    "06_clip": {
+      "source": "D:\\_4.Projects\\_MY\\万象婆娑\\5.一烛.wav",
+      "scope": "clip",
+      "runs": {
+        "off_Neutral": {
+          "lufs": -9.216227183141555,
+          "true_peak_dbtp": -0.49377042693765094,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.6056377000059,
+          "peak_rss_mib": 317.77734375,
+          "low_high_vs_neutral_db": [
+            0.0,
+            0.0
+          ]
+        },
+        "off_Warm": {
+          "lufs": -9.286099381016784,
+          "true_peak_dbtp": -0.49406635585416125,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.546136699966155,
+          "peak_rss_mib": 321.2421875,
+          "low_high_vs_neutral_db": [
+            0.909608409589497,
+            -0.1159042407695221
+          ]
+        },
+        "off_Bright": {
+          "lufs": -9.280005813535235,
+          "true_peak_dbtp": -0.4959294028815969,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.829733100021258,
+          "peak_rss_mib": 337.51953125,
+          "low_high_vs_neutral_db": [
+            -0.003328185120521354,
+            0.999379591946207
+          ]
+        },
+        "off_Fusion": {
+          "lufs": -9.266840129669928,
+          "true_peak_dbtp": -0.49341751748535734,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 3.6116322999587283,
+          "peak_rss_mib": 414.7578125,
+          "low_high_vs_neutral_db": [
+            0.5003039097603512,
+            0.4814676843198189
+          ]
+        },
+        "ref_000_Neutral": {
+          "lufs": -9.216227184699088,
+          "true_peak_dbtp": -0.49377042693765094,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.0,
+          "accepted_strength": 0.0,
+          "reason": "zero_strength",
+          "seconds": 3.6013046999578364,
+          "peak_rss_mib": 314.91015625,
+          "low_high_vs_neutral_db": [
+            1.3143944599391943e-08,
+            2.408232546713407e-08
+          ]
+        },
+        "ref_025_Neutral": {
+          "lufs": -9.234688004161855,
+          "true_peak_dbtp": -0.49217806405313397,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.25,
+          "accepted_strength": 0.25,
+          "reason": null,
+          "seconds": 8.116350099968258,
+          "peak_rss_mib": 498.85546875,
+          "low_high_vs_neutral_db": [
+            0.13094953214240057,
+            0.035416733594752614
+          ]
+        },
+        "ref_050_Neutral": {
+          "lufs": -9.253878427521604,
+          "true_peak_dbtp": -0.492077249801517,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 7.849935599952005,
+          "peak_rss_mib": 411.15625,
+          "low_high_vs_neutral_db": [
+            0.2619374514231563,
+            0.07124722825649066
+          ]
+        },
+        "ref_100_Neutral": {
+          "lufs": -9.253878428823816,
+          "true_peak_dbtp": -0.492077249801517,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 1.0,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 8.327327700040769,
+          "peak_rss_mib": 478.36328125,
+          "low_high_vs_neutral_db": [
+            0.26193743891746557,
+            0.07124726341912258
+          ]
+        },
+        "ref_050_Bright": {
+          "lufs": -9.236599464432336,
+          "true_peak_dbtp": -0.4947929386443595,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 8.11920099996496,
+          "peak_rss_mib": 520.40625,
+          "low_high_vs_neutral_db": [
+            0.2821307201218488,
+            1.092628797537997
+          ]
+        }
+      },
+      "zero_strength_max_sample_difference": 2.384185791015625e-07,
+      "reference_bright_high_delta_db": 1.0213815692815063
+    },
+    "07_clip": {
+      "source": "D:\\_4.Projects\\_MY\\万象婆娑\\6.超然界.wav",
+      "scope": "clip",
+      "runs": {
+        "off_Neutral": {
+          "lufs": -9.179787295125756,
+          "true_peak_dbtp": -0.47897478569775853,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.843357100035064,
+          "peak_rss_mib": 403.90625,
+          "low_high_vs_neutral_db": [
+            0.0,
+            0.0
+          ]
+        },
+        "off_Warm": {
+          "lufs": -9.28165236026326,
+          "true_peak_dbtp": -0.48454038249614645,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 4.577794799988624,
+          "peak_rss_mib": 414.49609375,
+          "low_high_vs_neutral_db": [
+            0.9826652831841134,
+            0.03574930092673867
+          ]
+        },
+        "off_Bright": {
+          "lufs": -9.180030860892915,
+          "true_peak_dbtp": -0.4764334494294728,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 5.123005200002808,
+          "peak_rss_mib": 390.28125,
+          "low_high_vs_neutral_db": [
+            -0.17019806149898464,
+            0.9920295550370746
+          ]
+        },
+        "off_Fusion": {
+          "lufs": -9.15648855708249,
+          "true_peak_dbtp": -0.4771805666974552,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 5.385630699980538,
+          "peak_rss_mib": 415.55859375,
+          "low_high_vs_neutral_db": [
+            0.4914050328872799,
+            0.5813394354012082
+          ]
+        },
+        "ref_000_Neutral": {
+          "lufs": -9.179787290310086,
+          "true_peak_dbtp": -0.47897587984680734,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.0,
+          "accepted_strength": 0.0,
+          "reason": "zero_strength",
+          "seconds": 5.1506139999837615,
+          "peak_rss_mib": 406.328125,
+          "low_high_vs_neutral_db": [
+            -9.351985408301289e-09,
+            2.5269269343652923e-08
+          ]
+        },
+        "ref_025_Neutral": {
+          "lufs": -9.168219396559524,
+          "true_peak_dbtp": -0.47905684725886544,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.25,
+          "accepted_strength": 0.25,
+          "reason": null,
+          "seconds": 10.61612200003583,
+          "peak_rss_mib": 539.5859375,
+          "low_high_vs_neutral_db": [
+            0.3036285624747954,
+            0.09195673178123442
+          ]
+        },
+        "ref_050_Neutral": {
+          "lufs": -9.15715809036029,
+          "true_peak_dbtp": -0.4791367212562382,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 10.359112800040748,
+          "peak_rss_mib": 513.171875,
+          "low_high_vs_neutral_db": [
+            0.608825843445703,
+            0.18618414251614368
+          ]
+        },
+        "ref_100_Neutral": {
+          "lufs": -9.290679682510248,
+          "true_peak_dbtp": -0.4845286868503381,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 1.0,
+          "accepted_strength": 1.0,
+          "reason": null,
+          "seconds": 9.858989699976519,
+          "peak_rss_mib": 538.6171875,
+          "low_high_vs_neutral_db": [
+            1.1989659055424697,
+            0.3782263569941975
+          ]
+        },
+        "ref_050_Bright": {
+          "lufs": -9.151086994473834,
+          "true_peak_dbtp": -0.47662049618497637,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 10.09426759998314,
+          "peak_rss_mib": 515.3515625,
+          "low_high_vs_neutral_db": [
+            0.43637638801344547,
+            1.181312410341544
+          ]
+        }
+      },
+      "zero_strength_max_sample_difference": 2.384185791015625e-07,
+      "reference_bright_high_delta_db": 0.9951282678254003
+    },
+    "08_full": {
+      "source": "D:\\_4.Projects\\_MY\\万象婆娑\\2.万象婆娑.wav",
+      "scope": "full",
+      "runs": {
+        "off_Neutral": {
+          "lufs": -9.105149118044906,
+          "true_peak_dbtp": -0.4757853489439019,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 43.27237190003507,
+          "peak_rss_mib": 5741.62890625,
+          "low_high_vs_neutral_db": [
+            0.0,
+            0.0
+          ]
+        },
+        "off_Bright": {
+          "lufs": -9.285728448947127,
+          "true_peak_dbtp": -0.4722768670360813,
+          "target_status": "met",
+          "reference_status": "disabled",
+          "requested_strength": 0.85,
+          "accepted_strength": 0.0,
+          "reason": null,
+          "seconds": 65.33764569996856,
+          "peak_rss_mib": 5942.4375,
+          "low_high_vs_neutral_db": [
+            -0.0698173446999355,
+            1.0405446625392383
+          ]
+        },
+        "ref_050_Bright": {
+          "lufs": -9.290564125644046,
+          "true_peak_dbtp": -0.47264918230154795,
+          "target_status": "met",
+          "reference_status": "accepted",
+          "requested_strength": 0.5,
+          "accepted_strength": 0.5,
+          "reason": null,
+          "seconds": 155.51815130002797,
+          "peak_rss_mib": 6621.47265625,
+          "low_high_vs_neutral_db": [
+            0.08173450538698557,
+            1.23767621126634
+          ]
+        }
+      }
+    }
+  }
+}

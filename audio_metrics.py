@@ -10,6 +10,7 @@ import json
 import math
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -118,9 +119,10 @@ def _loudness_range(short_term: np.ndarray) -> float | None:
     return float(np.percentile(gated, 95) - np.percentile(gated, 10))
 
 
-def _mean_spectrum(data: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+def _mean_spectrum(data: np.ndarray, sample_rate: int,
+                   size: int = 4096) -> tuple[np.ndarray, np.ndarray]:
     """Whole-file Hann power spectrum with bounded FFT working memory."""
-    size = min(4096, len(data))
+    size = min(size, len(data))
     hop = max(1, size // 2)
     window = np.hanning(size) if size > 2 else np.ones(size)
     power = np.zeros(size // 2 + 1)
@@ -166,6 +168,42 @@ def _low_band_ratio(data: np.ndarray, sample_rate: int) -> float | None:
     mid_rms = float(np.sqrt(np.mean(mid * mid)))
     side_rms = float(np.sqrt(np.mean(side * side)))
     return side_rms / mid_rms if mid_rms > 1e-12 else None
+
+
+# 分频段立体声宽度（供报告 3 频段声场扇形与 >250Hz 感知总宽使用）。
+# width = sideE/(midE+sideE) ∈ [0,1]：0=单声道，越大越宽。全曲 S/M 会被刻意
+# mono 化的低频主导而低估实际拓宽，故按频段分别测量更能反映听感上的声场。
+# side_mid_db = 10·log10(sideE/midE)：增益无关的侧向电平比，听感上「声场宽窄」
+# 大致线性对应这个 dB 值；宽度比是它的非线性压缩（0.03→0.02 只有 −1.4 dB，
+# 读成 −23% 会夸张成「声场大幅收窄」，mid 加厚时尤其误导）。
+WIDTH_BANDS_HZ = (("low", 20.0, 250.0), ("mid", 250.0, 4_000.0),
+                  ("high", 4_000.0, 20_000.0), ("wide_gt250", 250.0, 20_000.0))
+
+
+def _band_widths(data: np.ndarray, sample_rate: int) -> dict[str, Any] | None:
+    if data.shape[1] != 2:
+        return None
+    sig = _require_signal()
+    mid = (data[:, 0] + data[:, 1]) * 0.5
+    side = (data[:, 0] - data[:, 1]) * 0.5
+    nyq = sample_rate / 2.0
+    short = len(mid) < 16
+    result: dict[str, Any] = {}
+    for key, lo, hi in WIDTH_BANDS_HZ:
+        hi_eff = min(hi, nyq - 1.0)
+        if short or hi_eff <= lo:
+            result[key] = {"low_hz": lo, "high_hz": hi, "width": None,
+                           "side_mid_db": None}
+            continue
+        sos = sig.butter(2, [lo, hi_eff], btype="bandpass", fs=sample_rate, output="sos")
+        mid_b = sig.sosfiltfilt(sos, mid, padlen=0)
+        side_b = sig.sosfiltfilt(sos, side, padlen=0)
+        mid_e = float(np.mean(mid_b * mid_b))
+        side_e = float(np.mean(side_b * side_b))
+        result[key] = {"low_hz": lo, "high_hz": hi,
+                       "width": side_e / (mid_e + side_e + 1e-30),
+                       "side_mid_db": _db(side_e / mid_e, power=True) if mid_e > 1e-30 else None}
+    return result
 
 
 def measure_audio(audio: np.ndarray, sample_rate: int) -> dict[str, Any]:
@@ -239,6 +277,7 @@ def measure_audio(audio: np.ndarray, sample_rate: int) -> dict[str, Any]:
         "low_band_side_mid": {
             "ratio": _low_band_ratio(data, sample_rate),
         },
+        "band_widths": _band_widths(data, sample_rate),
         "mono_fold_down_loss_db": mono_loss,
         "band_energies": _band_energies(data, sample_rate, spectrum),
         "spectrum_measurement": "whole-file mean Hann power spectrum, 4096 samples / 50% overlap",
@@ -319,10 +358,20 @@ THIRD_OCTAVE_CENTERS = (25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0,
                         5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0, 20000.0)
 
 
+# 频响对比图用的谱分辨率：65536 点（44.1 kHz 下 ≈0.67 Hz/bin）足够让最窄的
+# 25 Hz 带（22.4–28.2 Hz）也覆盖到多个 bin。4096 点只有 ~11 Hz/bin，48 kHz
+# 输入的 40 Hz 带、44.1 kHz 成品的 25 Hz 带都落不到 bin，会被记成 −90 dB 地板，
+# 在图上画出「输入有深谷、输出被抬升」的假象。白噪声校验：65536 点与解析
+# 真值差 ≤0.1 dB，且 44.1k/48k 结果一致。
+COMPARE_FFT_SIZE = 65536
+
+
 def _third_octave_levels(data: np.ndarray, sample_rate: int) -> tuple[list, list]:
     """1/3 倍频程频段电平（相对本文件总能量，dB）——响度无关的音色分布，
-    供报告页做处理前后对比；两份文件用同一积分方式保证可比。"""
-    frequencies, power = _mean_spectrum(data, sample_rate)
+    供报告页做处理前后对比；两份文件用同一积分方式保证可比。
+
+    −90 dB 只表示该带在文件里确实没有可测能量（或文件短于一个分析窗）。"""
+    frequencies, power = _mean_spectrum(data, sample_rate, COMPARE_FFT_SIZE)
     total = float(np.sum(power))
     centers: list = []
     levels: list = []
@@ -337,6 +386,22 @@ def _third_octave_levels(data: np.ndarray, sample_rate: int) -> tuple[list, list
         levels.append(float(10 * math.log10(value / total))
                       if value > 0 and total > 0 else -90.0)
     return centers, levels
+
+
+def _audio_format(path: str | Path) -> dict[str, Any] | None:
+    """容器级格式（报告页头部用）：measure_audio 只拿到样本数组，取不到 subtype。"""
+    try:
+        info = sf.info(str(path))
+    except (OSError, ValueError, RuntimeError):
+        return None
+    subtype = str(info.subtype or "")
+    bits = next((int(tok) for tok in subtype.split("_") if tok.isdigit()), None)
+    if bits is None and subtype in {"FLOAT", "DOUBLE"}:
+        bits = 32 if subtype == "FLOAT" else 64
+    return {"format": str(info.format or ""), "subtype": subtype,
+            "bit_depth": bits, "sample_rate": int(info.samplerate),
+            "channels": int(info.channels),
+            "duration_seconds": round(float(info.frames) / max(1, info.samplerate), 3)}
 
 
 def write_quality_report(input_wav: str | Path, output_wav: str | Path,
@@ -356,6 +421,9 @@ def write_quality_report(input_wav: str | Path, output_wav: str | Path,
         "mastering": _json_safe(dict(mastering_stats or {})) if mastering_stats else None,
         "quality": assess_quality(input_metrics, output_metrics, mastering_stats),
     }
+    report["meta"] = {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                      "input_format": _audio_format(input_wav),
+                      "output_format": _audio_format(output_wav)}
     # 1/3 倍频程前后对比（各自相对总能量，响度无关）——报告页主图数据源
     centers, in_oct = _third_octave_levels(source, int(source_sr))
     _, out_oct = _third_octave_levels(rendered, int(rendered_sr))

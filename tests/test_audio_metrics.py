@@ -91,6 +91,29 @@ def test_stage_diagnostics_round_trip_strict_json(tmp_path):
     assert not list(tmp_path.glob('*.tmp'))
 
 
+def test_third_octave_levels_are_sample_rate_independent_and_floor_free():
+    """旧实现用 4096 点 FFT 求和（~11 Hz/bin）：48 kHz 输入的 40 Hz 带、
+    44.1 kHz 成品的 25 Hz 带都没有 bin，被记成 −90 dB 地板，图上看起来
+    像「输入有深谷、输出被抬升」。现在改用 65536 点谱，低频带必须既真实
+    又对采样率不敏感。"""
+    from audio_metrics import _third_octave_levels
+
+    def levels(sr):
+        t = np.arange(int(sr * 8.0)) / sr
+        mono = (0.03 * np.sin(2 * np.pi * 25 * t) + 0.15 * np.sin(2 * np.pi * 40 * t)
+                + 0.05 * np.sin(2 * np.pi * 6300 * t))
+        centers, values = _third_octave_levels(np.column_stack((mono, mono)), sr)
+        return dict(zip(centers, values))
+
+    low_44, low_48 = levels(44100), levels(48000)
+    for center in (25.0, 40.0, 6300.0):
+        assert abs(low_44[center] - low_48[center]) < 0.3
+    # 电平差 = 10·log10((a1/a2)²)：40 Hz vs 6.3 kHz ≈ 9.5 dB，25 Hz vs 40 Hz ≈ −14 dB
+    assert abs((low_44[40.0] - low_44[6300.0]) - 9.54) < 0.7
+    assert abs((low_44[25.0] - low_44[40.0]) + 13.98) < 0.7
+    assert low_48[40.0] > -20.0
+
+
 def test_quality_report_has_third_octave_compare(tmp_path):
     """报告页主图数据：1/3 倍频程前后对比（各自相对总能量，响度无关）。"""
     import numpy as np
@@ -114,5 +137,6 @@ def test_quality_report_has_third_octave_compare(tmp_path):
     # 高频增亮在 1/3 倍频程差值上清晰可见（合成正弦是窄带能量，量级可以很大）
     assert high > 3.0 and high > abs(low)
     # 相对总能量：两份文件各自归一，响度差异不进入频段分布
-    # （纯音合成信号的空频段是频谱泄漏底，可以远低于 -95dB）
-    assert all(-170 <= d <= 5 for d in cmp["input_db"] + cmp["output_db"])
+    # （纯音合成信号的空频段只有窗函数泄漏底，长窗下可以远低于 -95dB；
+    #   报告页纵轴在 -96 dB 处封底，曲线只会贴底，不会撑坏坐标）
+    assert all(-400 <= d <= 5 for d in cmp["input_db"] + cmp["output_db"])

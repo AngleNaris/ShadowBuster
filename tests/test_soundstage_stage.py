@@ -149,12 +149,16 @@ class PipelineBypassTests(unittest.TestCase):
             mock.patch.object(studio_backend, "stage_soren", fake_soren),
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            # 卫生滤波是母带链路的独立默认工序（默认 40Hz 低切 + 20kHz 低通），
+            # 本用例审计低频面板旁路，故显式关闭以保留「逐样本中性」语义。
             studio_backend.run_pipeline(
-                src, out_dir, bypass=("bass", "drums", "vocals"), work_dir=out_dir / "work")
+                src, out_dir, demucs_model="htdemucs", bypass=("bass", "drums", "vocals"),
+                work_dir=out_dir / "work", hygiene_low_cut_hz=0, hygiene_lowpass_hz=0)
 
         self.assertEqual(seen, {})
         output = out_dir / f"{src.stem}_shadowbuster.wav"
-        self.assertEqual(output.read_bytes(), src.read_bytes())
+        # Rewriting FLOAT WAV may change PEAK metadata, not the audio samples.
+        np.testing.assert_array_equal(sf.read(output)[0], sf.read(src)[0])
 
 
 class SoundstageDSPTests(unittest.TestCase):

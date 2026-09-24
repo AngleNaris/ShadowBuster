@@ -57,6 +57,11 @@ DEFAULTS = {
     "noise_low_hz": 8000.0,
     "noise_high_hz": 20000.0,
     "noise_max_attenuation_db": 6.0,
+    # 母带前卫生滤波（引擎无关，2026-09-22）：AI 素材与上游带宽扩展在 <40Hz /
+    # >20kHz 造出的能量听感回报低却吃限制器余量，两条母带链路在引擎之前统一
+    # 收掉。0 = 该路关闭（显式传参可关，见 docs/analysis/premaster_hygiene_*.md）。
+    "hygiene_low_cut_hz": 40.0,
+    "hygiene_lowpass_hz": 20000.0,
 }
 
 if getattr(sys, "frozen", False):
@@ -154,7 +159,7 @@ def _resolve_runtime():
     if upy is not None:
         root = ROOT / "runtime"
         apollo, soren = root / "Apollo", root / "Soren_src"
-        if apollo.is_dir() and soren.is_dir():
+        if apollo.is_dir() and (soren.is_dir() or (root / "mastering").is_dir()):
             return upy, apollo, soren, root
     roots = [ROOT / "runtime"]
     if os.name != "nt":
@@ -164,7 +169,7 @@ def _resolve_runtime():
         roots.append(Path(os.environ["SB_ASSETS"]))
     for root in roots:
         apollo, soren = root / "Apollo", root / "Soren_src"
-        if apollo.is_dir() and soren.is_dir():
+        if apollo.is_dir() and (soren.is_dir() or (root / "mastering").is_dir()):
             # 便携 Python 布局：Windows env\python.exe（旧 venv env\Scripts\python.exe）；
             # POSIX env/bin/python
             if os.name == "nt":
@@ -188,6 +193,7 @@ PYTHON, APOLLO_DIR, SOREN_DIR, ASSETS = _resolve_runtime()
 # uses the synchronized runtime Apollo scripts.
 DSP_DIR = (APOLLO_DIR if ASSETS is not None or getattr(sys, "frozen", False)
            else Path(os.environ.get("SB_DSP", DEV_DSP)))
+MASTERING_ROOT = Path(ASSETS) if ASSETS is not None else Path(__file__).parent
 
 
 def auto_device():
@@ -328,6 +334,7 @@ def _run_stream(cmd, cwd, env=None, on_progress=None, cancel=None):
     env.setdefault("PYTHONIOENCODING", "utf-8")
     proc = subprocess.Popen(
         cmd, cwd=str(cwd), env=env,
+        creationflags=_NO_WINDOW,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         # POSIX 下让子进程自成进程组，取消/退出时 killpg 连孙进程一起清；
         # Windows 上该参数被忽略，杀树走 taskkill /T。
@@ -373,7 +380,7 @@ def _run_stream(cmd, cwd, env=None, on_progress=None, cancel=None):
                 tail = (tail + "\n" + line)[-4000:]
                 if not on_progress:
                     continue
-                m = _re.search(r"LEW_PROGRESS\s+([\d.]+)", line) or _re.search(r"(\d{1,3})%\|", line)
+                m = _re.search(r"(?:LEW|MASTERING)_PROGRESS\s+([\d.]+)", line) or _re.search(r"(\d{1,3})%\|", line)
                 if m:
                     pct = min(100.0, max(0.0, float(m.group(1))))
                     if pct > last_pct:
@@ -449,19 +456,20 @@ def mix_wet_dry(dry, wet, out, wet_ratio):
     sf.write(str(out), mix.astype(np.float32), int(fr), subtype="FLOAT")
 
 
-def _detect_sample_rate(path):
-    """返回文件采样率；探测不到（非音频、缺解码依赖）时返回 None。
+def _detect_audio_format(path):
+    """返回 (采样率, 声道数)；探测不到时返回 None。
 
     None 不在此处报错，按原样透传，交由下游阶段报出真实错误。"""
     try:
         import soundfile as sf
-        return sf.info(str(path)).samplerate
+        info = sf.info(str(path))
+        return info.samplerate, info.channels
     except (ImportError, RuntimeError, ValueError, OSError):
         pass
     try:
         import wave
         with wave.open(str(path), "rb") as w:
-            return w.getframerate()
+            return w.getframerate(), w.getnchannels()
     except Exception:
         return None
 
@@ -528,7 +536,7 @@ def stage_demucs(input_wav, out_dir, model="htdemucs", progress=None, cancel=Non
         cmd += ["-d", "mps"]
     # 流式解析 demucs 的 tqdm 百分比 → 真实阶段进度
     _run_stream(cmd, out_dir, env=env, cancel=cancel,
-                on_progress=(lambda f: progress(f, "Demucs 四轨分离")) if progress else None)
+                on_progress=(lambda f: progress(f, "Demucs 六轨分离" if model == "htdemucs_6s" else "Demucs 四轨分离")) if progress else None)
     if progress:
         progress(1.0, "分离完成")
 
@@ -598,8 +606,8 @@ def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, tra
 
 
 def stage_drums(stem_dir, rest_wav, out_wav, punch_db=2.0, trans=0.3,
-                drums_gain_db=0.0, progress=None, cancel=None, report_json=None):
-    """鼓增强：punch/瞬态处理施加到鼓所在的轨上（4-stem 的 drums 轨）。"""
+                drums_gain_db=0.0, progress=None, cancel=None, report_json=None, stem_scale=1.0):
+    """鼓增强；stem_scale 将原始分轨对齐上游累计峰值缩放后的混音电平。"""
     if progress:
         progress(0.0, "鼓增强")
     stem_dir = Path(stem_dir)
@@ -616,7 +624,7 @@ def stage_drums(stem_dir, rest_wav, out_wav, punch_db=2.0, trans=0.3,
         cmd = [PYTHON, str(DSP_DIR / "drum_enhance.py"),
                "--drums", str(drums), "--in-mix", str(rest_wav), "--out", str(out_wav),
                "--punch-db", str(punch_db), "--trans", str(trans),
-               "--drums-gain-db", str(drums_gain_db)]
+               "--drums-gain-db", str(drums_gain_db), "--stem-scale", str(stem_scale)]
         scale = _run_reported(cmd, rest_wav, out_wav, report_json, "drums", cancel)
     if progress:
         progress(1.0, "鼓增强完成")
@@ -664,8 +672,10 @@ def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
 def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=None,
                   progress=None, cancel=None, report_json=None,
                   noise_mode="other", noise_low_hz=8000.0, noise_high_hz=20000.0,
-                  noise_max_attenuation_db=6.0, space_amount=None):
-    """声场重塑（broadband delta-add）：wet 缩放全部处理差值，可附带 ≥10kHz 噪声地板降噪。
+                  noise_max_attenuation_db=6.0, space_amount=None, stem_scale=1.0):
+    """声场重塑（broadband delta-add）：wet 缩放宽度差值，降噪与去拥挤独立授权。
+
+    stem_scale 是上游累计峰值缩放，所有源分轨先对齐当前混音电平。
 
     width_db 为宽度上限（other 轨 side 增益 dB，drums 自动取一半），wet 决定向该
     宽度目标混合的比例。wet≤0 且 denoise≤0，或缺少 drums/other stems 时直接透传
@@ -717,7 +727,7 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
                "--stems-dir", str(stems_dir),
                "--mode", "broadband", "--wet", str(wet),
                "--side-gain-db", str(width_db),
-               "--space-amount", str(space_amount)]
+               "--space-amount", str(space_amount), "--stem-scale", str(stem_scale)]
         if denoise > 0:
             cmd += ["--other-denoise-amount", str(denoise)]
         if noise_mode == "adaptive_all":
@@ -728,6 +738,32 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
         scale = _run_reported(cmd, in_mix, out_wav, report_json, "reshape", cancel)
     if progress:
         progress(1.0, "声场重塑完成")
+    return scale
+
+
+def stage_hygiene(in_wav, out_wav, low_cut_hz=None, lowpass_hz=None,
+                  progress=None, cancel=None, report_json=None):
+    """母带前卫生滤波：40Hz 低切 + 20kHz 低通（引擎无关）。
+
+    在母带引擎之前统一收掉 <40Hz 与 >20kHz：这两段听感回报低却吃限制器余量，
+    且 44.1k 交付里 20kHz 以上只可能是上游生成的合成能量。放在引擎之外意味着
+    两条链路（独立母带 / Soren 风格）拿到同一条处理，不依赖引擎实现。
+    数值范围与 apollo_scripts/premaster_hygiene.py 一致；两路都传 0 时脚本
+    位级透传，但流水线只在有滤波时进入本阶段（不做无谓的文件往返）。
+    """
+    low_cut_hz = DEFAULTS["hygiene_low_cut_hz"] if low_cut_hz is None else low_cut_hz
+    lowpass_hz = DEFAULTS["hygiene_lowpass_hz"] if lowpass_hz is None else lowpass_hz
+    if progress:
+        progress(0.0, "母带前滤波")
+    cmd = [PYTHON, str(DSP_DIR / "premaster_hygiene.py"),
+           "--in", str(in_wav), "--out", str(out_wav)]
+    if low_cut_hz:
+        cmd += ["--low-cut-hz", str(low_cut_hz)]
+    if lowpass_hz:
+        cmd += ["--lowpass-hz", str(lowpass_hz)]
+    scale = _run_reported(cmd, in_wav, out_wav, report_json, "hygiene", cancel)
+    if progress:
+        progress(1.0, "母带前滤波完成")
     return scale
 
 
@@ -824,12 +860,13 @@ def six_stem_weights_available():
 def _make_stage_stem(kind):
     """生成 guitar/synth 各自的独立阶段函数（缓存名/报告 stage/替换点都按名区分）。
 
-    synth 组的源分轨是 other+piano（STEM_SOURCES），DSP 端先求和再处理。
+    synth 组的源分轨是 other+piano（STEM_SOURCES），DSP 端求和后按累计
+    stem_scale 对齐当前混音电平再处理；既有上游处理差值仍保留在混音内。
     """
 
     def stage_stem(stem_dir, in_mix, out_wav, gain_db=0.0, mud_cut_db=0.0,
                    presence_db=0.0, harsh_cut_db=0.0, width_db=0.0,
-                   progress=None, cancel=None, report_json=None):
+                   progress=None, cancel=None, report_json=None, stem_scale=1.0):
         if progress:
             progress(0.0, f"{kind} 增强")
         sources = STEM_SOURCES[kind]
@@ -841,7 +878,7 @@ def _make_stage_stem(kind):
                 "--kind", kind,
                 "--gain-db", str(gain_db), "--mud-cut-db", str(mud_cut_db),
                 "--presence-db", str(presence_db), "--harsh-cut-db", str(harsh_cut_db),
-                "--width-db", str(width_db)]
+                "--width-db", str(width_db), "--stem-scale", str(stem_scale)]
         scale = _run_reported(cmd, in_mix, out_wav, report_json, kind, cancel)
         if progress:
             progress(1.0, f"{kind} 增强完成")
@@ -873,6 +910,8 @@ stage_drums.writes_stage_report = True
 stage_drums.report_input_arg = "rest_wav"
 stage_reshape.writes_stage_report = True
 stage_reshape.report_input_arg = "in_mix"
+stage_hygiene.writes_stage_report = True
+stage_hygiene.report_input_arg = "in_wav"
 
 
 # ── 母带统计旁车（<out>.mastering.json）────────────────────────────────
@@ -941,13 +980,62 @@ def _emit_mastering_log(report_cb, mastered_path):
         report_cb(1.0, label)
 
 
+def stage_mastering(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
+                    *, reference=None, match_source=None, strength=.85,
+                    eq_profile="Neutral", lowpass_cutoff=None, space_wet=0.0, width_db=0.0):
+    """Independent finalizer and optional protected reference matching."""
+    from mastering import LOUDNESS_TARGETS
+    if loudness not in LOUDNESS_TARGETS:
+        raise ValueError(f"Unknown loudness option: {loudness}")
+    label = "参考音色母带" if reference else "无风格母带"
+    if progress:
+        progress(0.0, label)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(MASTERING_ROOT)
+    cmd = [PYTHON, "-m", "mastering", str(Path(input_wav).resolve()),
+           str(Path(out_wav).resolve()), "--loudness", loudness]
+    if reference:
+        cmd += ["--reference", str(Path(reference).resolve()), "--strength", str(strength)]
+        if match_source:
+            cmd += ["--match-source", str(Path(match_source).resolve())]
+        env["PATH"] = str(Path(ffmpeg_bin()).parent) + os.pathsep + env.get("PATH", "")
+    if eq_profile != "Neutral":
+        cmd += ["--eq-profile", eq_profile]
+    if lowpass_cutoff is not None:
+        cmd += ["--lowpass-cutoff", str(lowpass_cutoff)]
+    if space_wet > 0 and width_db > 0:
+        cmd += ["--space-wet", str(space_wet), "--width-db", str(width_db)]
+    _run_stream(cmd, MASTERING_ROOT, env=env, cancel=cancel,
+                on_progress=(lambda f: progress(f * .999, label)) if progress else None)
+    if progress:
+        progress(1.0, label + "完成")
+    return read_mastering_stats(out_wav)
+
+
+stage_mastering.writes_mastering_report = True
+
+
 def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
                 eq_profile="Neutral", reference=None, lowpass_cutoff=None,
                 progress=None, cancel=None, style_mode="styled",
                 upstream_delta_path=None, upstream_delta_hash=None,
-                style_blend=0.85):
+                style_blend=0.85, match_source=None,
+                final_space_wet=0.0, final_width_db=0.0):
     if style_mode not in ("styled", "off", "eq_only"):
         raise ValueError(f"Unknown Soren style mode: {style_mode}")
+    reference_active = style_mode == "styled" and bool(reference)
+    if style_mode in ("off", "eq_only") or reference_active:
+        options = {}
+        if reference_active:
+            options.update(reference=reference, match_source=match_source, strength=style_blend)
+        # User EQ is global; off disables reference/style matching only.
+        if eq_profile != "Neutral":
+            options["eq_profile"] = eq_profile
+        if lowpass_cutoff is not None:
+            options["lowpass_cutoff"] = lowpass_cutoff
+        if final_space_wet > 0 and final_width_db > 0:
+            options.update(space_wet=final_space_wet, width_db=final_width_db)
+        return stage_mastering(input_wav, out_wav, loudness, progress, cancel, **options)
     if progress:
         progress(0.0, f"Soren 母带（{genre or '自定义参考'} / {loudness} / {eq_profile}）")
     soren_dir = _ensure_dev_runtime()   # 执行前确保 canonical dev runtime（无资源时清晰报错）
@@ -1113,6 +1201,18 @@ def _resolve_work_dir(output_dir: Path, work_dir) -> Path:
     return work
 
 
+def _versioned_output_path(output_dir: Path, stem: str) -> Path:
+    """重复处理同名歌曲时自动让位：成品已存在 → 追加 _v2/_v3…，绝不静默覆盖。
+    首次处理保持 _shadowbuster.wav 原名；质量报告与母带旁车跟随最终名。"""
+    base = Path(output_dir) / f"{stem}_shadowbuster.wav"
+    if not base.exists():
+        return base
+    version = 2
+    while (Path(output_dir) / f"{stem}_shadowbuster_v{version}.wav").exists():
+        version += 1
+    return Path(output_dir) / f"{stem}_shadowbuster_v{version}.wav"
+
+
 def _stage_report_extra(report_path, stage):
     """读取本次运行阶段报告里的 extra 诊断载荷；缺失/损坏/无 extra 返回 None。
 
@@ -1176,11 +1276,12 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                  device="cuda", progress=None, cancel=None, work_dir=None,
                  lowpass_cutoff=None, space_wet=None, space_denoise=None,
                  space_width_db=None, space_amount=None, balance_target_db=None,
+                 hygiene_low_cut_hz=None, hygiene_lowpass_hz=None,
                  bypass=(),
                  balance_mode=REFERENCE_MODE, style_mode=None, style_blend=None,
                  cache_enabled=True, noise_mode=None, noise_low_hz=None,
                  noise_high_hz=None, noise_max_attenuation_db=None,
-                 demucs_model="htdemucs", guitar_gain_db=0.0, guitar_mud_cut_db=0.0,
+                 demucs_model="htdemucs_6s", guitar_gain_db=0.0, guitar_mud_cut_db=0.0,
                  guitar_presence_db=0.0, guitar_harsh_cut_db=0.0, guitar_width_db=0.0,
                  synth_gain_db=0.0, synth_mud_cut_db=0.0, synth_presence_db=0.0,
                  synth_harsh_cut_db=0.0, synth_width_db=0.0,
@@ -1210,12 +1311,16 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     noise_max_attenuation_db = (DEFAULTS["noise_max_attenuation_db"]
                                 if noise_max_attenuation_db is None
                                 else noise_max_attenuation_db)
+    hygiene_low_cut_hz = (DEFAULTS["hygiene_low_cut_hz"] if hygiene_low_cut_hz is None
+                          else hygiene_low_cut_hz)
+    hygiene_lowpass_hz = (DEFAULTS["hygiene_lowpass_hz"] if hygiene_lowpass_hz is None
+                          else hygiene_lowpass_hz)
     """执行单文件完整链路。progress(stage_idx, frac, label)。
 
     bypass: 可迭代的阶段名（lew/vocals/bass/drums/reshape/soren），命中的阶段位级跳过。
     分离阶段在 bass/drums/reshape/vocals 全部旁路时自动跳过（分轨产物无人消费），
-    任一分轨阶段启用时照常执行。旁路 Lew 时输入探测到非 44.1k 采样率会先统一
-    采样率再进入后续阶段（Soren 只接受 44.1k；已是 44.1k 或探测不到采样率时
+    任一分轨阶段启用时照常执行。旁路 Lew 时输入探测到非 44.1k 双声道会先统一
+    格式再进入后续阶段（母带接受 44.1k 双声道；格式已匹配或探测不到时
     原样透传；全链路旁路时无阶段消费产物，逐字节透传）。
     bass_auto_clarity: opt-in 贝斯清晰度 EQ（默认 False；关闭时贝斯阶段行为位级不变）。
     noise_mode="other"（默认）为兼容降噪；"adaptive_all" 为 Stage3 可选自适应
@@ -1231,6 +1336,9 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     与成品一起入阶段缓存（命中同样恢复）；处理成功后复制为输出目录的
     <最终wav>.mastering.json，并把目标/实测/达标状态写进既有进度日志。母带旁路或
     引擎未产出统计时不生成旁车，且移除同名的过期旁车（绝不编造统计）。
+    hygiene_low_cut_hz / hygiene_lowpass_hz：母带前卫生滤波（40Hz 低切 +
+    20kHz 低通），在任何母带引擎之前执行，两条链路行为一致；0 = 关闭该路。
+    母带旁路时不执行（保持全链路旁路逐字节透传）。默认值取 DEFAULTS。
     """
     if style_mode not in ("styled", "off", "eq_only"):
         raise ValueError(f"Unknown Soren style mode: {style_mode}")
@@ -1284,18 +1392,20 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                 "安全性 → 文件与文件夹中允许 ShadowBuster 访问。") from exc
 
     stem = input_wav.stem
-    out_final = output_dir / f"{stem}_shadowbuster.wav"
+    out_final = _versioned_output_path(output_dir, stem)
     lew_out = work / f"{stem}_lew.wav"
     stems_out = work / "stems"
     bass_out = work / f"{stem}_bassmix.wav"
     drum_out = work / f"{stem}_drummix.wav"
     vocal_out = work / f"{stem}_vocalmix.wav"
+    hygiene_out = work / f"{stem}_premaster.wav"
     shape_out = work / f"{stem}_shapemix.wav"
     guitar_out = work / f"{stem}_guitarmix.wav"
     synth_out = work / f"{stem}_synthmix.wav"
     bass_report = work / "bass.json"
     drums_report = work / "drums.json"
     reshape_report = work / "reshape.json"
+    hygiene_report = work / "hygiene.json"
     guitar_report = work / "guitar.json"
     synth_report = work / "synth.json"
 
@@ -1312,8 +1422,17 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     implementation = [Path(__file__), Path(pipeline_cache.__file__)]
     # 指纹前确保 canonical dev runtime（soren 参与处理时）。失败在执行任何阶段前
     # 中止：不执行、不缓存任何东西（绝不吞错，注释与行为一致）。
-    soren_root = Path(SOREN_DIR) if "soren" in bypass else _ensure_dev_runtime()
-    implementation += list(Path(DSP_DIR).glob("*.py")) + list(soren_root.glob("*.py"))
+    reference_active = style_mode == "styled" and bool(reference) and "soren" not in bypass
+    independent_mastering = "soren" not in bypass and (style_mode in ("off", "eq_only") or reference_active)
+    if reference_active and not Path(reference).is_file():
+        raise PipelineError(f"参考音频不存在: {reference}")
+    uses_soren = "soren" not in bypass and not independent_mastering
+    soren_root = _ensure_dev_runtime() if uses_soren else None
+    implementation += list(Path(DSP_DIR).glob("*.py"))
+    implementation += list((MASTERING_ROOT / "mastering").glob("*.py"))
+    implementation.append(MASTERING_ROOT / "audio_metrics.py")
+    if soren_root is not None:
+        implementation += list(soren_root.glob("*.py"))
     # Lew 脚本在 APOLLO_DIR（模型/工具根）而非 DSP_DIR，必须单独入指纹：
     # 否则 lew_upscale.py 的算法变更（如计算精度）不会使旧阶段缓存失效。
     _lew_script = Path(APOLLO_DIR) / "lew_upscale.py"
@@ -1321,11 +1440,12 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
         implementation.append(_lew_script)
     # dev runtime 有效性入缓存身份：manifest 记录资源源与生成期哈希，资源切换或
     # 重建后旧缓存自动失效（dev runtime 下代码即 packaging canonical 字节）。
-    _dev_manifest = soren_root / "dev_runtime_manifest.json"
-    if _dev_manifest.is_file():
-        implementation.append(_dev_manifest)
+    if soren_root is not None:
+        _dev_manifest = soren_root / "dev_runtime_manifest.json"
+        if _dev_manifest.is_file():
+            implementation.append(_dev_manifest)
     runtime_files = [Path(PYTHON)]
-    for folder in (Path(APOLLO_DIR), soren_root):
+    for folder in [Path(APOLLO_DIR)] + ([soren_root] if soren_root is not None else []):
         for pattern in ("*.pt", "*.pth", "*.ckpt", "*.json", "*.yaml"):
             runtime_files.extend(folder.rglob(pattern))
     runtime_stamp = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in runtime_files if p.is_file()]
@@ -1390,16 +1510,23 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             return result
         return invoke
 
-    run_lew = cached(stage_lew, "out_wav", ["input_wav"])
-    run_demucs = cached(stage_demucs, "out_dir", ["input_wav"])
+    # AI cache identities exclude downstream DSP and mastering settings.
+    import prepared_audio
+    def run_lew(input_wav, out_wav, **kwargs):
+        return prepared_audio.lew(sys.modules[__name__], input_wav, out_wav,
+                                  cache_enabled=cache_enabled, **kwargs)
+    def run_demucs(input_wav, out_dir, **kwargs):
+        return prepared_audio.demucs(sys.modules[__name__], input_wav, out_dir,
+                                     cache_enabled=cache_enabled, **kwargs)
     run_bass = cached(stage_bass, "out_wav", ["stem_dir", "in_mix"])
     run_drums = cached(stage_drums, "out_wav", ["stem_dir", "rest_wav"])
     run_reshape = cached(stage_reshape, "out_wav", ["in_mix", "stems_dir"])
     run_guitar = cached(stage_guitar, "out_wav", ["stem_dir", "in_mix"])
     run_synth = cached(stage_synth, "out_wav", ["stem_dir", "in_mix"])
     run_vocals = cached(stage_vocals, "out_wav", ["stem_dir", "in_mix", "reference_mix", "reference_vocals"])
+    run_hygiene = cached(stage_hygiene, "out_wav", ["in_wav"])
     run_soren = cached(stage_soren, "out_wav",
-                       ["input_wav", "reference", "upstream_delta_hash"],
+                       ["input_wav", "reference", "upstream_delta_hash", "match_source"],
                        report_suffix=MASTERING_REPORT_SUFFIX)
     run_convert = cached(ffmpeg_convert, "dst", ["src"])
 
@@ -1407,35 +1534,45 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     mastering_stats = None
     stage_extras = {}   # 本次运行 bass/drums/reshape/guitar/piano 诊断 extras（旁路阶段绝不收集）
     try:
-        if "lew" in bypass:
-            # Lew 正常运行时会把输入统一成 44.1k；旁路后这层保证消失，而 Demucs
-            # 分轨保留输入采样率，48k 源会让全部中间产物保持 48k，Soren 母带只
-            # 接受 44.1k。因此旁路 Lew 且探测到非 44.1k 采样率时先统一（已是
-            # 44.1k 不重编码，探测不到按原样透传）；全链路旁路时无阶段消费
-            # 产物，同样逐字节透传。
-            rate = _detect_sample_rate(input_wav)
-            if rate is None or rate == 44100 or \
-                    bypass >= {"bass", "drums", "reshape", "vocals", "soren"}:
-                lew_src = input_wav
+        prepared = None
+        if demucs_model == "htdemucs_6s" and not bypass >= {"bass", "drums", "reshape", "vocals"}:
+            prepared = prepared_audio.endpoints(sys.modules[__name__], input_wav, work/'prepared',
+                quality=quality, device=device, reconstruct="lew" not in bypass,
+                cache_enabled=cache_enabled, progress=cb(0), cancel=cancel)
+            if "lew" in bypass:
+                lew_src, stem_dir = prepared[0], prepared[2]
             else:
-                run_convert(input_wav, lew_out)
                 lew_src = lew_out
-            if progress:
-                cb(0)(1.0, "高频旁路")
+                stem_dir = stems_out / demucs_model / lew_src.stem
+                prepared_audio.mix_endpoints(*prepared, lew_src, stem_dir, guidance, cancel=cancel)
+            cb(1)(1.0, "六轨混合完成")
         else:
-            run_lew(input_wav, lew_out, device=device, progress=cb(0),
-                      quality=quality, guidance=guidance, cancel=cancel)
-            lew_src = lew_out
-        # 产物目录以模型名命名（demucs CLI 约定）：模型名同时进入缓存身份，
-        # 4 轨/6 轨产物绝不混用。
-        stem_dir = stems_out / demucs_model / lew_src.stem
-        if bypass >= {"bass", "drums", "reshape", "vocals"}:
-            # 四个分轨消费阶段全部旁路：分轨产物无人读取，跳过最重的分离计算。
-            if progress:
-                cb(1)(1.0, "分轨旁路")
-        else:
-            run_demucs(lew_src, stems_out, model=demucs_model, progress=cb(1), cancel=cancel,
-                       device=device)
+            if "lew" in bypass:
+                # Lew 旁路时仍需保证下游收到 44.1k 双声道。已匹配的输入
+                # 不重编码；全部阶段旁路仍逐字节透传，包括单声道原文件。
+                audio_format = _detect_audio_format(input_wav)
+                if audio_format is None or audio_format == (44100, 2) or \
+                        bypass >= {"bass", "drums", "reshape", "vocals", "soren"}:
+                    lew_src = input_wav
+                else:
+                    run_convert(input_wav, lew_out)
+                    lew_src = lew_out
+                if progress:
+                    cb(0)(1.0, "高频旁路")
+            else:
+                run_lew(input_wav, lew_out, device=device, progress=cb(0),
+                          quality=quality, guidance=guidance, cancel=cancel)
+                lew_src = lew_out
+            # 产物目录以模型名命名（demucs CLI 约定）：模型名同时进入缓存身份，
+            # 4 轨/6 轨产物绝不混用。
+            stem_dir = stems_out / demucs_model / lew_src.stem
+            if bypass >= {"bass", "drums", "reshape", "vocals"}:
+                # 四个分轨消费阶段全部旁路：分轨产物无人读取，跳过最重的分离计算。
+                if progress:
+                    cb(1)(1.0, "分轨旁路")
+            else:
+                run_demucs(lew_src, stems_out, model=demucs_model, progress=cb(1), cancel=cancel,
+                           device=device)
         if "bass" in bypass:
             shutil.copyfile(lew_src, bass_out)
             bass_scale = 1.0
@@ -1465,6 +1602,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
         else:
             drums_report.unlink(missing_ok=True)
             drums_scale = run_drums(stem_dir, bass_out, drum_out, punch_db=punch_db, trans=trans,
+                        stem_scale=bass_scale,
                         progress=cb(3), cancel=cancel, report_json=drums_report)
             extra = _stage_report_extra(drums_report, "drums")
             if extra is not None:
@@ -1485,9 +1623,10 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                                       noise_high_hz=noise_high_hz,
                                       noise_max_attenuation_db=noise_max_attenuation_db)
             reshape_report.unlink(missing_ok=True)
-            reshape_scale = run_reshape(drum_out, stem_dir, shape_out, wet=space_wet,
+            reshape_scale = run_reshape(drum_out, stem_dir, shape_out,
+                          wet=0.0 if independent_mastering else space_wet,
                           denoise=space_denoise, width_db=space_width_db,
-                          space_amount=space_amount,
+                          space_amount=space_amount, stem_scale=bass_scale * drums_scale,
                           progress=cb(4, 0.0, 0.5), cancel=cancel, report_json=reshape_report,
                           **reshape_kwargs)
             extra = _stage_report_extra(reshape_report, "reshape")
@@ -1497,39 +1636,44 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
         # 的有界 delta-add 阶段；缺 stem 由 DSP 脚本透传并报告 unavailable。
         # 分轨消费阶段全旁路时分离被跳过、stem 无人产出，这两个阶段一并跳过。
         extra_in = shape_out
-        extra_scales = []
+        stem_scale = bass_scale * drums_scale * reshape_scale
         if demucs_model == "htdemucs_6s" and \
                 not bypass >= {"bass", "drums", "reshape", "vocals"}:
             for kind, out_wav, report_path, span in (
                     ("guitar", guitar_out, guitar_report, (0.4, 0.05)),
                     ("synth", synth_out, synth_report, (0.45, 0.05))):
+                if not any(stem_controls[kind].values()):
+                    continue
                 report_path.unlink(missing_ok=True)
                 run_extra = run_guitar if kind == "guitar" else run_synth
-                extra_scales.append(run_extra(
+                extra_scale = run_extra(
                     stem_dir, extra_in, out_wav,
                     progress=cb(4, *span), cancel=cancel,
-                    report_json=report_path, **stem_controls[kind]))
+                    report_json=report_path, stem_scale=stem_scale, **stem_controls[kind])
+                stem_scale *= extra_scale
                 extra = _stage_report_extra(report_path, kind)
                 if extra is not None:
                     stage_extras[kind] = extra
                 extra_in = out_wav
-        # Only original vocals base scaling; unscaled original-stem delta additions remain residual.
-        vocal_scale = bass_scale * drums_scale * reshape_scale
-        for extra_scale in extra_scales:
-            vocal_scale *= extra_scale
+        # Original vocal contribution follows every upstream global peak trim.
+        vocal_scale = stem_scale
         if "vocals" in bypass:
             shutil.copyfile(extra_in, vocal_out)
             cb(4, 0.5, 0.5)(1.0, "人声旁路")
         else:
             original_mix, original_vocals = lew_src, stem_dir / "vocals.wav"
             if balance_mode == REFERENCE_MODE and balance_target_db is None:
-                original_mix = work / "original_reference.wav"
-                original_stems = work / "original_reference_stems"
-                # HTDemucs preserves sample origin; DSP rejects frame/rate mismatch.
-                run_convert(input_wav, original_mix, sr=44100)
-                run_demucs(original_mix, original_stems, model=demucs_model,
-                           cancel=cancel, device=device)
-                original_vocals = original_stems / demucs_model / original_mix.stem / "vocals.wav"
+                if prepared is not None:
+                    original_mix = prepared[0]
+                    original_vocals = prepared[2] / "vocals.wav"
+                else:
+                    original_mix = work / "original_reference.wav"
+                    original_stems = work / "original_reference_stems"
+                    # HTDemucs preserves sample origin; DSP rejects frame/rate mismatch.
+                    run_convert(input_wav, original_mix, sr=44100)
+                    run_demucs(original_mix, original_stems, model=demucs_model,
+                               cancel=cancel, device=device)
+                    original_vocals = original_stems / demucs_model / original_mix.stem / "vocals.wav"
             run_vocals(stem_dir, extra_in, vocal_out, gain_db=vocal_gain_db,
                          balance_target_db=balance_target_db,
                          balance_mode=balance_mode if balance_target_db is None else None,
@@ -1543,6 +1687,20 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             if progress:
                 cb(5)(1.0, "母带旁路")
         else:
+            # 母带前卫生滤波（引擎无关）：低切/低通在引擎之外完成，独立母带
+            # 与 Soren 链路拿到同一条处理；母带旁路时不进入本阶段（保持
+            # 全链路旁路的逐字节透传语义）。上游 delta 仍按 vocal_out 计算：
+            # 它表达的是用户链路意图，卫生滤波是固定产品级滤波，不计入。
+            premaster = vocal_out
+            if hygiene_low_cut_hz or hygiene_lowpass_hz:
+                hygiene_report.unlink(missing_ok=True)
+                run_hygiene(vocal_out, hygiene_out, low_cut_hz=hygiene_low_cut_hz,
+                            lowpass_hz=hygiene_lowpass_hz, progress=cb(5, 0.0, 0.08),
+                            cancel=cancel, report_json=hygiene_report)
+                premaster = hygiene_out
+                extra = _stage_report_extra(hygiene_report, "hygiene")
+                if extra is not None:
+                    stage_extras["hygiene"] = extra
             delta_path = delta_hash = None
             # 上游全部旁路且六轨附加阶段未产生实际差值时，母带输入即原始输入，
             # delta 恒为零，跳过计算；六轨附加控制非中性时母带输入已不同，
@@ -1550,18 +1708,23 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             extras_active = demucs_model == "htdemucs_6s" and any(
                 any(v != 0 for v in controls.values())
                 for controls in stem_controls.values())
-            if style_mode == "styled" and \
+            if uses_soren and style_mode == "styled" and \
                     not (bypass >= {"lew", "bass", "drums", "reshape", "vocals"}
                          and not extras_active):
                 delta_path, delta_hash = _write_upstream_delta(
                     input_wav, vocal_out, work)
-            run_soren(vocal_out, mastered, genre=genre, loudness=loudness,
+            mastering_options = {}
+            if reference_active:
+                mastering_options["match_source"] = input_wav
+            if independent_mastering and "reshape" not in bypass:
+                mastering_options.update(final_space_wet=space_wet, final_width_db=space_width_db)
+            run_soren(premaster, mastered, genre=genre, loudness=loudness,
                         eq_profile=eq_profile, reference=reference,
-                        lowpass_cutoff=lowpass_cutoff, progress=cb(5),
+                        lowpass_cutoff=lowpass_cutoff, progress=cb(5, 0.08, 0.92),
                         cancel=cancel, style_mode=style_mode,
                         upstream_delta_path=delta_path,
                         upstream_delta_hash=delta_hash,
-                        style_blend=style_blend)
+                        style_blend=style_blend, **mastering_options)
             # 母带统计（目标/实测 LUFS、达标状态）写进既有进度日志；缓存命中
             # 恢复的旁车同样展示（引擎本次没跑也能回放指标）。
             _emit_mastering_log(cb(5), mastered)
@@ -1579,6 +1742,9 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             "genre": genre, "loudness": loudness, "eq_profile": eq_profile,
             "style_mode": style_mode, "style_blend": style_blend,
             "bypass": sorted(bypass), "quality_level": quality, "guidance": guidance,
+            # 请求值（母带旁路时为 0 也不会执行本阶段，实际响应见 stages.hygiene）
+            "hygiene_low_cut_hz": hygiene_low_cut_hz,
+            "hygiene_lowpass_hz": hygiene_lowpass_hz,
         }
         if noise_mode == "adaptive_all":
             # 仅 opt-in 运行记录噪声参数：默认路径的质量报告内容保持旧样。

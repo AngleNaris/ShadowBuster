@@ -51,14 +51,13 @@ class StemFakes:
 
         def demucs(input_wav, out_dir, model="htdemucs", progress=None, cancel=None, device=None):
             self.demucs_models.append(model)
-            # 真实 demucs 会创建 out_dir/<model>/<stem>/；替身至少建 out_dir，
-            # 否则 StageCache 因产物不存在而永不缓存该阶段。
-            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            # Shared AI cache stores the flat stem directory, independent of filename.
+            (Path(out_dir)/model/Path(input_wav).stem).mkdir(parents=True, exist_ok=True)
 
         def stem_fake(kind):
             def fake(stem_dir, in_mix, out_wav, gain_db=0.0, mud_cut_db=0.0,
                      presence_db=0.0, harsh_cut_db=0.0, width_db=0.0,
-                     progress=None, cancel=None, report_json=None):
+                     progress=None, cancel=None, report_json=None, stem_scale=1.0):
                 self.calls.append((kind, Path(stem_dir).parent.name, Path(stem_dir).name,
                                    gain_db, mud_cut_db, presence_db, harsh_cut_db,
                                    width_db, Path(in_mix).name))
@@ -120,7 +119,7 @@ def test_invalid_model_and_controls_rejected_before_anything(tmp_path):
 def test_default_four_stem_skips_extra_stages(tmp_path, monkeypatch):
     src = _tone_wav(tmp_path / "song.wav")
     fakes = StemFakes(monkeypatch, tmp_path)
-    final = backend.run_pipeline(src, tmp_path / "out", **_run_kwargs())
+    final = backend.run_pipeline(src, tmp_path / "out", **_run_kwargs(demucs_model="htdemucs"))
     assert fakes.calls == [] and fakes.demucs_models == ["htdemucs"]
     report = backend.read_quality_report(final)
     assert "demucs_model" not in report["processing"]
@@ -139,7 +138,7 @@ def test_six_stem_routes_extra_stages(tmp_path, monkeypatch):
     kinds = [c[0] for c in fakes.calls]
     assert kinds == ["guitar", "synth"]           # reshape 之后、vocals 之前
     for kind, model_dir, stem_name, gain, mud, presence, harsh, width, vocal_in in fakes.calls:
-        assert model_dir == "htdemucs_6s" and stem_name == "song"
+        assert model_dir == "htdemucs_6s" and stem_name == "original"
         if kind == "guitar":
             assert (gain, mud, presence, harsh, width) == (1.5, 0, 0, 0, 0)
             assert vocal_in == "song_shapemix.wav"
@@ -160,8 +159,8 @@ def test_demucs_model_changes_cache_identity(tmp_path, monkeypatch):
     src = _tone_wav(tmp_path / "song.wav")
     fakes = StemFakes(monkeypatch, tmp_path)
     kwargs = _run_kwargs(cache_enabled=True, bypass=["lew", "vocals"])
-    backend.run_pipeline(src, tmp_path / "out", **kwargs)
-    backend.run_pipeline(src, tmp_path / "out", **kwargs)
+    backend.run_pipeline(src, tmp_path / "out", **kwargs, demucs_model="htdemucs")
+    backend.run_pipeline(src, tmp_path / "out", **kwargs, demucs_model="htdemucs")
     assert fakes.demucs_models == ["htdemucs"]           # 第二次命中缓存
     backend.run_pipeline(src, tmp_path / "out", **kwargs, demucs_model="htdemucs_6s")
     assert fakes.demucs_models == ["htdemucs", "htdemucs_6s"]  # 模型变化 → 重算
@@ -213,7 +212,7 @@ def test_cli_forwards_demucs_and_stem_options(tmp_path, monkeypatch):
 
     monkeypatch.setattr(backend, "run_batch", fake_run_batch)
     assert processing_cli.main(["-i", str(source), "-o", str(tmp_path / "o1")]) == 0
-    assert captured["demucs_model"] == "htdemucs"
+    assert captured["demucs_model"] == "htdemucs_6s"
     assert all(captured[f"guitar_{k}"] == 0.0 for k in
                ("gain_db", "mud_cut_db", "presence_db", "harsh_cut_db", "width_db"))
     assert processing_cli.main(

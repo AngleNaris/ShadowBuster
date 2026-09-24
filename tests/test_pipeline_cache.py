@@ -68,9 +68,12 @@ def test_pipeline_reuses_real_stage_call_sites(tmp_path, monkeypatch):
         calls.append('demucs')
     def stage_soren(input_wav, out_wav, **kwargs):
         calls.append('soren');Path(out_wav).write_bytes(Path(input_wav).read_bytes()+kwargs['loudness'].encode())
+    def stage_hygiene(input_wav, out_wav, **kwargs):
+        Path(out_wav).write_bytes(Path(input_wav).read_bytes());return 1.0
     monkeypatch.setattr(backend,'ffmpeg_convert',ffmpeg_convert)
     monkeypatch.setattr(backend,'stage_demucs',stage_demucs)
     monkeypatch.setattr(backend,'stage_soren',stage_soren)
+    monkeypatch.setattr(backend,'stage_hygiene',stage_hygiene)
     monkeypatch.setattr(backend, '_ensure_dev_runtime', lambda: tmp_path / 'runtime')
     bypass=['lew','bass','drums','reshape','vocals']
     backend.run_pipeline(src,tmp_path/'out',bypass=bypass)

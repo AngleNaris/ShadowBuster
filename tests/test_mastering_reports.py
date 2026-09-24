@@ -6,7 +6,7 @@
   2. run_pipeline 把统计复制为 <最终wav>.mastering.json；缓存命中（引擎未跑）
      同样恢复并复制；母带旁路时移除同名过期旁车；
   3. 统计里的 NaN 原样保留（不丢弃、不因 NaN 失败）；
-  4. 引擎源码内容参与缓存身份：改 core_decrypted.py 使母带缓存自动失效；
+  4. 当前实际引擎源码内容参与缓存身份：算法修改使母带缓存自动失效；
   5. GUI 既有进度日志通道展示 target / actual / target_status。
 """
 import json
@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 import processing_cli
 import studio_backend as backend
 
-STATS = {"engine": "soren_bounded_v2", "style_mode": "off",
+STATS = {"engine": "shadowbuster-mastering-v1", "style_mode": "off",
          "target_lufs": -14.0, "actual_lufs": -14.08,
          "target_error_lu": 0.08, "target_signed_error_lu": -0.08,
          "target_status": "met", "true_peak_dbtp": -0.41}
@@ -49,11 +49,13 @@ def fake_engine(monkeypatch, tmp_path):
 
     def run_stream(cmd, cwd, env=None, cancel=None, on_progress=None):
         state["calls"].append(list(cmd))
-        out = Path(cmd[3])
+        out = Path(cmd[4] if cmd[1:3] == ["-m", "mastering"] else cmd[3])
         out.write_bytes(b"mastered")
         Path(str(out) + backend.MASTERING_REPORT_SUFFIX).write_text(
             json.dumps(state["stats"]), encoding="utf-8")
 
+    monkeypatch.setattr(backend, "stage_hygiene", lambda in_wav, out_wav, **kwargs: (
+        Path(out_wav).write_bytes(Path(in_wav).read_bytes()), 1.0)[1])
     monkeypatch.setattr(backend, "_run_stream", run_stream)
     return state
 
@@ -61,7 +63,7 @@ def fake_engine(monkeypatch, tmp_path):
 def test_stage_soren_returns_engine_stats(fake_engine, tmp_path):
     out = tmp_path / "out.wav"
     stats = backend.stage_soren(_tone_wav(tmp_path / "in.wav"), out, style_mode="off")
-    assert stats["engine"] == "soren_bounded_v2"
+    assert stats["engine"] == STATS["engine"]
     assert stats["target_lufs"] == -14.0 and stats["target_status"] == "met"
     assert Path(str(out) + backend.MASTERING_REPORT_SUFFIX).is_file()
 
@@ -132,11 +134,15 @@ def test_nan_stats_survive_to_final_report(fake_engine, tmp_path):
     assert any("实测 NaN LUFS" in lb for lb in labels)
 
 
-def test_engine_source_changes_invalidate_cache(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["off", "styled"])
+def test_engine_source_changes_invalidate_cache(tmp_path, monkeypatch, mode):
     src = _tone_wav(tmp_path / "song.wav")
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     (runtime / "core_decrypted.py").write_text("# v1\n", encoding="utf-8")
+    (runtime / "mastering").mkdir()
+    (runtime / "mastering" / "finalizer.py").write_text("# v1\n", encoding="utf-8")
+    monkeypatch.setattr(backend, "MASTERING_ROOT", runtime)
     monkeypatch.setattr(backend, "_ensure_dev_runtime", lambda: runtime)
     calls = []
 
@@ -146,11 +152,13 @@ def test_engine_source_changes_invalidate_cache(tmp_path, monkeypatch):
 
     monkeypatch.setattr(backend, "stage_soren", soren)
     kwargs = dict(bypass=["lew", "bass", "drums", "reshape", "vocals"],
-                  style_mode="off")
+                  style_mode=mode)
     backend.run_pipeline(src, tmp_path / "out", cache_enabled=True, **kwargs)
     backend.run_pipeline(src, tmp_path / "out", cache_enabled=True, **kwargs)
     assert len(calls) == 1                           # 引擎不变 → 母带命中缓存
-    (runtime / "core_decrypted.py").write_text("# v2 算法变更\n", encoding="utf-8")
+    engine_file = (runtime / "mastering" / "finalizer.py" if mode == "off"
+                   else runtime / "core_decrypted.py")
+    engine_file.write_text("# v2 算法变更\n", encoding="utf-8")
     backend.run_pipeline(src, tmp_path / "out", cache_enabled=True, **kwargs)
     assert len(calls) == 2                           # 引擎源码在缓存身份里 → 失效
 

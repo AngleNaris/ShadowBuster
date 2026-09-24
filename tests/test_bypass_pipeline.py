@@ -87,13 +87,13 @@ def test_lew_bypass_feeds_44k_mix_into_demucs_when_stem_stage_enabled(stub_runti
                          cache_enabled=False)
 
     assert len(demucs_inputs) == 1
-    assert demucs_inputs[0][0].endswith("_lew.wav")
+    assert demucs_inputs[0][0] == "original.wav"
     assert demucs_inputs[0][1] == 44100
     assert (tmp_path / "out" / "song_shadowbuster.wav").exists()
 
 
-def test_lew_bypass_keeps_44k_input_bit_exact(stub_runtime, tmp_path, monkeypatch):
-    """输入已是 44.1k 时不重编码：旁路 Lew + 全部分轨旁路，母带收到原文件字节。"""
+def test_lew_bypass_keeps_44k_input_unresampled_for_mastering(stub_runtime, tmp_path, monkeypatch):
+    """输入已是 44.1k 时不重编码：旁路 Lew + 全部分轨旁路，母带引擎收到卫生滤波后的 premaster。"""
     src = _tone_wav(tmp_path / "song.wav", sr=44100)
     calls = {"convert": 0, "soren": []}
 
@@ -101,7 +101,10 @@ def test_lew_bypass_keeps_44k_input_bit_exact(stub_runtime, tmp_path, monkeypatc
         calls["convert"] += 1
 
     def soren(input_wav, out_wav, **kwargs):
-        calls["soren"].append(Path(input_wav).read_bytes())
+        # 工作目录在 run_pipeline 结束时清理，mock 内当场读取，不能留到断言。
+        info = sf.info(input_wav)
+        calls["soren"].append((info.samplerate, info.frames, Path(input_wav).name,
+                               Path(input_wav).read_bytes()))
         shutil.copyfile(input_wav, out_wav)
 
     monkeypatch.setattr(backend, "ffmpeg_convert", convert)
@@ -112,5 +115,8 @@ def test_lew_bypass_keeps_44k_input_bit_exact(stub_runtime, tmp_path, monkeypatc
 
     assert calls["convert"] == 0
     assert len(calls["soren"]) == 1
-    assert calls["soren"][0] == src.read_bytes()
-    assert (tmp_path / "out" / "song_shadowbuster.wav").read_bytes() == src.read_bytes()
+    samplerate, frames, name, payload = calls["soren"][0]
+    # 不重编码：没过 ffmpeg，帧率帧数与输入一致；引擎拿到的是母带前卫生滤波输出
+    assert samplerate == 44100 and frames == sf.info(src).frames
+    assert name.endswith("_premaster.wav") and payload != src.read_bytes()
+    assert (tmp_path / "out" / "song_shadowbuster.wav").read_bytes() == payload

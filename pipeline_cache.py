@@ -14,6 +14,23 @@ def root():
     return Path(os.environ.get('SB_PROCESSING_CACHE_DIR', str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'ShadowBuster' / 'processing-cache')))
 
 
+def preview_dir():
+    """预览渲染缓存目录（片段成品 wav + 元数据 json，跨会话复用）。"""
+    return root() / 'preview-cache'
+
+
+def prune_previews(keep=30):
+    """预览缓存上限保护：按 mtime 保留最新 keep 组 wav+json 对，其余淘汰。"""
+    d = preview_dir()
+    try:
+        metas = sorted(d.glob('*.json'), key=lambda q: q.stat().st_mtime, reverse=True)
+        for stale in metas[int(keep):]:
+            stale.unlink(missing_ok=True)
+            stale.with_name(stale.name[:-len('.json')] + '.wav').unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def md5(path):
     h = hashlib.md5()
     with Path(path).open('rb') as f:

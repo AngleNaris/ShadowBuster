@@ -15,8 +15,13 @@ import traceback
 import uuid
 from pathlib import Path
 
-# 使用 QtWebEngine 默认的 GPU 加速与合成路径。
-# 不在全局强制软件渲染；特殊远程桌面或旧驱动环境应单独启用兼容模式。
+# Windows 的默认 D3D 合成路径在系统边框缩放后可能继续显示旧交换链画面：
+# Chromium 的布局/命中区域已更新，窗口却显示旧尺寸，出现裁切与点击错位。
+# 仅切换 Qt 的窗口合成为 OpenGL，保留 Chromium / 音频推理的 GPU 加速。
+# 必须在创建 QApplication / WebEngine 前设置；允许部署环境显式覆盖。
+if sys.platform == "win32":
+    os.environ.setdefault("QSG_RHI_BACKEND", "opengl")
+
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS",
                       "--disable-sandbox --no-sandbox --disable-dev-shm-usage")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
@@ -42,11 +47,10 @@ def map_ui_params(params, six_stem_available=None):
     - 鼓身 punch（0–10）同时驱动 Kick/Bass 有界让位：amount = 0.5×punch/10
       （默认鼓身 2 → 0.1；上限 6dB、仅 20–180Hz，不会挖空低音）。
       显式隐藏参数 sidechain_amount 优先；attack/release/max_duck 固定默认。
-    - 人声压缩默认 0.4（有界宽带、空气感不受频谱损失）；人声空气高架默认
-      镜像补偿母带 8kHz 高架衰减（只补不削，封顶 2dB）——"无论如何不丢
-      人声空气感"。显式隐藏参数 vocal_comp_amount / vocal_air_db 优先。
+    - 人声压缩默认 0.4（有界宽带、空气感不受频谱损失）；人声空气高架仅在旧预置风格母带路径默认
+      镜像补偿 8kHz 高架衰减（封顶 2dB），独立母带与母带旁路默认不补偿。显式隐藏参数 vocal_comp_amount / vocal_air_db 优先。
     - 吉他推子（声场面板，0–1，0=中性）：presence/mud/harsh/小幅电平联动；
-      非零时需要六轨，权重缺失则明确提示回退（吉他调整不生效）。
+      始终使用六轨；吉他比例不改变分离模型。
       显式隐藏参数 guitar_*/synth_* 分项优先。
     返回 (mapping, notices)；mapping 可直接 ** 解包进 run_batch。
     """
@@ -82,32 +86,22 @@ def map_ui_params(params, six_stem_available=None):
     if clarity_auth is None:
         clarity_auth = low_auth
 
-    # 人声压缩默认随 UI 启用（有界、空气感不受频谱损失）；空气高架镜像补偿
-    # 母带 8kHz 高架衰减（SOREN_HIGH_SHELF_MID_DB），只补不削、封顶 2dB。
+    # Only the retained legacy preset engine has the fixed high-shelf cut.
+    # Independent no-style/reference mastering must not inherit its compensation.
     vocal_comp_amount = with_default("vocal_comp_amount", 0.4)
+    legacy_mastering = (params.get("style_mode", backend.DEFAULTS["style_mode"]) == "styled"
+                        and not params.get("reference") and "soren" not in (params.get("bypass") or ()))
     vocal_air_db = with_default(
-        "vocal_air_db", min(2.0, round(-backend.SOREN_HIGH_SHELF_MID_DB, 4)))
+        "vocal_air_db", min(2.0, round(-backend.SOREN_HIGH_SHELF_MID_DB, 4))
+        if legacy_mastering else 0.0)
     # 自动清晰恒开（发闷必然有害；有界 ±2dB 且有置信度门控）。显式 False 优先。
     bass_auto_clarity = params.get("bass_auto_clarity")
     bass_auto_clarity = True if bass_auto_clarity is None else bool(bass_auto_clarity)
 
     # 吉他推子（0–1，0=中性）：更清楚（presence）+ 少浑浊（mud）+ 少毛刺
-    # （harsh）+ 电平小幅跟随；非零时需要六轨分离（权重缺失则明确提示回退）。
-    needs_six_stem = quality == 2 or guitar > 0
-    demucs_model = params.get("demucs_model")
+    # （harsh）+ 电平小幅跟随；全档位固定六轨分离。
+    demucs_model = "htdemucs_6s"
     notices = []
-    if not demucs_model:
-        if needs_six_stem:
-            available = backend.six_stem_weights_available() if six_stem_available is None \
-                else bool(six_stem_available())
-            if available:
-                demucs_model = "htdemucs_6s"
-            else:
-                demucs_model = "htdemucs"
-                notices.append("六轨权重未预置，精细档回退四轨分离"
-                               + ("，吉他调整本次不生效" if guitar > 0 else ""))
-        else:
-            demucs_model = "htdemucs"
 
     mapping = {
         "noise_mode": noise_mode,
@@ -146,37 +140,89 @@ def _preview_cleanup(base):
         shutil.rmtree(base, ignore_errors=True)
 
 
-def _spectrogram_payload(path, time_frames=800, freq_bins=160):
+def app_cache_dir():
+    """应用集中缓存/数据目录（pipeline_cache 同一根，环境变量可重定向）。
+    WebView 持久存储与预览产物都归置于此，应用目录保持只读整洁。"""
+    import pipeline_cache
+    base = pipeline_cache.root()
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return base
+
+
+def _migrate_legacy_storage(target):
+    """旧版把 WebView 存储放在应用目录/包内：启动时一次性搬迁到缓存目录。
+    搬迁失败（旧实例占用等）静默跳过，不影响本次启动。"""
+    candidates = [ROOT / "webview_storage"]
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        try:
+            from PySide6.QtCore import QStandardPaths
+            base = Path(QStandardPaths.writableLocation(
+                QStandardPaths.AppDataLocation))
+            candidates.append(base / "webview_storage")
+        except Exception:
+            pass
+    for legacy in candidates:
+        try:
+            if legacy.is_dir() and not target.exists():
+                shutil.move(str(legacy), str(target))
+        except OSError:
+            pass
+
+
+def _spectrogram_payload(path, time_frames=2000, freq_rows=512, fmin=30.0):
     """整文件频谱图显示数据：单声道下混 STFT 幅度 → dB 整数（-90..0）。
 
     仅用于界面显示，不参与任何音频处理；时间轴均匀分桶覆盖整曲。
+    频率行按对数分布：自 fmin 几何级数排到 Nyquist，每行取其频带内各
+    bin 的最大值（高频端一个带跨多个 bin，逐点采样会漏掉窄峰），带窄于
+    一个 bin 的低频端改用两 bin 线性插值。前端拿到的已经是听感等距的行，
+    不再需要重排——旧版下发线性 bin 时，低频一个 bin 要铺几十行，
+    画面在 100 Hz 以下糊成马赛克。
     """
-    import json as _json
-
+    import base64 as _b64
     import numpy as _np
     import soundfile as _sf
     data, sr = _sf.read(path, dtype="float32", always_2d=True)
     mono = data.mean(axis=1) if data.ndim == 2 else data
     n = len(mono)
-    win = 2048
+    win = 4096
     hop = max(win // 2, n // max(1, time_frames))
     starts = _np.arange(0, max(1, n - win + 1), hop)
     if len(starts) > time_frames:
         starts = _np.linspace(0, len(starts) - 1, time_frames).astype(int)
     window = _np.hanning(win)
-    spec = _np.zeros((freq_bins, len(starts)), dtype=_np.float32)
+    nbins = win // 2 + 1
+    nyq = sr / 2.0
+    f_lo = min(fmin, nyq / 2.0)
+    # 行边界 → 分数 bin 坐标（rfft bin k 对应 k·sr/win Hz）
+    edges = f_lo * (nyq / f_lo) ** (_np.arange(freq_rows + 1) / freq_rows)
+    be = _np.clip(edges * win / sr, 0, nbins - 1)
+    first = _np.ceil(be[:-1]).astype(_np.int64)      # 带内首个/末个整数 bin
+    last = _np.floor(be[1:]).astype(_np.int64)
+    empty = last < first                             # 带窄于一个 bin
+    width = int((last - first + 1).max(initial=1))
+    gap = _np.arange(max(1, width))
+    idx = _np.clip(first[:, None] + gap[None, :], 0, nbins - 1)
+    valid = idx <= last[:, None]
+    at = _np.clip(first - 1, 0, nbins - 2)           # 插值用：带左沿两侧 bin
+    frac = (be[:-1] - at).astype(_np.float32)
+    spec = _np.zeros((freq_rows, len(starts)), dtype=_np.float32)
     for i, s0 in enumerate(starts):
         frame = mono[s0:s0 + win] * window
-        mag = _np.abs(_np.fft.rfft(frame))[:freq_bins]
-        spec[:, i] = mag
-    db = 20.0 * _np.log10(spec + 1e-9)
+        mag = 20.0 * _np.log10(_np.abs(_np.fft.rfft(frame)) + 1e-9)
+        pooled = _np.where(valid, mag[idx], -_np.inf).max(axis=1)
+        mixed = mag[at] + (mag[at + 1] - mag[at]) * frac
+        spec[:, i] = _np.where(empty, mixed, pooled)
     # 自归一：以本文件最高频谱电平为 0 参考向下 90dB 映射，避免未归一 FFT
     # 幅度整体饱和成一片亮色。
-    db = db - (float(db.max()) if db.size else 0.0)
-    db = _np.clip((db + 90.0) * (255.0 / 90.0), 0, 255).astype(int)
-    return {"w": int(len(starts)), "h": int(freq_bins),
+    spec = spec - (float(spec.max()) if spec.size else 0.0)
+    db = _np.clip((spec + 90.0) * (255.0 / 90.0), 0, 255).astype(_np.uint8)
+    return {"w": int(len(starts)), "h": int(freq_rows), "fmin": round(float(f_lo), 3),
             "duration": round(n / sr, 3), "sr": int(sr),
-            "data": db.T.ravel().tolist()}
+            "b64": _b64.b64encode(_np.ascontiguousarray(db.T).ravel()).decode("ascii")}
 
 
 def collect_pipeline_kwargs(params):
@@ -342,6 +388,13 @@ class Bridge(QObject):
     previewDone = Signal(str)                # 预览渲染完成（JSON：output/quality/notices）
     previewFailed = Signal(str)              # 预览失败消息
     previewProgress = Signal(float)          # 预览渲染总体进度 0..1
+    previewOutputPeaks = Signal(str)         # 任意音频的频谱载荷（JSON：path/spec/duration）
+    draftReady = Signal(str)
+    draftFailed = Signal(str)
+    draftProgress = Signal(str)
+    draftChunkReady = Signal(str)
+    audioInfoReady = Signal(str)
+    playerWaveformReady = Signal(str)
 
     def __init__(self, window):
         super().__init__()
@@ -352,11 +405,55 @@ class Bridge(QObject):
         self._gpu_thread = None
         self._gpu_lock = threading.Lock()
         self._preview_thread = None
+        self._wave_generation = 0
+        self._draft_session = None
+        self._draft_sessions = {}
+        self._draft_session_id = None
+        self._spec_thread = None
+        self._spec_queue = []
+        self._spec_lock = threading.Lock()
         # 缓存操作与批处理启动共用一把非阻塞闸门：任一方持有时另一方直接拒绝，
         # 避免清空/改容量与开始处理之间出现竞态（闸门本身不做长任务持有）。
         self._cache_gate = threading.Lock()
 
     # ── JS 可调用的方法 ──
+    @Slot(str)
+    def playerWaveform(self, path):
+        """Timeline peaks only; no spectrogram work on the playback path."""
+        self._player_wave_path = path
+        def read():
+            import json
+            import numpy as np
+            import soundfile as sf
+            result = {'path': path, 'peaks': [], 'rms': []}
+            try:
+                with sf.SoundFile(path) as audio:
+                    step = max(1, (len(audio) + 1199) // 1200)
+                    result['duration'] = len(audio) / audio.samplerate
+                    while audio.tell() < len(audio):
+                        if self._player_wave_path != path:
+                            return
+                        block = audio.read(step, dtype='float32', always_2d=True)
+                        result['peaks'].append(float(np.max(np.abs(block))))
+                        result['rms'].append(float(np.sqrt(np.mean(block.astype('float64') ** 2))))
+            except Exception as exc:
+                result['error'] = str(exc)
+            if self._player_wave_path == path:
+                self.playerWaveformReady.emit(json.dumps(result, ensure_ascii=False))
+        threading.Thread(target=read, daemon=True).start()
+
+    @Slot(str)
+    def audioInfo(self, path):
+        def read():
+            import json
+            import soundfile as sf
+            try:
+                result = {'path': path, 'duration': sf.info(path).duration}
+            except Exception as exc:
+                result = {'path': path, 'error': str(exc)}
+            self.audioInfoReady.emit(json.dumps(result, ensure_ascii=False))
+        threading.Thread(target=read, daemon=True).start()
+
     @Slot()
     def checkUpdate(self):
         """后台线程查询 GitHub Releases 最新版本，结果经 updateInfo 信号回传。"""
@@ -716,7 +813,7 @@ class Bridge(QObject):
         if not self._cache_gate.acquire(blocking=False):
             self._cache_emit({"type": "busy", "op": op})
             return False
-        if self._thread and self._thread.is_alive():
+        if (self._thread and self._thread.is_alive()) or self._gpu_lock.locked():
             self._cache_gate.release()
             self._cache_emit({"type": "busy", "op": op})
             return False
@@ -850,20 +947,124 @@ class Bridge(QObject):
         except (OSError, ValueError) as exc:
             return _json.dumps({"error": str(exc)}, ensure_ascii=False)
 
+    # ── 成品版本：同一首歌多次处理产生的 _shadowbuster(_vN).wav 列表 ──
+    @Slot(str, str, result=str)
+    def listOutputs(self, out_dir, stem):
+        """列出输出目录下某首歌的全部成品版本（v1/v2…，按版本号排序）。
+        路径统一 POSIX 斜杠：与 QFileDialog/前端 fileUrl 一致，避免前后端
+        路径分隔符不一致导致回传匹配失败。"""
+        import json as _json
+        import re as _re
+        items = []
+        try:
+            d = Path(out_dir)
+            if stem and d.is_dir():
+                pat = _re.compile(_re.escape(stem) + r"_shadowbuster(?:_v(\d+))?\.wav$",
+                                  _re.IGNORECASE)
+                for p in d.glob("*.wav"):
+                    m = pat.match(p.name)
+                    if m:
+                        items.append({"name": p.name, "path": p.as_posix(),
+                                      "version": int(m.group(1) or 1),
+                                      "mtime": int(p.stat().st_mtime)})
+            items.sort(key=lambda i: (i["version"], i["mtime"]))
+        except (OSError, ValueError):
+            pass
+        return _json.dumps({"outputs": items}, ensure_ascii=False)
+
     # ── 预览：波形峰值 + 片段快速渲染（与批处理互斥，GPU 锁保护）──
+    @staticmethod
+    def _draft_cache_key(path, params):
+        def identity(filename):
+            if not filename:
+                return None
+            p = Path(filename).resolve()
+            stat = p.stat()
+            return (str(p), stat.st_size, stat.st_mtime_ns)
+        return (identity(path), params.get('quality'), identity(params.get('reference')),
+                params.get('style_mode') == 'styled' and not params.get('reference'),
+                'lew' in params.get('bypass', []))
+
+    @Slot(str, 'QVariantMap', int, result=str)
+    def draftLookup(self, path, params, request_id):
+        import json
+        entry = self._draft_sessions.get(str(Path(path).resolve()))
+        try:
+            if not entry or entry[0] != self._draft_cache_key(path, params):
+                return 'null'
+        except OSError:
+            return 'null'
+        self._draft_session, self._draft_session_id = entry[1], request_id
+        return json.dumps({**entry[2], 'id': request_id, 'restored': True}, ensure_ascii=False)
+
+    @Slot(str, float, float, "QVariantMap", int)
+    def draftPrepare(self, path, start, end, params, request_id):
+        import json
+        if not self._cache_gate.acquire(blocking=False):
+            self.draftFailed.emit(json.dumps({'id': request_id, 'error': '缓存正在维护，请稍后准备草稿'}))
+            return
+        available = self._gpu_lock.acquire(blocking=False)
+        self._cache_gate.release()
+        if not available:
+            self.draftFailed.emit(json.dumps({'id': request_id, 'error': '处理资源正在使用，请稍后准备草稿'}))
+            return
+        self._cancel_flag.clear()
+        try:
+            self._preview_thread = threading.Thread(target=self._draft_worker,
+                args=(path, start, end, dict(params), request_id), daemon=True)
+            self._preview_thread.start()
+        except Exception as exc:
+            self._gpu_lock.release()
+            self.draftFailed.emit(json.dumps({'id': request_id, 'error': str(exc)}))
+
+    def _draft_worker(self, path, start, end, params, request_id):
+        import json
+        import draft_preview
+        try:
+            cache_key = self._draft_cache_key(path, params)
+            session = draft_preview.Session()
+            kwargs, notices = collect_pipeline_kwargs(params)
+            def progress(frac, label):
+                self.draftProgress.emit(json.dumps({'id':request_id, 'label':label, 'fraction':frac}, ensure_ascii=False))
+            result = draft_preview.prepare(backend, path, start, end, kwargs,
+                                           progress=progress, cancel=self._cancel_flag.is_set, session=session)
+            self._draft_session = session
+            self._draft_session_id = request_id
+            result['id'] = request_id
+            result['notices'] += notices
+            self._draft_sessions[str(Path(path).resolve())] = (cache_key, session, dict(result))
+            self.draftReady.emit(json.dumps(result, ensure_ascii=False))
+        except Exception as exc:
+            self.draftFailed.emit(json.dumps({'id':request_id, 'error':str(exc)}, ensure_ascii=False))
+        finally:
+            self._gpu_lock.release()
+
+    @Slot(int, int, int)
+    def draftReadChunk(self, session_id, index, generation):
+        session = self._draft_session
+        def read():
+            import json
+            result = {'session': session_id, 'generation': generation, 'index': index}
+            try:
+                if session is None or session_id != self._draft_session_id:
+                    raise ValueError('试听缓存已切换，请重新准备')
+                result.update(session.chunk(index))
+            except Exception as exc:
+                result['error'] = str(exc)
+            self.draftChunkReady.emit(json.dumps(result, ensure_ascii=False))
+        threading.Thread(target=read, daemon=True).start()
+
     @Slot(str)
     def previewLoad(self, path):
         p = Path(path)
         if not p.is_file():
             self.previewFailed.emit("文件不存在，无法预览")
             return
-        if self._preview_thread and self._preview_thread.is_alive():
-            return
-        self._preview_thread = threading.Thread(
-            target=self._preview_load_worker, args=(str(p),), daemon=True)
-        self._preview_thread.start()
+        self._wave_generation += 1
+        threading.Thread(target=self._preview_load_worker,
+            args=(path, self._wave_generation), daemon=True).start()
 
-    def _preview_load_worker(self, path):
+    def _preview_load_worker(self, path, generation=None):
         try:
             import json as _json
 
@@ -877,12 +1078,45 @@ class Bridge(QObject):
                 while handle.tell() < info.frames:
                     data = handle.read(step, dtype="float32", always_2d=True)
                     peaks.append(float(_np.max(_np.abs(data))) if data.size else 0.0)
-            payload = {"duration": round(info.frames / info.samplerate, 3),
+            payload = {"path": path, "duration": round(info.frames / info.samplerate, 3),
                        "sr": info.samplerate, "peaks": peaks,
                        "spec": _spectrogram_payload(path)}
-            self.previewPeaks.emit(_json.dumps(payload))
+            if generation is None or generation == self._wave_generation:
+                self.previewPeaks.emit(_json.dumps(payload))
         except Exception as exc:
-            self.previewFailed.emit(f"读取波形失败: {exc}")
+            if generation is None or generation == self._wave_generation:
+                self.previewFailed.emit(f"读取波形失败: {exc}")
+
+    @Slot(str)
+    def previewLoadOutput(self, path):
+        """为任意成品/输入文件计算频谱显示数据，结果经 previewOutputPeaks 回传。
+        请求进入队列由单工作线程依次消化：快速连点/多版本并发请求不丢失。
+        队列与回传一律保留前端原始请求串（不做 Path 规范化），保证
+        前端按 path 路由时键值完全一致。"""
+        if not Path(path).is_file():
+            self.previewFailed.emit("文件不存在，无法读取频谱")
+            return
+        with self._spec_lock:
+            if path not in self._spec_queue:
+                self._spec_queue.append(path)
+            if self._spec_thread is None or not self._spec_thread.is_alive():
+                self._spec_thread = threading.Thread(
+                    target=self._spec_drain, daemon=True)
+                self._spec_thread.start()
+
+    def _spec_drain(self):
+        while True:
+            with self._spec_lock:
+                if not self._spec_queue:
+                    return
+                path = self._spec_queue.pop(0)
+            try:
+                import json as _json
+                payload = {"path": path, "spec": _spectrogram_payload(path)}
+                self.previewOutputPeaks.emit(_json.dumps(payload, ensure_ascii=False))
+            except Exception as exc:
+                backend._tr(f"spec load failed for {path!r}: {exc!r}")
+                self.previewFailed.emit(f"读取频谱失败: {exc}")
 
     @Slot(str, float, float, "QVariantMap")
     def previewRender(self, path, start, end, params):
@@ -905,6 +1139,37 @@ class Bridge(QObject):
             daemon=True)
         self._preview_thread.start()
 
+    def _preview_cache_key(self, path, start, end, params):
+        """预览缓存键：文件身份（路径/大小/mtime）+ 片段 + 参数 + 引擎版本。
+        任一变化都会生成新键；同片段同参数复用直接命中。"""
+        import hashlib as _hashlib
+        import json as _json
+        p = Path(path)
+        try:
+            st = p.stat()
+            file_ident = [str(p), st.st_size, st.st_mtime_ns]
+        except OSError:
+            file_ident = [str(p)]
+        import pipeline_cache
+        reference = params.get('reference')
+        ident = {"v": 2, "app": backend.APP_VERSION,
+                 "dsp": backend.DSP_ENGINE_VERSION,
+                 "file": file_ident, "start": round(float(start), 3),
+                 "end": round(float(end), 3), "params": params,
+                 "source_content": pipeline_cache.fingerprint(p),
+                 "reference_content": pipeline_cache.fingerprint(reference) if reference else None,
+                 "code": [(str(q), pipeline_cache.md5(q)) for q in
+                          [Path(__file__), Path(backend.__file__), *backend.DSP_DIR.glob('*.py'),
+                           *(backend.MASTERING_ROOT/'mastering').glob('*.py')] if q.is_file()]}
+        blob = _json.dumps(ident, sort_keys=True, ensure_ascii=False, default=str)
+        return _hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _prune_preview_cache(cache_dir, keep=30):
+        """预览缓存上限保护：淘汰最旧的 wav+json 对（删除统一经 pipeline_cache）。"""
+        import pipeline_cache
+        pipeline_cache.prune_previews(keep)
+
     def _preview_render_worker(self, path, start, end, params):
         base = None
         try:
@@ -912,7 +1177,23 @@ class Bridge(QObject):
             import shutil
             import tempfile
 
+            import pipeline_cache
             import soundfile as _sf
+            cache_dir = pipeline_cache.preview_dir()
+            key = self._preview_cache_key(path, start, end, params)
+            cached_wav = cache_dir / f"{key}.wav"
+            cached_meta = cache_dir / f"{key}.json"
+            if cached_wav.is_file() and cached_meta.is_file():
+                try:
+                    payload = _json.loads(cached_meta.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict) and payload.get("spec"):
+                        payload["output"] = str(cached_wav)
+                        payload["cached"] = True
+                        self.previewDone.emit(_json.dumps(payload, ensure_ascii=False))
+                        self.previewProgress.emit(1.0)
+                        return
+                except (OSError, ValueError):
+                    pass
             kwargs, notices = collect_pipeline_kwargs(params)
             base = Path(tempfile.mkdtemp(prefix="sb_preview_"))
             stem = Path(path).stem + f"_pv{int(round(start))}_{int(round(end))}"
@@ -937,14 +1218,19 @@ class Bridge(QObject):
             self.previewProgress.emit(0.95)
             spec_out = _spectrogram_payload(result)
             summary = backend.quality_summary(report) or {}
-            previews = ROOT / "webview_storage" / "preview"
-            previews.mkdir(parents=True, exist_ok=True)
-            final = previews / Path(result).name
+            # 预览产物入缓存目录（跨会话复用），不再散落在应用目录。
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            final = cache_dir / f"{key}.wav"
             shutil.move(str(result), str(final))
-            payload = {"output": str(final), "quality": summary,
-                       "mastering": report.get("mastering") or {},
-                       "metrics": (report.get("output") or {}).get("metrics") or {},
-                       "spec": spec_out, "notices": notices}
+            meta = {"quality": summary,
+                    "mastering": report.get("mastering") or {},
+                    "metrics": (report.get("output") or {}).get("metrics") or {},
+                    "spec": spec_out, "notices": notices}
+            tmp_meta = cache_dir / f"{key}.json.tmp"
+            tmp_meta.write_text(_json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            tmp_meta.replace(cached_meta)
+            self._prune_preview_cache(cache_dir)
+            payload = {**meta, "output": str(final)}
             self.previewDone.emit(_json.dumps(payload, ensure_ascii=False))
             self.previewProgress.emit(1.0)
         except Exception as exc:
@@ -1109,15 +1395,17 @@ class StudioWindow(QMainWindow):
         self.view.load(QUrl.fromLocalFile(str(UI_INDEX.resolve())))
 
     def _persistent_storage_dir(self):
-        """WebView 持久存储目录。安装目录可写时随程序走（Windows 惯例）；
-        macOS .app 只读且用户不应翻包内容，放 ~/Library/Application Support。"""
-        if getattr(sys, "frozen", False) and sys.platform == "darwin":
-            from PySide6.QtCore import QStandardPaths
-            base = Path(QStandardPaths.writableLocation(
-                QStandardPaths.AppDataLocation))
-            (base / "webview_storage").mkdir(parents=True, exist_ok=True)
-            return base / "webview_storage"
-        return ROOT / "webview_storage"
+        """WebView 持久存储目录：统一放在处理缓存目录下（用户数据与缓存集中，
+        应用目录保持整洁）。旧版本存放在应用目录/包内的存储启动时一次性搬迁。"""
+        target = app_cache_dir() / "webview-storage"
+        _migrate_legacy_storage(target)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # 缓存目录不可写（罕见）：回退应用目录旧位置，保证可用性
+            target = ROOT / "webview_storage"
+            target.mkdir(parents=True, exist_ok=True)
+        return target
 
     def _restore_or_default_geometry(self):
         """恢复上次窗口几何；首次启动按屏幕自适应默认尺寸并居中。

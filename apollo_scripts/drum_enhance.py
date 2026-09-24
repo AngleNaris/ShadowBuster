@@ -22,8 +22,10 @@ from bass_enhance import _bell, transient_emphasize, transient_emphasize_curves
 
 
 def _gate(x, sr, gate_db=-45.0, attack_ms=5.0, release_ms=150.0):
-    """鼓活跃段才应用增强：快 attack 让第一击就生效，慢 release 避免尾音闪烁。"""
-    env = np.sqrt(np.convolve(x ** 2, np.ones(int(sr * 0.02)) / (sr * 0.02), mode="same"))
+    """功率域声道联动活动门；短片段截短窗口，输出长度保持不变。"""
+    power = np.mean(x ** 2, axis=1) if x.ndim == 2 else x ** 2
+    win = min(max(1, int(sr * 0.02)), len(power))
+    env = np.sqrt(np.convolve(power, np.ones(win) / win, mode="same"))
     env_db = 20 * np.log10(env + 1e-12)
     target = np.where(env_db > gate_db, 1.0, 0.0)
     a = 1.0 - np.exp(-1.0 / (sr * attack_ms / 1000.0))
@@ -37,11 +39,12 @@ def _gate(x, sr, gate_db=-45.0, attack_ms=5.0, release_ms=150.0):
     return gate
 
 
-def enhance_drum_stem(x, sr, punch_db=2.0, trans=0.3, transient_curves=None):
+def enhance_drum_stem(x, sr, punch_db=2.0, trans=0.3, transient_curves=None, activity_gate=None):
     """增强鼓 stem。punch_db: 90Hz bell 提升量; trans: 瞬态强调强度 0-1。
 
     单声道输入（或 transient_curves=None）时瞬态曲线按本信号自算；立体声
     调用方应从原始 (n,2) drums 冻结联动曲线传入（左右共用控制量）。
+    activity_gate 同样从完整立体声计算并共享，避免门限改变声像。
     """
     x = x.astype(np.float64)
     if punch_db == 0 and trans == 0:
@@ -51,7 +54,7 @@ def enhance_drum_stem(x, sr, punch_db=2.0, trans=0.3, transient_curves=None):
     # 2. 全频段瞬态强调（主敲击区 120Hz-8kHz + 高频区减半，立体声联动）
     x_eff = transient_emphasize(x_warm, sr, trans, curves=transient_curves)
     # 3. 门控：鼓不响的段落保持原样
-    gate = _gate(x, sr)
+    gate = _gate(x, sr) if activity_gate is None else activity_gate
     return x + (x_eff - x) * gate
 
 
@@ -64,6 +67,7 @@ def main():
     ap.add_argument("--punch-db", type=float, default=2.0, help="90Hz 鼓 body 提升 dB")
     ap.add_argument("--trans", type=float, default=0.3, help="瞬态强调强度 0-1")
     ap.add_argument("--drums-gain-db", type=float, default=0.0, help="drums 整体增益 dB")
+    ap.add_argument("--stem-scale", type=float, default=1.0, help="累计上游混音缩放")
     ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
@@ -73,6 +77,7 @@ def main():
         ap.error(f"sample rate mismatch: {args.in_mix} is {sr2}, expected {sr}")
     try:
         validate_audio_pair(drums, in_mix, sr, primary_name="drums", secondary_name="in-mix")
+        finite_range(args.stem_scale, "stem-scale", 0.0, 1.0)
         finite_range(args.drums_gain_db, "drums-gain-db", -12.0, 12.0)
     except ValueError as exc:
         ap.error(str(exc))
@@ -81,6 +86,7 @@ def main():
         try: finite_range(value, name, lo, hi)
         except ValueError as exc: ap.error(str(exc))
 
+    drums = drums * args.stem_scale
     original_drums = drums.copy()
     if args.drums_gain_db:
         drums = drums * (10 ** (args.drums_gain_db / 20.0))
@@ -89,10 +95,12 @@ def main():
     # 瞬态控制曲线从原始立体声冻结（多声道平均功率，左右共用一条）：
     # 每声道独立计算会让左右漂移、左右互换不对称（规格 §6.5 / DSP-09）。
     transient_curves = transient_emphasize_curves(drums, sr, args.trans)
+    activity_gate = _gate(drums, sr)
     for c in range(drums.shape[1]):
         out[:, c] = enhance_drum_stem(drums[:, c], sr, punch_db=args.punch_db,
                                       trans=args.trans,
-                                      transient_curves=transient_curves)
+                                      transient_curves=transient_curves,
+                                      activity_gate=activity_gate)
     out = in_mix + (out - original_drums)
 
     # 与 bass_enhance 相同的约定：混合后统一留 -0.5dB 母带余量（真峰值由下游 Soren 负责）

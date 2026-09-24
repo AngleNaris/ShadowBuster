@@ -23,13 +23,18 @@ def tracks(seconds=2):
 
 
 @pytest.mark.parametrize("gain", [-6, -3, 0, 4, 5, 6])
-def test_same_reference_is_exact_mid_offset(gain):
+def test_same_reference_is_exact_stereo_offset(gain):
     v, a = tracks()
     mix = v + a
     out, report = vocal.apply_mid_prominence_control(mix, v, SR, gain, mix, v, return_report=True)
-    delta = v.mean(axis=1) * (10 ** (gain / 20) - 1)
-    np.testing.assert_allclose(out, mix + delta[:, None], atol=1e-12)
-    np.testing.assert_allclose(out[:, 0] - out[:, 1], mix[:, 0] - mix[:, 1], atol=1e-15)
+    delta = v * (10 ** (gain / 20) - 1)
+    np.testing.assert_allclose(out, mix + delta, atol=1e-12)
+    # Mid 增益 = 旧中置注入的同一值（平衡目标不变）；Side 按同一增益跟随人声侧向能量
+    np.testing.assert_allclose(out.mean(axis=1) - mix.mean(axis=1),
+                               v.mean(axis=1) * (10 ** (gain / 20) - 1), atol=1e-12)
+    np.testing.assert_allclose((out[:, 0] - out[:, 1]) / 2,
+                               (mix[:, 0] - mix[:, 1]) / 2
+                               + (v[:, 0] - v[:, 1]) / 2 * (10 ** (gain / 20) - 1), atol=1e-12)
     assert report["absolute_error_p95_db"] < 1e-8
     if gain == 0:
         np.testing.assert_array_equal(out, mix)
@@ -41,7 +46,7 @@ def test_scaled_mix_vocal_accounting_and_two_db_accompaniment(scale):
     current = scale * (v + a * 10 ** (2 / 20))
     out, report = vocal.apply_mid_prominence_control(current, v, SR, 4, v + a, v,
                                                      vocal_scale=scale, return_report=True)
-    expected = current + (v.mean(axis=1) * scale * (10 ** (6 / 20) - 1))[:, None]
+    expected = current + (v * scale) * (10 ** (6 / 20) - 1)
     np.testing.assert_allclose(out, expected, atol=1e-12)
     assert report["absolute_error_p95_db"] < 1e-7
 
@@ -74,7 +79,7 @@ def test_safety_cap_and_no_direction_reversal(gain, boost):
 
 
 @pytest.mark.parametrize("kind", ["silence", "acapella", "side", "tiny_denominator", "no_vocal"])
-def test_unreliable_ratio_falls_back_without_side_modification(kind):
+def test_unreliable_ratio_falls_back_to_user_offset_without_ratio_correction(kind):
     v, a = tracks()
     if kind == "silence":
         v[:] = 0
@@ -91,7 +96,8 @@ def test_unreliable_ratio_falls_back_without_side_modification(kind):
     out, report = vocal.apply_mid_prominence_control(mix, v, SR, 4, mix, v, return_report=True)
     assert report["valid_window_count"] == 0
     assert report["absolute_error_p50_db"] is None
-    np.testing.assert_allclose(out, mix + (v.mean(axis=1) * (10 ** (4 / 20) - 1))[:, None], atol=1e-12)
+    # 比率不可靠 → 不做自动校正；用户显式 +4dB 仍按立体声注入 v·(g−1)
+    np.testing.assert_allclose(out, mix + v * (10 ** (4 / 20) - 1), atol=1e-12)
 
 
 @pytest.mark.parametrize("samples", [1, 20, 799, 801, 1001])

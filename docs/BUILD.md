@@ -2,6 +2,8 @@
 
 面向开发机的三步构建流程、三层校验与版本号同步清单。产品代码之外的组件（Soren 母带组件、Apollo/Lew 上游源码与权重、FFmpeg）不属于本仓库，需另行准备。
 
+2026-09-19 增量：无风格终段已独立到仓库 `mastering/`。Windows/macOS 装配脚本将其复制为 `runtime/mastering/`，同时复制 `audio_metrics.py` 到 runtime 根；Windows 校验源码一致性并计入 critical manifest。用户参考与 eq_only 也已迁移；旧预置风格清理前装配仍需 Soren 资源。Windows 固定安装 Matchering 2.0.6 / resampy 0.4.3；macOS 需先将对应 wheel 及依赖准备到离线 WHEELS_DIR。本轮只修改装配脚本，未构建安装包；macOS 脚本未在 macOS 实机验证。
+
 ## 架构与目录
 
 - 界面是 PySide6 + QtWebEngine（UI 外壳），独立打包为 onedir。

@@ -31,14 +31,14 @@
 
 ## 这是什么
 
-ShadowBuster 是面向 AI 生成音乐与有损音频的 Windows 修复、增强和母带工坊。它把高频重建、Demucs 四轨分离、贝斯与鼓增强、人声调整、声场重塑、高频降噪和最终母带串成一条可取消、可观察的桌面流程。
+ShadowBuster 是面向 AI 生成音乐与有损音频的 Windows 修复、增强和母带工坊。它把高频重建、Demucs 六轨分离、贝斯与鼓增强、人声调整、声场重塑、高频降噪和最终母带串成一条可取消、可观察的桌面流程。
 
 应用使用 PySide6 与 QtWebEngine 构建桌面界面，支持文件拖放、参数持久化、深浅主题和自定义强调色。AI 推理运行时与应用外壳分离；未安装 CUDA 环境时仍可使用 CPU 完成同一套处理。
 
 <table>
   <tr>
     <td width="33%" valign="top"><b>高频重建</b><br><sub>使用 Lew / Apollo 超分辨率模型重绘有损编码中丢失的高频，并通过强度控制混合原始信号。</sub></td>
-    <td width="33%" valign="top"><b>四轨分离</b><br><sub>由 Demucs 拆出 vocals、drums、bass 与 other，为分轨增强和残差保留提供基础。</sub></td>
+    <td width="33%" valign="top"><b>六轨分离</b><br><sub>由 Demucs 拆出 vocals、drums、bass、other、guitar 与 piano，为分轨增强和残差保留提供基础。</sub></td>
     <td width="33%" valign="top"><b>节奏增强</b><br><sub>分别处理贝斯低频与鼓组瞬态，保留门控与强度控制，避免把整首混音一起染色。</sub></td>
   </tr>
   <tr>
@@ -52,7 +52,7 @@ ShadowBuster 是面向 AI 生成音乐与有损音频的 Windows 修复、增强
 
 ```text
 Lew 高频重建
-→ Demucs 四轨分离
+→ Demucs 六轨分离
 → 贝斯增强
 → 鼓增强
 → 人声调整
@@ -61,6 +61,8 @@ Lew 高频重建
 ```
 
 各阶段保持清晰边界：Lew 负责恢复频带，Demucs 提供可独立处理的轨道，增强阶段只修改对应分轨，最后再由 Soren 完成整体响度、频谱和峰值定版。处理编排、进度和取消由 `studio_backend.py` 统一管理。
+
+开发版迁移进度（2026-09-19）：无风格、用户 EQ 与用户参考已接入 ShadowBuster 独立母带；用户参考由 Matchering 2.0.6 提供音色方向，应用控制强度、声场、响度与峰值。不提供预置参考；旧预置风格与 Soren 资源的完整移除留到批次 D。已安装版本不受源码修改影响。详见 [迁移计划](docs/analysis/matchering_migration_plan_20260919.md)。
 
 ## 发布与 GPU 环境
 

@@ -1,4 +1,10 @@
-"""Vocal Mid control relative to the pre-enhancement vocal/accompaniment balance."""
+"""Vocal balance control relative to the pre-enhancement vocal/accompaniment balance.
+
+平衡增益按立体声注入（v·(g−1)），不再把 Mid 单独灌进两个声道。Mid 拿到的增益与
+旧实现逐样本相同（平衡目标、活动门限、误差统计全部不变），Side 同时按同一增益
+跟随人声自身的侧向能量——这正是旧中置注入缺的那部分：它只给 Mid 加能量，S/M 被
+稀释，母带链再按比例展宽后听感就是"处理完声场反而收窄"。
+"""
 import argparse
 import json
 import shutil
@@ -375,7 +381,7 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
         fixed_gain = float(np.clip(desired_gain, -GAIN_LIMIT_DB, GAIN_LIMIT_DB))
         limited = valid & (abs(desired_gain - fixed_gain) > 1e-8)
         sample_db.fill(fixed_gain)
-        vocal_delta = (_mid(v) * np.expm1(fixed_gain*np.log(10)/20))[:, None]
+        vocal_delta = v * np.expm1(fixed_gain*np.log(10)/20)
         eq_delta, eq_report = _masking_eq(mix - v, v, sr, auto_metrics,
                                          frame_seconds, hop_seconds)
         delta = vocal_delta + eq_delta
@@ -403,7 +409,7 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
             alpha = -np.expm1(-(centers[index] - centers[index - 1]) / 0.150)
             smooth[index] = smooth[index - 1] + alpha * (bounded[index] - smooth[index - 1])
         sample_db = np.interp(np.arange(len(mix)) / sr, centers, smooth)
-        delta = (_mid(v) * np.expm1(sample_db * np.log(10) / 20))[:, None]
+        delta = v * np.expm1(sample_db * np.log(10) / 20)[:, None]
     else:
         # Standalone callers without a reference retain the legacy full-stem gain.
         delta = v * np.expm1(user * np.log(10) / 20)
@@ -441,8 +447,7 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
                        "eq_gate": "reliable vocal activity AND band vocal energy AND accompaniment masking; finite hold/release",
                        "estimated_ratio_error_p50_db": float(np.median(errors)) if len(errors) else None,
                        "estimated_absolute_ratio_error_p95_db": float(np.percentile(abs(errors), 95)) if len(errors) else None,
-                       "reconstruction_max_error": float(np.max(abs(out - (estimated_v + estimated_a)))),
-                       "side_delta_max_error": float(np.max(abs((out[:, 0]-out[:, -1]) - (mix[:, 0]-mix[:, -1]))))})
+                       "reconstruction_max_error": float(np.max(abs(out - (estimated_v + estimated_a))))})
         report.update({"active_window_count": int(auto_metrics["active"].sum()),
                        "ratio_valid_window_count": int(auto_metrics["ratio_valid"].sum()),
                        "windows": {"center_seconds": _json_numbers(auto_metrics["centers"]),

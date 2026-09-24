@@ -124,6 +124,7 @@ def main():
     ap.add_argument("--presence-db", type=float, default=0.0)
     ap.add_argument("--harsh-cut-db", type=float, default=0.0)
     ap.add_argument("--width-db", type=float, default=0.0)
+    ap.add_argument("--stem-scale", type=float, default=1.0, help="累计上游混音缩放")
     ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
@@ -154,6 +155,7 @@ def main():
                 ap.error(f"sample rate mismatch: {path} is {data_sr}, expected {sr}")
             validate_audio_pair(data, in_mix, sr, primary_name=str(path),
                                 secondary_name="in-mix")
+        finite_range(args.stem_scale, "stem-scale", 0.0, 1.0)
         for value, name, (lo, hi) in (
                 (args.gain_db, "gain-db", GAIN_DB),
                 (args.mud_cut_db, "mud-cut-db", MUD_DB),
@@ -181,6 +183,7 @@ def main():
         print(f"{args.kind} enhancement neutral; mix passed through unchanged")
         return
 
+    group = group * args.stem_scale
     processed = enhance_stem(
         group, sr, gain_db=args.gain_db,
         mud_cut_db=args.mud_cut_db, presence_db=args.presence_db,

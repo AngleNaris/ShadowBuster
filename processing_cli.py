@@ -69,9 +69,9 @@ def main(argv=None):
                         help='adaptive_all noise band upper edge (Hz)')
     parser.add_argument('--noise-max-attenuation-db', type=bounded(0, 6), default=6.0,
                         help='adaptive_all maximum attenuation cap (dB)')
-    parser.add_argument('--demucs-model', choices=['htdemucs', 'htdemucs_6s'], default='htdemucs',
-                        help='Separation model: htdemucs=4-stem (default, unchanged '
-                             'behavior); htdemucs_6s=six-stem opt-in that also outputs '
+    parser.add_argument('--demucs-model', choices=['htdemucs', 'htdemucs_6s'], default='htdemucs_6s',
+                        help='Separation model: htdemucs=legacy 4-stem ('
+                             'compatibility); htdemucs_6s=default six-stem that also outputs '
                              'guitar/piano, routes a guitar enhancer and a synth group '
                              '(other+piano merged) enhancer')
     for prefix in ('guitar', 'synth'):
@@ -89,7 +89,8 @@ def main(argv=None):
     parser.add_argument('--genre', default=backend.DEFAULTS['genre'])
     parser.add_argument('--loudness', choices=['soft','dynamic','normal','loud'],
                         default=backend.DEFAULTS['loudness'])
-    parser.add_argument('--eq-profile', default=backend.DEFAULTS['eq_profile'])
+    parser.add_argument('--eq-profile', default=backend.DEFAULTS['eq_profile'],
+                        help='global user EQ, active with or without reference/style matching')
     parser.add_argument('--style-mode', choices=['styled','off','eq_only'], default='off')
     parser.add_argument('--style-blend', type=bounded(0,1), default=backend.DEFAULTS['style_blend'],
                         help='styled processing intensity 0-1: 0=no style processing, '
@@ -97,6 +98,14 @@ def main(argv=None):
                              'bit-identical to the legacy release')
     parser.add_argument('--reference')
     parser.add_argument('--lowpass-cutoff', type=bounded(20,22000))
+    parser.add_argument('--hygiene-low-cut-hz', type=bounded(0, 500),
+                        default=backend.DEFAULTS['hygiene_low_cut_hz'],
+                        help='母带前低切（Hz，2 阶巴特沃斯高通；0=关闭）：收掉 <40Hz '
+                             '次低频隆隆声，把限制器余量还给可听频段')
+    parser.add_argument('--hygiene-lowpass-hz', type=bounded(0, 22050),
+                        default=backend.DEFAULTS['hygiene_lowpass_hz'],
+                        help='母带前低通（Hz，线性相位 FIR；0=关闭）：摘掉 20kHz 以上'
+                             '上游生成的合成高频')
     parser.add_argument('--bypass', default='')
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--no-cache', action='store_true', help='Do not read or write processing cache for this run')
@@ -106,6 +115,8 @@ def main(argv=None):
         if sys.stderr is None:
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
         opts = parser.parse_args(args)
+        if opts.reference and not any(a == '--style-mode' or a.startswith('--style-mode=') for a in args):
+            opts.style_mode = 'styled'
         report = {'version': backend.APP_VERSION, 'status': 'error', 'outputs': [], 'error': None}
         code = 1
         try:

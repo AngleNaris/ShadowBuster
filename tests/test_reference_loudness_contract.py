@@ -157,8 +157,8 @@ def test_tone_only_dispatch_uses_reference_file(monkeypatch, tmp_path, stereo):
     assert seen['genre_profile_arg'] is None                # 音色走参考
 
 
-def test_shell_passes_tone_only_flag_with_reference(monkeypatch, tmp_path):
-    """stage_soren：参考模式命令带 --reference-tone-only（+真值 genre）；
+def test_shell_routes_reference_to_independent_tone_pipeline(monkeypatch, tmp_path):
+    """stage_soren：参考模式进入独立应用母带，不再传入流派响度来源；
     无参考时不带。"""
     from pathlib import Path as P
     import soundfile as sf
@@ -175,10 +175,9 @@ def test_shell_passes_tone_only_flag_with_reference(monkeypatch, tmp_path):
                         lambda cmd, cwd, **k: seen.append([str(c) for c in cmd]))
     backend.stage_soren(inp, tmp_path / "o.wav", genre="Pop", reference=ref)
     cmd = seen[-1]
-    assert "--reference" in cmd and "--reference-tone-only" in cmd
-    assert cmd[cmd.index("--genre") + 1] == "Pop"
-    # 参考与 tone-only 相邻出现
-    assert abs(cmd.index("--reference-tone-only") - cmd.index("--reference")) <= 2
+    assert cmd[1:3] == ["-m", "mastering"]
+    assert "--reference" in cmd and "--genre" not in cmd
+    assert cmd[cmd.index("--loudness") + 1] == "normal"
 
     seen.clear()
     backend.stage_soren(inp, tmp_path / "o2.wav", genre="EDM", reference=None)

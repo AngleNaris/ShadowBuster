@@ -68,12 +68,14 @@ def test_mastering_sidecar_routing(tmp_path):
     old=out/'input_shadowbuster.wav.mastering'; old.write_bytes(b'old')
     def copy_stage(_, inp, dest, **kw):
         Path(dest).write_bytes(Path(inp).read_bytes()); return 1.0
+    def hygiene_stage(inp,dest,**kw):
+        Path(dest).write_bytes(Path(inp).read_bytes()); return 1.0
     def master(inp,dest,**kw):
         assert Path(dest).parent != out
         Path(dest).write_bytes(b'mastered')
         Path(str(dest)+'.mastering.json').write_bytes(b'{}')
-    with patch.object(backend,'stage_demucs'), patch.object(backend,'stage_bass',side_effect=copy_stage) as b, patch.object(backend,'stage_drums',side_effect=copy_stage) as d, patch.object(backend,'stage_soren',side_effect=master), patch.object(backend, '_ensure_dev_runtime', return_value=tmp_path/'runtime'):
-        result=backend.run_pipeline(source,out,bypass=['lew','reshape','vocals'],bass_auto_clarity=True,punch_db=4,trans=.5)
+    with patch.object(backend,'stage_demucs'), patch.object(backend,'stage_bass',side_effect=copy_stage) as b, patch.object(backend,'stage_drums',side_effect=copy_stage) as d, patch.object(backend,'stage_hygiene',side_effect=hygiene_stage), patch.object(backend,'stage_soren',side_effect=master), patch.object(backend, '_ensure_dev_runtime', return_value=tmp_path/'runtime'):
+        result=backend.run_pipeline(source,out,demucs_model='htdemucs',bypass=['lew','reshape','vocals'],bass_auto_clarity=True,punch_db=4,trans=.5)
     assert b.call_args.kwargs['auto_clarity'] is True
     assert b.call_args.kwargs['punch_db']==b.call_args.kwargs['trans']==0
     assert d.call_args.kwargs['punch_db']==4

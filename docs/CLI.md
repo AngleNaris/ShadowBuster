@@ -17,11 +17,11 @@ Get-Content -Raw -Encoding UTF8 'D:\Music\run-001.json'
 
 将 EXE 路径替换为实际安装路径。`--input` 可以重复提供；同名输出冲突会拒绝。默认不覆盖已有音频，确需覆盖时显式使用 `--overwrite`。结果 JSON 必须是新路径，避免覆盖旧报告。运行成功退出 0；处理/文件错误退出 1；参数解析错误退出 2（解析错误不生成 JSON）。JSON 包含 status、exit_code、outputs、error。
 
-`--cpu` 使用 CPU，默认 cuda。主要旋钮与 UI 范围一致：Sub 0–12dB，Punch 0–10dB，sat/trans/space-wet/space-denoise 0–1，space-width-db 0–12dB。默认母带 style-mode=off（UI 无风格），默认 space-wet=.6、space-denoise=.2。**低频默认值经两轮听音校准定版（2026-09-17）**：`--sub-db 2 --punch-db 3 --trans 0.4 --sat 0.2`（此前 6/2/0.3/0.3；sub 6/9 被判低频偏多，弹性档 rc1e 在真实歌曲上最好，记录见 `listening_pack/ROUND1_RESULTS.md` / `ROUND2_RESULTS.md`）。三旋钮派生的 Kick/Bass 侧链默认 0.5、auto-clarity 授权 1.0（u_low=1.0）。`--loudness loud` 不只是更高的目标响度（流派 profile +2.5dB），还配合更快的限制器恢复（release 由 150ms 收紧到 80ms，其余响度档保持 150ms）。`--style-mode styled` 时 `--style-blend` 是风格处理强度（0–1，默认 0.85）：0 不施加风格处理，1 完整风格处理；它是处理强度而非波形比例，100%（1.0）与旧版"末端干湿混合"的实现不再位级一致。off / eq_only 忽略该强度；eq_only 的 EQ 与强度相互独立。`--help` 列出完整参数。bypass 不跳过分轨阶段，仅当低频/鼓/声场/人声四个分轨消费阶段全部旁路时才自动跳过分轨（此时分轨产物无人消费）。旁路 Lew 时输入若探测到非 44.1kHz 采样率，会先统一重采样为 44.1kHz 再进入后续阶段（Soren 母带只接受 44.1k；已是 44.1k 不重编码；六个阶段全部旁路时逐字节透传）。
+`--cpu` 使用 CPU，默认 cuda。主要旋钮与 UI 范围一致：Sub 0–12dB，Punch 0–10dB，sat/trans/space-wet/space-denoise 0–1，space-width-db 0–12dB。默认母带 style-mode=off（UI 无风格），默认 space-wet=.6、space-denoise=.2。**低频默认值经两轮听音校准定版（2026-09-17）**：`--sub-db 2 --punch-db 3 --trans 0.4 --sat 0.2`（此前 6/2/0.3/0.3；sub 6/9 被判低频偏多，弹性档 rc1e 在真实歌曲上最好，记录见 `listening_pack/ROUND1_RESULTS.md` / `ROUND2_RESULTS.md`）。三旋钮派生的 Kick/Bass 侧链默认 0.5、auto-clarity 授权 1.0（u_low=1.0）。`--loudness loud` 不只是更高的目标响度（应用固定目标 −6.70 LUFS），还配合更快的限制器恢复（release 由 150ms 收紧到 80ms，其余响度档保持 150ms）。`--style-mode styled` 时 `--style-blend` 是风格处理强度（0–1，默认 0.85）：0 不施加风格处理，1 完整风格处理；它是处理强度而非波形比例，100%（1.0）与旧版"末端干湿混合"的实现不再位级一致。off / eq_only 忽略该强度；eq_only 的 EQ 与强度相互独立。`--help` 列出完整参数。bypass 不跳过分轨阶段，仅当低频/鼓/声场/人声四个分轨消费阶段全部旁路时才自动跳过分轨（此时分轨产物无人消费）。旁路 Lew 时输入若探测到非 44.1kHz 采样率，会先统一重采样为 44.1kHz 再进入后续阶段（Soren 母带只接受 44.1k；已是 44.1k 不重编码；六个阶段全部旁路时逐字节透传）。
 
 ## 参考音频与响度（§10.4 契约，v1.6.10）
 
-管线（GUI 与 `--reference`）在参考模式下对引擎传 `--reference-tone-only`：**参考音频只驱动音色匹配，不覆盖用户的响度选择**——响度目标保持流派 profile 基准（选了流派用该流派，否则 Pop 回退）+ 响度档偏移。黑盒实测：tone-only normal → −9.25 LUFS（Pop 基准 −9.20）、soft → −12.298（目标 −12.30）、tone-only + Orchestral → −19.877。引擎直接调用**不带**该标志时保持旧行为（目标 = 参考实测响度 + 档偏移），兼容历史脚本；两条路径在母带旁车 `loudness_target_source`（`genre_profile:<g>` / `reference_measured`）中如实可辨。
+当前开发版（批次 C）：`--reference <文件>` 在未显式指定 `--style-mode` 时自动启用用户参考；显式 off 忽略参考。Matchering 只提供音色方向，不覆盖用户响度，也不读取流派 profile。`--style-blend` 缩放共同音色修正（上限 ±3 dB），0 跳过参考分析；保护可能减弱或拒绝匹配，实际采用强度见旁车 `reference.accepted_strength`。最终限幅后保护失败会完整回退到同 EQ/声场/响度的无参考基线，因此实际采用强度不保证单调。参考缺失或依赖错误明确报错；过短、静音等不可用参考记录原因并回退。
 
 ## 母带验证与试听
 
@@ -63,9 +63,9 @@ adaptive_all 对可用分轨（drums/other，以及存在的 vocals/bass）分�
 
 人声轨参与自适应降噪：AI 人声的嘶声烙在人声内容里，分离后主要落在 vocals 轨，排除它等于放弃降噪的主要目标。空气感的余量改用**人声轨衰减上限减半**（默认 6dB cap → 人声 3dB）：气声/齿音由瞬态与谐波保护负责（达不到高置信度就不会被削），而确认是稳定嘶声的部分仍会被处理。
 
-## 六轨分离与可选分轨增强（Stage4，opt-in）
+## 六轨分离与可选分轨增强
 
-默认 `--demucs-model htdemucs`（四轨，命令与输出行为与旧版一致）。显式传 `--demucs-model htdemucs_6s` 时分离额外输出 guitar/piano 分轨，并在声场重塑之后、人声之前路由两个默认中性的有界增强阶段（顺序 guitar → synth）：
+默认 `--demucs-model htdemucs_6s`，GUI 固定使用六轨。CLI 保留显式 `--demucs-model htdemucs` 供旧流程兼容。六轨在声场重塑之后、人声之前按需路由两个有界增强阶段（顺序 guitar → synth）；参数全零时跳过对应阶段。原曲与纯 LEW 重建各自分轨并缓存，重建引导仅按权重混合音频及分轨，不重新推理。
 
 - **synth（合成器/键盘层）= other + piano 两轨求和**：覆盖合成器、铺底、效果器、键盘、钢琴等和声性内容。这是同模型分轨的精确数学合并（同长度、同采样率），用于解决"很多歌没有钢琴、独立 piano 轨常为空"的问题；它不是合成器专用分离器，组内也无法再拆分。
 - 每组五个控制（范围即硬上限，全部默认 0=中性位级透传）：`--guitar-*` / `--synth-*` 的 `gain-db`（−6..6，全轨增益）、`mud-cut-db`（0..6，300Hz 泥浊削减）、`presence-db`（0..6，3kHz 存在感高架）、`harsh-cut-db`（0..6，7kHz 毛刺收敛）、`width-db`（0..6，side 宽度，M/S 声道联动）。
@@ -86,12 +86,28 @@ CLI 的 `--no-cache` 仅对本次运行停用缓存读写，不删除已有缓�
 
 ## 母带统计旁车
 
-Soren 母带成功后，引擎把统计写到母带输出旁的 `<out>.mastering.json`：目标/实测 LUFS、真峰值、`target_status`（met / below_target / above_target）等。该旁车与成品一起进入处理缓存——缓存命中也能恢复统计，不会因命中而丢失指标；统计内容只来自引擎，缺失（母带被旁路、引擎未产出）时一律不生成，也绝不伪造旧缓存的统计。处理成功后统计旁车复制为输出目录里的 `<最终wav>.mastering.json`（成品同名加后缀）；本次运行无统计时会移除同名的过期旁车，避免旧渲染的指标被误读。GUI 既有进度日志会展示目标 LUFS / 实测 LUFS / 达标状态。旁车文件按字节复制，原样保留引擎输出（含 NaN 字面量），不改写、不丢字段。
+母带成功后，引擎把统计写到母带输出旁的 `<out>.mastering.json`：目标/实测 LUFS、真峰值、`target_status`（met / below_target / above_target）等。该旁车与成品一起进入处理缓存——缓存命中也能恢复统计，不会因命中而丢失指标；统计内容只来自引擎，缺失（母带被旁路、引擎未产出）时一律不生成，也绝不伪造旧缓存的统计。处理成功后统计旁车复制为输出目录里的 `<最终wav>.mastering.json`（成品同名加后缀）；本次运行无统计时会移除同名的过期旁车，避免旧渲染的指标被误读。GUI 既有进度日志会展示目标 LUFS / 实测 LUFS / 达标状态。旁车文件按字节复制，原样保留引擎输出（含 NaN 字面量），不改写、不丢字段。
 
 ## 内部音频格式（float32 链路）
 
-内部链路（FFmpeg 中转、Lew 干湿混合、参考人声分离）统一使用 44.1kHz/双声道/32-bit float WAV，16-bit 截断台阶只存在于历史版本；最终量化只发生在 Soren 母带的 PCM24 输出（含 TPDF dither）。转换后校验采样率/声道/可读性，失败即报错，绝不静默回退 PCM16。全链路旁路仍逐字节透传用户文件；Soren 被旁路时最终产物是内部 float 格式，`quality.json` 的 `processing.output_subtype` 如实记录实际 subtype（不伪装 PCM24）。缓存身份携带 `audio_format` 版本，旧 PCM16 时代的缓存产物不会与本版本混用。
+内部链路（FFmpeg 中转、Lew 干湿混合、参考人声分离）统一使用 44.1kHz/双声道/32-bit float WAV，16-bit 截断台阶只存在于历史版本；最终量化只发生在母带的 PCM24 输出（含 TPDF dither）。转换后校验采样率/声道/可读性，失败即报错，绝不静默回退 PCM16。全链路旁路仍逐字节透传用户文件；Soren 被旁路时最终产物是内部 float 格式，`quality.json` 的 `processing.output_subtype` 如实记录实际 subtype（不伪装 PCM24）。缓存身份携带 `audio_format` 版本，旧 PCM16 时代的缓存产物不会与本版本混用。
 
 ## 中间文件
 
 中间产物（Lew / 分轨 / 各阶段混音、bass/drums/reshape 报告、工作目录内的母带统计旁车）只在本次工作目录生成并随工作目录清理；失败时不复制半成品。成功后输出目录保留成品 WAV 与其统计旁车 `<最终wav>.mastering.json`（见上节）。历史遗留文件不自动删除，仅同名过期统计旁车在本次无统计时移除。
+
+## 2026-09-19 无风格独立母带
+
+`--style-mode off` 已切换到 ShadowBuster 自有终段，不再需要 Soren 资源、genre profile 或参考文件。响度档为 soft −12.30、dynamic −11.14、normal −9.20、loud −6.70 LUFS；目标来自应用配置，不受 `--genre` 或 `--reference` 改变。关闭风格仍执行母带，`--bypass soren` 才旁路整个母带阶段（兼容名称暂时保留）。
+
+输出为 44.1 kHz 立体声 PCM24，TPDF dither 只在输出边界施加；文件回读验证 True Peak ≤ −0.4 dBTP。限制器动态预算不足时允许低于目标，旁车记录实际响度与停止原因。`eq_only` 和用户参考同样使用独立终段；仅无参考的旧 styled 预置风格暂留旧引擎。本轮未重建已安装应用。
+
+批次 C：分轨去拥挤与降噪保留在修复阶段，宽度控制在参考/EQ 后对当前混音施加。参考分析读取原始输入，修正应用于修复后的混音。`reference`、`soundstage` 与最终保护记录随母带旁车缓存；原始输入及参考内容变化会使对应缓存失效。
+
+### 全局用户 EQ 与风格强度（2026-09-19 补充）
+
+用户 EQ 独立于参考/风格开关。`--style-mode off --eq-profile Bright` 也执行 Bright；参考强度为 0、不可用参考回退或最终保护回退时，均保留用户 EQ。共同顺序为可选参考音色 → 用户 EQ → 最终声场 → 动态/响度/峰值；旁路整个母带阶段仍跳过其中的 EQ。
+
+风格强度只缩放参考/风格处理，不缩放用户 EQ。无风格和 eq_only 时不生效；参考模式中 0 跳过匹配。实际采用量由安全保护限制，以旁车 `reference.requested_strength` / `accepted_strength` 为准，调高请求值可能触发减弱或回退，不能保证所有素材上单调增强。
+
+2026-09-19 启动前复核：旁路 Lew 时，单声道输入也会先统一为双声道（全链路旁路仍逐字节透传）。GUI 的自动人声空气补偿只保留在旧预置风格路径；无风格、用户参考及母带旁路默认不再额外补偿旧 Soren 高频衰减，显式人声空气增益仍有效。

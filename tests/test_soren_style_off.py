@@ -67,8 +67,8 @@ def test_backend_default_and_off_cli(monkeypatch):
     b.stage_soren('in.wav','out.wav')
     assert '--style-mode' not in calls[-1]
     b.stage_soren('in.wav','out.wav',style_mode='off')
-    assert calls[-1][-2:] == ['--genre','Pop']
-    assert calls[-1][calls[-1].index('--style-mode')+1]=='off'
+    assert calls[-1][1:3] == ['-m', 'mastering']
+    assert '--genre' not in calls[-1] and '--style-mode' not in calls[-1]
     with pytest.raises(ValueError):b.stage_soren('in.wav','out.wav',style_mode='invalid')
 
 
@@ -88,6 +88,8 @@ def test_batch_pipeline_style_routing(tmp_path, monkeypatch):
         calls.append(kwargs)
         shutil.copyfile(src,dst)
     monkeypatch.setattr(b,'stage_soren',master)
+    # 母带前卫生滤波独立于风格路由：本用例审计风格参数转发，替身直通
+    monkeypatch.setattr(b,'stage_hygiene',lambda src,dst,**kw:shutil.copyfile(src,dst))
     monkeypatch.setattr(b, '_ensure_dev_runtime', lambda: b.DEV_SOREN_RUNTIME)
     b.run_batch([source],tmp_path/'out',style_mode='off',
                 bypass=('lew','bass','drums','reshape','vocals'))

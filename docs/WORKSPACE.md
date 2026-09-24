@@ -3,6 +3,15 @@
 > 2026-09-09 统一化改造记录。原则：**单一权威源，派生物可随时重建**；
 > git 不自动提交，不 reset/clean/stash 用户内容。
 
+## 2026-09-19 母带迁移增量
+
+- 无风格（`style_mode=off`）现由仓库 `mastering/` 独立实现，经音频解释器子进程运行；不加载 Soren、流派 profile 或用户参考。`stage_soren` 暂作为兼容分发入口。
+- `mastering/__init__.py` 为轻量配置，`finalizer.py` 为算法权威源，`__main__.py` 为子进程入口；`audio_metrics.py` 提供共享测量。上述源码参与阶段缓存身份。
+- Windows/macOS runtime 装配复制到 `runtime/mastering/` 与 `runtime/audio_metrics.py`；本轮未重新装配或生成安装包。
+- 用户参考及 eq_only 已迁入独立终段；仅 styled 无参考的旧预置风格仍走 Soren，仍遵循下文资源管理约定。预置风格的隐藏和完整依赖清理留到默认切换批次。
+- Matchering 2.0.6 已安装到开发音频解释器；装配脚本固定 Matchering 2.0.6 / resampy 0.4.3。`pipeline.py` 编排参考、EQ、声场和终段，`matchering_adapter.py` 仅调用上游公共 API。
+- 计划与本批证据见 `docs/analysis/matchering_migration_plan_20260919.md`、`docs/analysis/mastering_migration_batch_ab_20260919.md`。
+
 ## 权威源码（git tracked，唯一修改入口）
 
 | 内容 | 路径 | 说明 |
@@ -66,3 +75,7 @@
 - 保留的未跟踪用户文件：`repo.bundle`（旧史备份 git bundle）。
 - 保留的外部内容：`D:/_3.AI/audio_upscale/Soren_src` 整仓（含 M `core_decrypted.py`
   与未跟踪旧版 `soren_original.py`）、三处 `*.backup-20260909-005908`。
+
+### 2026-09-20 六轨与统一播放器
+后续试听修订：草稿按钮自动准备/取消，准备中锁定 BUSTER；原声/草稿在缓存就绪后共用 AudioWorklet 时钟。`mastering/draft_levels.py` 为试听响度校准入口，使用正式响度档位、独立缓存和实时近似限幅，不替代正式导出。计算子进程使用无窗口标志。详见播放器计划文档顶部最新记录。
+GUI 固定六轨，CLI 默认六轨（显式四轨保留兼容）。`prepared_audio.endpoints/mix_endpoints` 缓存原曲和纯重建两套六轨，再以共享增益混合音频与分轨；试听和导出共用，不因吉他或重建引导变化重复 AI。播放器整合原声/草稿/成品版本、循环、进度与监听音量；移除预览 Tab，报告频谱保留。播放器不显示歌名，时间轴颜色表示缓存状态，失败原因仍有文字及读屏信息。详见 interactive_preview_plan_20260919.md。
