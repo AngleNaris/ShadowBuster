@@ -213,8 +213,11 @@ MODES = {
 }
 
 
-WIDTH_BANDS = ((120, 300, 0.10, 1.0), (300, 2000, 0.35, 2.0),
-               (2000, 8000, 0.55, 3.0), (8000, 24000, 0.45, 2.0))
+# 宽度预算（2026-09-28 语义修订）：新增 Side 的增长量由用户的宽度请求授权
+# （constrain_width_delta 的 growth_db），本表只保留单声道兼容的占比上限
+# （Side 能量相对 Mid 能量的宽松封顶）。旧固定增长阶梯（+1/+2/+3/+2dB）在
+# 默认档位就已封顶，用户向上调整听不到变化；占比上限同步放宽，低频段仍最严。
+WIDTH_BANDS = ((120, 300, 0.40), (300, 2000, 0.60), (2000, 8000, 0.75), (8000, 24000, 0.70))
 
 
 def drum_width_envelope(stem, sr):
@@ -231,17 +234,23 @@ def drum_width_envelope(stem, sr):
     return ndimage.uniform_filter1d(gain, max(1, int(sr * .003)), mode='nearest')
 
 
-def constrain_width_delta(mix, delta, sr):
+def constrain_width_delta(mix, delta, sr, growth_db=6.0):
     """Bound added Side against the final mix in overlapping time/frequency windows.
 
-    Caps are analysis-domain budgets, not perceptual width units. Reconstruction
-    can change window energies slightly; existing over-wide content is retained.
-    The returned delta is side-only by construction: any mid component of the
-    input delta is discarded, and bands whose existing mix side is silent
-    admit no new width.
+    growth_db is the user-authorized Side energy growth (10**(growth_db/10)),
+    not a fixed cap: the request itself is what admits headroom. Fraction
+    ceilings in WIDTH_BANDS are the only remaining fixed guard (mono
+    compatibility). Caps are analysis-domain budgets, not perceptual width
+    units. Reconstruction can change window energies slightly; existing
+    over-wide content is retained. The returned delta is side-only by
+    construction: any mid component of the input delta is discarded, and
+    bands whose existing mix side is silent admit no new width.
     """
+    if not np.isfinite(growth_db) or not 0.0 <= growth_db <= 12.0:
+        raise ValueError("growth_db must be finite and within [0, 12]")
     n = len(mix)
-    report = {'bands': [], 'analysis': '4096 Hann / 75% overlap'}
+    report = {'bands': [], 'analysis': '4096 Hann / 75% overlap',
+              'authorized_growth_db': float(growth_db)}
     if n < 32 or not np.any(delta):
         return np.zeros_like(delta), report
     size = min(4096, n)
@@ -259,7 +268,8 @@ def constrain_width_delta(mix, delta, sr):
     highpass = .5 - .5 * np.cos(np.pi * np.clip((f - 120) / 120, 0, 1))
     d *= highpass[:, None]
     gain = np.ones_like(d.real)
-    for lo, hi, cap, relative_db in WIDTH_BANDS:
+    growth = 10.0 ** (growth_db / 10.0)
+    for lo, hi, cap in WIDTH_BANDS:
         mask = (f >= lo) & (f < hi)
         if not np.any(mask):
             continue
@@ -267,7 +277,7 @@ def constrain_width_delta(mix, delta, sr):
         es = np.sum(abs(s[mask]) ** 2, axis=0)
         ed = np.sum(abs(d[mask]) ** 2, axis=0)
         cross = np.sum((s[mask].conj() * d[mask]).real, axis=0)
-        maximum = np.minimum(em * cap / (1 - cap), es * 10 ** (relative_db / 10))
+        maximum = np.minimum(em * cap / (1 - cap), es * growth)
         budget = np.maximum(maximum - es, 0)
         root = np.sqrt(np.maximum(cross * cross + ed * budget, 0))
         alpha = np.clip((-cross + root) / np.maximum(ed, 1e-30), 0, 1)
@@ -278,7 +288,7 @@ def constrain_width_delta(mix, delta, sr):
         alpha = np.minimum(alpha, ndimage.uniform_filter1d(limited, size=5, mode='nearest'))
         gain[mask] = alpha
         report['bands'].append({'low_hz': lo, 'high_hz': min(hi, sr / 2),
-                                'max_side_fraction': cap, 'max_growth_db': relative_db,
+                                'max_side_fraction': cap, 'max_growth_db': growth_db,
                                 'mean_admitted': float(np.mean(alpha))})
     _, restored = signal.istft(d * gain, sr, nperseg=size,
                                noverlap=overlap, input_onesided=True, boundary=True)
@@ -613,7 +623,11 @@ def main():
         noise_report.update(applied=bool(np.any(denoise_delta)),
                             reason="legacy_other" if args.other_denoise_amount else "disabled")
     base = out + denoise_delta
-    accepted, budget = constrain_width_delta(base, width_delta, sr)
+    # 增长授权 = 本阶段实际请求的最大 Side 增益（static: other 轨增益、drums
+    # 自动减半；dynamic: side shelf 提升量），用户请求本身就是预算。
+    growth_db = max((db if args.mode == "dynamic" and db > 0 else gain)
+                    for db, _fc, gain in params.values())
+    accepted, budget = constrain_width_delta(base, width_delta, sr, growth_db=growth_db)
     out = base + accepted
     print(f"  自适应宽度预算: {budget}")
     if wet != 1.0:

@@ -17,7 +17,8 @@ def attr(control, name):
 def test_real_ranges_and_fractional_steps():
     assert (attr("knob-vocal", "min"), attr("knob-vocal", "max"), attr("knob-vocal", "step")) == ("-6", "6", "0.5")
     assert (attr("knob-guidance", "min"), attr("knob-guidance", "max"), attr("knob-guidance", "step")) == ("0", "2", "0.1")
-    assert (attr("width-meter", "min"), attr("width-meter", "max"), attr("width-meter", "step")) == ("0", "12", "0.5")
+    # 宽度旋钮 2026-09-28 起为 0-1 授权比例（100% = +12dB Side 增益），不再用 dB。
+    assert (attr("width-meter", "min"), attr("width-meter", "max"), attr("width-meter", "step")) == ("0", "1", "0.05")
     assert 'v.toFixed(1)' in APP
 
 
@@ -37,8 +38,11 @@ def test_all_interaction_paths_snap_and_clamp():
 
 def test_migration_is_idempotent_and_storage_failures_are_guarded():
     assert 'const UNIT_DIVISORS' in APP
-    assert 'snapshot.version === 1' in APP
-    assert 'alreadyActual ? 1 : divisor' in APP
+    # v2 迁移：v1 快照的 space_width 是 dB → 除以 12 变 0-1 授权比例；
+    # 裸键路径按 version 分档（<1 除旧展示单位因子，space_width 再除 12）。
+    assert 'snapshot.version === 1' in APP and 'snapshot.version === 2' in APP
+    assert 'version >= 1 ? value : value / divisor' in APP
+    assert 'key === "space_width"' in APP
     assert APP.count('catch (e) {}') >= 1
     assert '1.5.1' not in APP
 

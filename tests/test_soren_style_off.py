@@ -117,16 +117,24 @@ def test_eq_only_applies_selected_eq_without_reference_processing(monkeypatch):
     assert cfg.last_mastering_stats['spectral_processing'] is True
 
 
-def test_gui_exposes_none_and_routes_eq_and_loudness():
+def test_gui_routes_reference_and_eq_and_loudness():
     js=(ROOT/'ui/app.js').read_text(encoding='utf-8')
-    main=(ROOT/'main.py').read_text(encoding='utf-8')
-    assert '{ v: "none", label: "无风格" }' in js
-    assert '], "none", (v) =>' in js
-    assert '<span id="dd-genre-label">无风格</span>' in (ROOT/'ui/index.html').read_text(encoding='utf-8')
+    html=(ROOT/'ui/index.html').read_text(encoding='utf-8')
+    # 2026-09-28 移除内置流派（版权参考曲目难以获取）：风格只来自用户参考；
+    # 参考音频入口挪进母带面板，响度改为与 EQ 风格一致的分段组件。
+    assert 'dd-genre' not in js and 'dd-genre' not in html
+    assert 'getGenre' not in js
+    assert 'data-loudness="normal"' in html and 'data-loudness="soft"' in html
+    assert 'id="dd-loudness"' not in html
+    ref_at = html.find('id="ref-card"')
+    assert ref_at > html.find('data-rack="soren"') > 0   # 参考卡位于母带面板内
+    assert 'id="ref-card"' not in html.split('data-rack="soren"')[0]
     assert 'state.eq === "Neutral" ? "off" : "eq_only"' in js
+    assert 'style_mode: state.reference ? "styled" : (state.eq === "Neutral" ? "off" : "eq_only")' in js
     assert 'loudness: getLoudness(), eq: state.eq' in js
     # 默认值自 v1.6.10 起来自 backend.DEFAULTS 单一来源（ENG-01）；
     # 不传参时仍解析为 'styled'（tests/test_default_source.py 校验）。
+    main=(ROOT/'main.py').read_text(encoding='utf-8')
     assert 'style_mode=params.get("style_mode", d["style_mode"])' in main
 
 

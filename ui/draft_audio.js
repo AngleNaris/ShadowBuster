@@ -83,7 +83,9 @@
           if(src.bass) {
             const dry=sample('bass',c); let wet=this.filter('bass',dry,c,'low',65,p.sub);
             this.low[c]+=a*(wet-this.low[c]);
-            wet+=p.sat*(Math.tanh(this.low[c]*8)/8-this.low[c]);
+            // 与 apollo_scripts/bass_enhance.py 的 soft_clip(drive=1.6) 同形：
+            // 小信号增益 1.6/tanh(1.6)≈1.74，低频提升+谐波都与正式导出一致。
+            wet+=p.sat*(Math.tanh(this.low[c]*1.6)/Math.tanh(1.6)-this.low[c]);
             x+=wet-dry;
           }
           if(drum) x+=this.filter('drums',sample('drums',c),c,'peak',90,p.punch,1.2)*10**(4*p.trans*onset/20)-sample('drums',c);
@@ -102,7 +104,9 @@
         }
         const mid=(out[0]+out[1])/2, side=(out[0]-out[1])/2;
         this.sideLow+=aw*(side-this.sideLow);
-        const wide=side+(side-this.sideLow)*Math.min(.4,p.space*(10**(p.width/20)-1));
+        // 宽度旋钮 0-1 是授权比例（100% = +12dB Side 增益），声场推子作干湿；
+        // 请求本身封顶 2.98，不再设旧 0.4 硬盖（默认档即饱和的死区）。
+        const wide=side+(side-this.sideLow)*(p.space*(10**(p.width*12/20)-1));
         out=[(mid+wide)*gain,(mid-wide)*gain];
         if(this.data.levels){
           this.measure(out[0],out[1]);

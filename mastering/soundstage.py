@@ -5,6 +5,13 @@ from scipy import fft, signal
 
 from .guard import snapshot
 
+# 单声道兼容占比上限（Side 能量相对 Mid 能量的宽松封顶），是唯一不随请求
+# 变化的固定保护；增长量本身由用户的宽度请求授权。旧固定增长阶梯
+# （2026-09-22 的 +3/+4dB 与全局 S/M ≤ 0dB）在默认档位就已封顶，用户向上
+# 调整听不到变化，2026-09-28 起废弃。
+GLOBAL_SIDE_FRACTION = 0.70
+WIDTH_BANDS = ((120, 2000, 0.60), (2000, 8000, 0.75), (8000, None, 0.75))
+
 
 def widen(audio, wet=0.0, width_db=0.0, sr=44100):
     if not np.isfinite([wet, width_db]).all() or not 0 <= wet <= 1 or not 0 <= width_db <= 12:
@@ -28,7 +35,9 @@ def widen(audio, wet=0.0, width_db=0.0, sr=44100):
     if cross <= 0:
         report["reason"] = "nonconstructive_side_delta"
         return audio.copy(), report
-    allowed = max(0.0, min(em * .5 / .5, es * 10 ** (4 / 10)) - es)
+    growth = 10 ** (width_db / 10)
+    allowed = max(0.0, min(em * GLOBAL_SIDE_FRACTION / (1 - GLOBAL_SIDE_FRACTION),
+                           es * growth) - es)
     cap = max(0.0, (-cross + math.sqrt(max(0.0, cross ** 2 + ed * allowed))) / max(ed, 1e-30))
     nperseg = min(8192, len(mid))
     f, pm = signal.welch(mid, sr, nperseg=nperseg)
@@ -36,20 +45,16 @@ def widen(audio, wet=0.0, width_db=0.0, sr=44100):
     _, pd = signal.welch(added, sr, nperseg=nperseg)
     _, pc = signal.csd(side, added, sr, nperseg=nperseg)
     band_caps = []
-    # 频段预算（2026-09-22 放宽）：旧值（.30/+1.5、.45/+3、.45/+3）在真实作品上
-    # 由 120–2kHz 的 +1.5dB 增长上限独占，8dB 请求只兑现 ~14%，用户听到的是
-    # 「请求没反应」。现按单声道兼容层级给阶梯：低频段 S/M ≤ −1.76dB/增长 +3dB，
-    # 中高频 S/M ≤ 0dB/增长 +4dB；全局仍保证 Side 能量不超过 Mid（S/M ≤ 0dB）。
-    for lo, hi, fraction, growth in ((120, 2000, .40, 3), (2000, 8000, .50, 4),
-                                    (8000, sr / 2, .50, 4)):
-        band = (f >= lo) & (f < hi)
+    for lo, hi, fraction in WIDTH_BANDS:
+        band = (f >= lo) & ((f < hi) if hi is not None else (f <= sr / 2))
         m, s, d, c = (float(np.sum(p[band])) for p in (pm, ps, pd, pc.real))
         if s < float(np.sum(ps)) * 1e-8:
             continue
-        budget = max(0.0, min(m * fraction / (1 - fraction), s * 10 ** (growth / 10)) - s)
+        budget = max(0.0, min(m * fraction / (1 - fraction), s * growth) - s)
         limit = max(0.0, (-c + math.sqrt(max(0.0, c*c + d*budget))) / max(d, 1e-30))
         cap = min(cap, limit)
-        band_caps.append({"low_hz": lo, "high_hz": hi, "delta_cap": limit})
+        band_caps.append({"low_hz": lo, "high_hz": min(hi or sr / 2, sr / 2),
+                          "side_fraction_cap": fraction, "delta_cap": limit})
     report["band_caps"] = band_caps
     admitted = min(wet * (10 ** (width_db / 20) - 1), cap)
     if admitted <= 0:

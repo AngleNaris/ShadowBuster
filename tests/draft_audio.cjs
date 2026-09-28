@@ -20,9 +20,16 @@ function render(params,original=false){
 }
 const base=render({style_mode:'off'});
 function delta(a,b){return Math.sqrt(a.reduce((s,v,i)=>s+(v-b[i])**2,0)/a.length);}
-for(const p of [{sub:6},{sat:1},{punch:6},{trans:1},{vocal:6},{guitar:1},{space:1},{denoise:1},{space:1,space_width:8},{eq:'Bright'},{loudness:'loud'}]){
+for(const p of [{sub:6},{sat:1},{punch:6},{trans:1},{vocal:6},{guitar:1},{space:1},{denoise:1},{space:.6,space_width:.5},{eq:'Bright'},{loudness:'loud'}]){
   assert(delta(base,render({style_mode:'off',...p}))>1e-5,JSON.stringify(p));
 }
+// 宽度新语义（2026-09-28）：0-1 授权比例，默认以上必须仍有响应（旧 0.4
+// 硬盖在默认档就饱和，向上调整零变化）；满档响应 ≈ 3× 半档（线性请求）。
+const halfWidth=render({style_mode:'off',space:.6,space_width:.5});
+const fullWidth=render({style_mode:'off',space:.6,space_width:1});
+assert(delta(base,fullWidth)>delta(base,halfWidth)*1.5,'width responds above default');
+// 饱和度与正式链路 soft_clip(drive=1.6) 同形：小信号增益 1.6/tanh(1.6)>1。
+assert(delta(base,render({style_mode:'off',sat:.2}))>1e-5,'default saturation audible');
 const ref0=render({style_mode:'styled',style_blend:0});
 const ref5=render({style_mode:'styled',style_blend:.5});
 const ref1=render({style_mode:'styled',style_blend:1});

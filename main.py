@@ -225,6 +225,14 @@ def _spectrogram_payload(path, time_frames=2000, freq_rows=512, fmin=30.0):
             "b64": _b64.b64encode(_np.ascontiguousarray(db.T).ravel()).decode("ascii")}
 
 
+def width_knob_to_db(value):
+    """宽度旋钮 0-1 授权比例 → DSP 的 Side 增益 dB（100% = +12dB）。
+
+    旋钮授权增长量（2026-09-28 语义修订）；DSP 内的占比上限是唯一固定保护，
+    不随旋钮变化。隐藏参数显式传 dB 时绕过本映射。"""
+    return min(12.0, max(0.0, round(float(value) * 12.0, 4)))
+
+
 def collect_pipeline_kwargs(params):
     """面板参数 → run_pipeline kwargs（批处理与预览共用同一组装与映射）。
 
@@ -246,7 +254,9 @@ def collect_pipeline_kwargs(params):
         trans=float(params.get("trans", d["trans"])),
         space_wet=float(params.get("space", d["space_wet"])),
         space_denoise=float(params.get("denoise", d["space_denoise"])),
-        space_width_db=float(params.get("space_width", d["space_width_db"])),
+        space_width_db=(width_knob_to_db(params["space_width"])
+                        if params.get("space_width") is not None
+                        else float(d["space_width_db"])),
         vocal_gain_db=float(params.get("vocal", d["vocal_gain_db"])),
         bypass=[b for b in (params.get("bypass") or []) if b],
         quality=int(params.get("quality", d["quality"])),

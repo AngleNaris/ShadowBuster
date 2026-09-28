@@ -130,20 +130,29 @@
   // 一次性读取旧档位，不覆盖旧键；存储不可用时仍在内存中使用真实值。
   try {
     const snapshot = JSON.parse(loadValue("actual_units", "null"));
-    if (snapshot && snapshot.version === 1 && snapshot.values &&
+    if (snapshot && snapshot.values &&
         typeof snapshot.values === "object" && !Array.isArray(snapshot.values)) {
-      actualUnits = snapshot.values;
+      if (snapshot.version === 1) {
+        // v1 快照的 space_width 是 dB；宽度语义改为 0-1 授权比例（100% = +12dB）。
+        const db = Number.parseFloat(snapshot.values.space_width);
+        if (Number.isFinite(db)) snapshot.values.space_width = String(db / 12);
+        saveValue("actual_units", JSON.stringify({ version: 2, values: snapshot.values }));
+      }
+      if (snapshot.version === 2) actualUnits = snapshot.values;
     }
   } catch (e) {}
   if (!actualUnits) {
     const values = {};
-    const alreadyActual = loadValue("param_units_version", "") === "1";
+    const version = Number.parseInt(loadValue("param_units_version", ""), 10) || 0;
     Object.entries(UNIT_DIVISORS).forEach(([key, divisor]) => {
       const value = Number.parseFloat(loadValue(key, ""));
-      if (Number.isFinite(value)) values[key] = String(value / (alreadyActual ? 1 : divisor));
+      if (!Number.isFinite(value)) return;
+      let actual = version >= 1 ? value : value / divisor;
+      if (key === "space_width") actual = actual / 12;   // dB → 0-1 授权比例
+      values[key] = String(actual);
     });
     actualUnits = values;
-    saveValue("actual_units", JSON.stringify({ version: 1, values }));
+    saveValue("actual_units", JSON.stringify({ version: 2, values }));
   }
 
   /* ─── 主题：深/浅色 + 强调色（localStorage 持久化，首帧由 index.html 引导脚本应用）─── */
@@ -409,7 +418,10 @@
       if (d) { e.preventDefault(); value = snapToStep(value + d, min, max, step); render(); }
     });
     render();
-    return () => value;
+    const get = () => value;
+    // 程序化设值（预设应用）：与手动调节同一条渲染/持久化路径。
+    get.set = (v) => { value = snapToStep(Number(v), min, max, step); render(); };
+    return get;
   }
 
   function bindFader(faderEl, valueEl, fmt, storeKey) {
@@ -460,13 +472,16 @@
       }
     });
     render();
-    return () => value;
+    const get = () => value;
+    // 程序化设值（预设应用）：与手动调节同一条渲染/持久化路径。
+    get.set = (v) => { value = snapToStep(Number(v), min, max, step); render(); };
+    return get;
   }
 
   /* ─── 声场宽度：扇形计量控件（canvas 绘制：发光边 + 内向渐变 + 粒子 + 发射线）─── */
   // 满扇形半角 50°（总张角 100°）；apex 固定在底部中点，上方留出铭牌条。
   const WIDTH_FAN = { inset: 3, apexBottom: 0, maxHalfDeg: 50, rays: 25, seed: 20260901 };
-  let widthThemeObserver = null;
+  let widthThemeBound = false;
   let widthMeterEl = null, widthSpread = 0, widthSpreadTarget = 0, widthSpreadRaf = 0, widthLastFrac = 0;
   let widthDisplayFrac = 0, widthTargetFrac = 0, widthAnimRaf = 0;
 
@@ -523,6 +538,11 @@
   function animateWidthTo(frac) {
     widthTargetFrac = frac;
     if (!widthAnimRaf) widthAnimRaf = requestAnimationFrame(widthAnimFrame);
+  }
+  // 主题切换重绘：不经 rAF 直接按当前分数重画一帧——rAF 在窗口被遮挡/节流
+  // 时可能不触发，画布会停留在旧主题色的最后一帧（声场颜色"没切过去"）。
+  function repaintWidthFan() {
+    if (widthMeterEl) drawWidthFan(widthMeterEl.querySelector(".width-fan"), widthDisplayFrac);
   }
 
   function drawWidthFan(canvas, frac) {
@@ -710,16 +730,18 @@
     });
     meterEl.addEventListener("pointerenter", () => setWidthHover(true));
     meterEl.addEventListener("pointerleave", () => setWidthHover(false));
-    if (!widthThemeObserver) {
-      // 深/浅色或主题色切换时重绘（颜色取自 CSS 变量）
-      widthThemeObserver = new MutationObserver(() => render());
-      widthThemeObserver.observe(document.documentElement, {
-        attributes: true, attributeFilter: ["data-mode", "data-accent"],
-      });
+    if (!widthThemeBound) {
+      // 深/浅色或主题色切换时重绘（颜色取自 CSS 变量）。sb-theme 由主题模块
+      // 在 data-mode/data-accent 写入后同步派发，比属性观察器 + 动画帧可靠。
+      widthThemeBound = true;
+      document.addEventListener("sb-theme", repaintWidthFan);
       window.addEventListener("resize", () => render());
     }
     render();
-    return () => value;
+    const get = () => value;
+    // 程序化设值（预设应用）：与手动调节同一条渲染/持久化路径。
+    get.set = (v) => { value = snapToStep(Number(v), min, max, step); render(); };
+    return get;
   }
 
   const getQuality = bindKnob($("knob-quality"), $("val-quality"),
@@ -727,7 +749,7 @@
   const getGuidance = bindKnob($("knob-guidance"), $("val-guidance"), (v) => v.toFixed(1), "guidance");
   const getVocal = bindKnob($("knob-vocal"), $("val-vocal"),
     (v) => (v > 0 ? "+" : "") + v.toFixed(1) + " dB", "vocal");
-  const getWidth = bindWidthMeter($("width-meter"), (v) => "+" + v.toFixed(1) + " dB", "space_width");
+  const getWidth = bindWidthMeter($("width-meter"), (v) => Math.round(v * 100) + " %", "space_width");
   const getSub = bindKnob($("knob-sub"), $("val-sub"), (v) => `+${v} dB`, "sub");
   const getSat = bindKnob($("knob-sat"), $("val-sat"), (v) => Math.round(v * 100) + "%", "sat");
   const getPunch = bindKnob($("knob-punch"), $("val-punch"), (v) => `+${v} dB`, "punch");
@@ -744,6 +766,7 @@
     "bp-soren": ["soren"],
   };
   const bypassState = {};
+  const bypassPainters = [];
   Object.entries(BYPASS_CONTROLS).forEach(([id, stages]) => {
     const btn = $(id);
     const rack = btn.closest(".rack");
@@ -760,6 +783,7 @@
     }
 
     render();
+    bypassPainters.push(render);
     btn.addEventListener("click", () => {
       const next = !enabledForPanel();
       stages.forEach((stage) => {
@@ -771,6 +795,15 @@
   });
   function activeBypassList() {
     return Object.entries(bypassState).filter(([, on]) => !on).map(([stage]) => stage);
+  }
+  // 程序化设值（预设应用）：更新状态后重绘全部面板开关。
+  function setBypassList(list) {
+    const off = new Set(list || []);
+    Object.keys(bypassState).forEach((stage) => {
+      bypassState[stage] = !off.has(stage);
+      saveValue("bypass_" + stage, bypassState[stage] ? "1" : "0");
+    });
+    bypassPainters.forEach((paint) => paint());
   }
 
 
@@ -890,19 +923,21 @@
     return get;
   }
 
-  const getGenre = buildDropdown("dd-genre", [
-    { v: "none", label: "无风格" },
-    { v: "Pop", label: "流行 Pop" }, { v: "EDM", label: "电子 EDM" },
-    { v: "Rock", label: "摇滚 Rock" }, { v: "Dance", label: "舞曲 Dance" },
-    { v: "Hiphop", label: "嘻哈 Hiphop" }, { v: "Ambient", label: "氛围 Ambient" },
-    { v: "Chillout", label: "弛放 Chillout" }, { v: "Orchestral", label: "管弦 Orchestral" },
-    { v: "Speech", label: "人声 Speech" }, { v: "Piano", label: "钢琴 Piano" },
-  ], "none", (v) => { if (state.reference) { state.reference = ""; $("ref-path").value = ""; saveValue("reference", ""); } }, "genre");
-
-  const getLoudness = buildDropdown("dd-loudness", [
-    { v: "soft", label: "轻柔" }, { v: "dynamic", label: "动态" },
-    { v: "normal", label: "标准" }, { v: "loud", label: "响亮" },
-  ], "normal", () => {}, "loudness");
+  // 2026-09-28 移除内置流派选择（参考曲目版权受限）；风格只来自用户参考音频。
+  /* ─── 响度分段（与 EQ 风格同组件）─── */
+  state.loudness = loadValue("loudness", "normal");
+  const loudnessBtns = document.querySelectorAll(".seg-btn[data-loudness]");
+  function paintLoudness() {
+    loudnessBtns.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.loudness === state.loudness)));
+  }
+  loudnessBtns.forEach((btn) => btn.addEventListener("click", () => {
+    state.loudness = btn.dataset.loudness;
+    saveValue("loudness", state.loudness);
+    paintLoudness();
+  }));
+  paintLoudness();
+  const getLoudness = () => state.loudness;
+  function setLoudness(v) { state.loudness = String(v); saveValue("loudness", state.loudness); paintLoudness(); }
 
   // style_blend 保留存储/API 名称；数值控制 styled 处理力度，而非干湿波形比例。
   const getBlend = bindFader($("fader-blend"), $("val-blend"),
@@ -911,15 +946,125 @@
   /* ─── EQ 分段 ─── */
   state.eq = loadValue("eq", "Neutral");
   const eqBtns = document.querySelectorAll(".seg-btn[data-eq]");
+  function paintEq() {
+    eqBtns.forEach((btn) => btn.setAttribute("aria-pressed", btn.dataset.eq === state.eq ? "true" : "false"));
+  }
   eqBtns.forEach((btn) => {
-    btn.setAttribute("aria-pressed", btn.dataset.eq === state.eq ? "true" : "false");
     btn.addEventListener("click", () => {
-      eqBtns.forEach((b) => b.setAttribute("aria-pressed", "false"));
-      btn.setAttribute("aria-pressed", "true");
       state.eq = btn.dataset.eq;
       saveValue("eq", state.eq);
+      paintEq();
     });
   });
+  paintEq();
+  function setEq(v) { state.eq = String(v); saveValue("eq", state.eq); paintEq(); }
+
+  /* ─── 预设：采样器式固定槽位（8 格）───
+     左键空槽 = 保存当前面板参数；左键已存槽 = 一键应用；右键已存槽两次 =
+     用当前参数覆盖（第一次右键槽位上显示覆盖符号，再右键一次确认，4 秒
+     未确认自动取消）。只快照面板控件（含面板 bypass 开关），不含文件队列/
+     输出目录/参考路径——路径依赖具体机器，进预设会在别处失效。*/
+  const PRESET_STORAGE_KEY = "sb_presets";
+  const PRESET_ARM_MS = 4000;
+  const PRESET_GETTERS = {
+    quality: getQuality, guidance: getGuidance, sub: getSub, sat: getSat,
+    punch: getPunch, trans: getTrans, vocal: getVocal, guitar: getGuitar,
+    space: getSpace, denoise: getDenoise, space_width: getWidth,
+    style_blend: getBlend, loudness: getLoudness, eq: () => state.eq,
+    bypass: activeBypassList,
+  };
+  const PRESET_SETTERS = {
+    quality: getQuality.set, guidance: getGuidance.set, sub: getSub.set,
+    sat: getSat.set, punch: getPunch.set, trans: getTrans.set,
+    vocal: getVocal.set, guitar: getGuitar.set, space: getSpace.set,
+    denoise: getDenoise.set, space_width: getWidth.set,
+    style_blend: getBlend.set, loudness: setLoudness, eq: setEq,
+    bypass: setBypassList,
+  };
+  function readSlots() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(PRESET_STORAGE_KEY) || "null");
+      if (raw && raw.version === 2 && raw.slots &&
+          typeof raw.slots === "object" && !Array.isArray(raw.slots)) return raw.slots;
+    } catch (e) {}
+    return {};
+  }
+  function writeSlots(slots) {
+    try { localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify({ version: 2, slots })); } catch (e) {}
+  }
+  function capturePanel() {
+    const p = {};
+    for (const [k, get] of Object.entries(PRESET_GETTERS)) p[k] = get();
+    return p;
+  }
+  function applyPanel(p) {
+    for (const [k, set] of Object.entries(PRESET_SETTERS)) {
+      if (p && p[k] !== undefined && p[k] !== null) set(p[k]);
+    }
+  }
+  const padEls = [...document.querySelectorAll("#preset-pads .preset-pad")];
+  let armedSlot = 0, armedTimer = 0;
+  function paintPads() {
+    const slots = readSlots();
+    padEls.forEach((pad) => {
+      const n = pad.dataset.slot;
+      const data = slots[n];
+      pad.classList.toggle("filled", !!data);
+      pad.classList.toggle("armed", armedSlot === n);
+      pad.querySelector(".pad-num").textContent = armedSlot === n ? "✕" : n;
+      pad.title = armedSlot === n
+        ? `槽位 ${n}：再次右键 = 移除该预设（恢复空槽）；左键 = 用当前参数覆盖；4 秒未确认自动取消`
+        : data ? `槽位 ${n}：已存预设 — 点击应用；右键 = 移除/覆盖（待确认）`
+               : `槽位 ${n}：空 — 点击保存当前面板参数`;
+      pad.setAttribute("aria-label", pad.title);
+    });
+  }
+  function disarmPad() {
+    if (!armedSlot) return;
+    armedSlot = 0;
+    clearTimeout(armedTimer);
+    paintPads();
+  }
+  padEls.forEach((pad) => {
+    const n = pad.dataset.slot;
+    pad.addEventListener("click", () => {
+      const slots = readSlots();
+      if (armedSlot === n) {           // 待确认态下左键：用当前参数覆盖该槽
+        armedSlot = 0;
+        clearTimeout(armedTimer);
+        slots[n] = { savedAt: Date.now(), params: capturePanel() };
+        writeSlots(slots);
+        paintPads();
+        return;
+      }
+      disarmPad();                     // 其他槽位动作前先取消待确认
+      if (slots[n]) {
+        applyPanel(slots[n].params);
+      } else {
+        slots[n] = { savedAt: Date.now(), params: capturePanel() };
+        writeSlots(slots);
+        paintPads();
+      }
+    });
+    pad.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const slots = readSlots();
+      if (!slots[n]) return;
+      if (armedSlot === n) {           // 待确认态下再右键：移除，恢复空槽
+        armedSlot = 0;
+        clearTimeout(armedTimer);
+        delete slots[n];
+        writeSlots(slots);
+        paintPads();
+        return;
+      }
+      disarmPad();                     // 第一次右键：待确认，槽位显示 ✕
+      armedSlot = n;
+      paintPads();
+      armedTimer = setTimeout(disarmPad, PRESET_ARM_MS);
+    });
+  });
+  paintPads();
 
   /* ─── 队列管理 ─── */
   const fileListEl = $("file-list");
@@ -1376,9 +1521,9 @@
       space: getSpace(), denoise: getDenoise(), guitar: getGuitar(),
       space_width: getWidth(), vocal: getVocal(),
       bypass: activeBypassList(),
-      genre: state.reference ? "" : (getGenre() === "none" ? "Pop" : getGenre()),
-      style_mode: !state.reference && getGenre() === "none"
-        ? (state.eq === "Neutral" ? "off" : "eq_only") : "styled",
+      // 2026-09-28 起无内置流派：有参考 → 参考母带；无参考 → 无风格/EQ-only。
+      genre: "",
+      style_mode: state.reference ? "styled" : (state.eq === "Neutral" ? "off" : "eq_only"),
       style_blend: getBlend(),
       loudness: getLoudness(), eq: state.eq,
     };
@@ -1417,7 +1562,7 @@
 
   /* ─── 参数说明浮层：打开 / 拖动 / 关闭 ─── */
   const HELP_CONTENT = {
-    player: {title:'试听播放器',html:'<p>在版本选择右侧用滚轮切换歌曲，点击文件名框展开文件列表，可添加、移除或清空。切歌后暂停。原声可直接播放；点击草稿自动准备，准备中再点可取消。就绪后原声与草稿共用播放时钟，切换保持位置。</p><p>时间轴：暗色表示未准备，主题色逐步填充表示准备中，亮起表示缓存就绪，警示色表示需要重新准备。悬停时间轴可查看状态。</p><p>可实时调整重建引导、吉他、Sub、饱和、鼓身、瞬态、人声、声场、宽度、EQ和参考强度。降噪为简化模拟；响度采用正式档位目标和实时测量，实时限幅与正式导出仍有差异。</p><p>在时间尺上方拖选循环区间，拖两端调整、拖中间移动。双击循环带或聚焦后按 Enter 精确编辑；方向键移动区间，Delete 清除。下方时间尺用于播放定位。监听旋钮支持拖动、滚轮与方向键，双击恢复 100%，不影响导出。Δ 按钮仅在草稿就绪并选中时可用，监听草稿减去同步原声的差值（含增益、削减与相位变化），切换音源自动关闭。准备或草稿模式下质量档与参考选择暂时锁定，切回原声可修改；其他旋钮实时生效。</p>'},
+    player: {title:'试听播放器',html:'<p>在版本选择右侧用滚轮切换歌曲，点击文件名框展开文件列表，可添加、移除或清空。切歌后暂停。原声可直接播放；点击草稿自动准备，准备中再点可取消。就绪后原声与草稿共用播放时钟，切换保持位置。</p><p>时间轴：暗色表示未准备，主题色逐步填充表示准备中，亮起表示缓存就绪，警示色表示需要重新准备。悬停时间轴可查看状态。</p><p>可实时调整重建引导、吉他、Sub、饱和、鼓身、瞬态、人声、声场、宽度、EQ和参考强度。降噪为简化模拟；响度采用正式档位目标和实时测量，实时限幅与正式导出仍有差异。</p><p>在时间尺上方拖选循环区间，拖两端调整、拖中间移动。双击循环带或聚焦后按 Enter 精确编辑；方向键移动区间，Delete 清除。下方时间尺用于播放定位。监听旋钮支持拖动、滚轮与方向键，双击恢复 100%，不影响导出。Δ 按钮仅在草稿就绪并选中时可用，监听草稿减去同步原声的差值（含增益、削减与相位变化），切换音源自动关闭。准备或草稿模式下质量档、参考选择与预设暂时锁定，切回原声可修改；其他旋钮实时生效。</p>'},
     lew: {
       title: "高频 · 怎么调",
       html:
@@ -1449,10 +1594,10 @@
     soren: {
       title: "母带 · 怎么调",
       html:
-        "<h3>流派</h3><p>给整首歌选择一种声音风格。拿不准就选<b>无风格</b>；选了参考音频，音色方向会以参考为准，但<b>响度仍由你选的响度档决定</b>，不会被参考的音量带走。</p>" +
+        "<h3>参考音频</h3><p>拖入音频或点击选择一首<b>你想接近的歌</b>，音色方向会以参考为准；<b>响度仍由你选的响度档决定</b>，不会被参考的音量带走。不选参考就是无风格母带。</p>" +
         "<h3>响度</h3><p>轻柔更舒缓，标准适合日常，响亮更满、更响。<b>更响不等于更好听</b>。</p>" +
         "<h3>EQ 风格</h3><p><b>平直</b>：少改音色；<b>温暖</b>：更厚；<b>明亮</b>：更亮；<b>融合</b>：尝试更融合的整体音色。</p>" +
-        "<h3>风格强度</h3><p>控制流派母带的处理力度，主要改变压缩、瞬态与密度。<b>它不是干湿混合</b>，调低不会把两条不同相位的波形相加；音色和声场只做有限修正。拿不准就保持默认。</p>" +
+        "<h3>风格强度</h3><p>控制参考母带的处理力度，主要改变压缩、瞬态与密度，<b>需要先选参考音频</b>；它不是干湿混合，调低不会把两条不同相位的波形相加，音色和声场只做有限修正。拿不准就保持默认。</p>" +
         "<h3>怎么选</h3><p><b>先保持默认，再按喜好微调</b>。关闭面板可跳过这一步。</p>",
     },
   };
@@ -2298,7 +2443,7 @@ function paintTransport() {
   $('knob-quality').setAttribute('aria-disabled',String(locked));
   $('ref-card').inert=locked;
   $('ref-card').setAttribute('aria-disabled',String(locked));
-  $('dd-genre').inert=locked&&!!state.reference;
+  $('preset-card').inert=locked;
   $('player-start').disabled=!transport.duration;
   $('draft-seek').disabled=!transport.duration || (transport.source==='draft'&&!draft.ready);
   $('draft-seek').max=transport.duration||1;

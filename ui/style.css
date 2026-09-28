@@ -265,11 +265,49 @@ body {
   .rack-bypass--hardware::before { transition: none; }
 }
 
-/* ═══ 文件设置：输出与参考音频同行双列 ═══ */
+/* ═══ 文件设置：输出目录 + 参数预设 同行双列 ═══ */
 .files {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3);
   padding: var(--s-3) var(--s-4);
   animation: rise-in var(--dur-slow) var(--ease) 60ms backwards;
+}
+/* 预设卡：采样器式固定槽位（9 格方按钮），均分占满整行。
+   空槽 = 凹陷暗槽（拟物 unlit pad）；已存 = 强调色点亮；待确认（✕）= 整键反色。
+   卡片本体不可点，不使用手型光标（手型只属于槽位按钮本身）。 */
+#preset-card { cursor: default; }
+.preset-pads {
+  display: grid; grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: var(--s-1);
+  min-width: 0;
+}
+.preset-pad {
+  height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(0, 0, 0, 0.14)), var(--c-key);
+  color: var(--c-text-faint);
+  border: 1px solid var(--n-knob-b);
+  box-shadow: var(--inset-well);
+  font-family: var(--font); font-size: 11px; font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.preset-pad:hover { color: var(--c-text-dim); border-color: var(--c-accent-hi); }
+.preset-pad:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -1px; }
+.preset-pad:active { transform: translateY(1px); }
+.preset-pad.filled {
+  color: var(--c-text);
+  border-color: var(--c-accent-hi);
+  background: radial-gradient(circle at 50% 28%,
+              rgba(var(--c-accent-rgb), 0.30), rgba(var(--c-accent-rgb), 0.08) 72%),
+              var(--c-panel-2);
+  box-shadow: 0 0 9px rgba(var(--c-accent-rgb), 0.28), var(--inset-well);
+}
+.preset-pad.armed {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(180deg, var(--c-accent-hi), var(--c-accent));
+  box-shadow: 0 0 11px rgba(var(--c-accent-rgb), 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 .file-card {
   position: relative; min-width: 0; min-height: 54px; padding: 8px;
@@ -625,11 +663,20 @@ html[data-mode="light"] { --hardware-face: radial-gradient(circle at 50% 32%, #f
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 12px rgba(var(--c-accent-rgb), 0.45);
 }
 .seg-btn:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -1px; z-index: 1; }
-/* ═══ 母带 EQ 风格：与风格强度推子严格等高（保持扁平样式）═══ */
-.rack[data-rack="soren"] .rack-fields { align-items: start; }
+/* ═══ 母带面板：参考音频 / 响度 / EQ 风格 / 风格强度，与左侧声场行位对齐 ═══
+   声场行节奏：fader-wrap = meta 14 + gap 8 + fader 36 = 58，两行间隔 18。
+   母带镜像同一节奏：field = label 14 + gap 8 + 控件 36 = 58，行距 18，
+   内容 58+18+58 = 134 与声场推子列完全一致，控件行逐像素对齐。═══ */
+.rack[data-rack="soren"] .rack-fields { align-items: start; gap: var(--s-5); }
+.rack[data-rack="soren"] .field { gap: var(--s-2); }
 .rack[data-rack="soren"] .field-label { line-height: 14px; min-height: 14px; }
 .rack[data-rack="soren"] .field .seg { height: 36px; }
 .rack[data-rack="soren"] .seg-btn { height: auto; }
+/* 参考音频卡：紧凑变体（无内嵌标签，控件行与分段/推子同高 36px） */
+.rack[data-rack="soren"] .file-card {
+  min-height: 36px; height: 36px; padding: 0 8px;
+  display: flex; flex-direction: column; justify-content: center;
+}
 
 /* ═══ 阶段流水线 ═══ */
 .pipeline {

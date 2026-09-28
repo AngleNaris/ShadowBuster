@@ -207,9 +207,10 @@ def test_width_monotonic_preserves_mid_and_sub_side():
         assert abs(10*np.log10(np.mean(new**2)/np.mean(old**2))) < .03
 
 
-def test_width_budget_tiers_admit_near_request_and_keep_side_below_mid():
-    """频段预算阶梯（2026-09-22 放宽）：小请求全额兑现，大请求按最紧频段截断，
-    任何请求下 Side 能量都不超过 Mid（单声道兼容硬上限）。"""
+def test_width_request_authorizes_growth_and_mono_ceiling():
+    """宽度语义（2026-09-28）：增长由请求授权——小请求全额兑现，大请求不再被
+    固定增长阶梯截断；唯一固定保护是占比上限（全局 Side/Mid 能量比 ≤ 0.70，
+    即 S/M ≤ +3.67dB），原本就更宽的素材不收窄。"""
     x = audio(2)
     t = np.arange(len(x)) / SR
     x = x + np.column_stack((.03*np.sin(2*np.pi*55*t), -.03*np.sin(2*np.pi*55*t)))
@@ -221,11 +222,11 @@ def test_width_budget_tiers_admit_near_request_and_keep_side_below_mid():
         gains.append(stats["accepted_delta_gain"])
         np.testing.assert_allclose(y.mean(axis=1), x.mean(axis=1), atol=1e-14)
         after = float(np.mean(((y[:, 0] - y[:, 1]) / 2)**2))
-        assert after <= max(se, me) + 1e-12            # Side ≤ Mid；原本就更宽时不收窄
+        assert after <= max(se, me * .70 / (1 - .70)) * (1 + 1e-6)
     assert all(b >= a - 1e-12 for a, b in zip(gains, gains[1:]))        # 请求单调
-    assert gains[0] == pytest.approx(10 ** (1/20) - 1, rel=1e-9)        # 1dB 请求全额兑现
-    # 旧阶梯（120–2kHz 增长上限 +1.5dB）在此素材上最多兑现 ~+1.6dB
-    assert 20 * np.log10(1 + gains[-1]) > 2.9
+    assert gains[0] == pytest.approx(10 ** (1/20) - 1, rel=1e-6)        # 1dB 请求全额兑现
+    # 旧固定阶梯在此素材上最多兑现 ~+3dB；授权语义下 12dB 请求应大幅兑现
+    assert 20 * np.log10(1 + gains[-1]) > 6.0
 
 
 def test_width_keeps_mono_and_already_wide_audio():

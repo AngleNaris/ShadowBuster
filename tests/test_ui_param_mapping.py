@@ -167,3 +167,16 @@ def test_auto_clarity_always_on_for_gui():
     import inspect
     default_off = inspect.signature(backend.run_pipeline).parameters["bass_auto_clarity"].default
     assert default_off is False
+
+
+def test_width_knob_fraction_maps_to_db():
+    """宽度旋钮语义（2026-09-28）：0-1 授权比例 → Side 增益 dB，100% = +12dB。"""
+    assert app_main.width_knob_to_db(0.5) == 6.0
+    assert app_main.width_knob_to_db(1.0) == 12.0
+    assert app_main.width_knob_to_db(0.0) == 0.0
+    assert app_main.width_knob_to_db(1.5) == 12.0     # 越界钳制
+    assert app_main.width_knob_to_db(-0.2) == 0.0
+    kwargs, _ = app_main.collect_pipeline_kwargs({"space_width": 0.5})
+    assert kwargs["space_width_db"] == 6.0
+    kwargs, _ = app_main.collect_pipeline_kwargs({})
+    assert kwargs["space_width_db"] == app_main.backend.DEFAULTS["space_width_db"]

@@ -97,8 +97,9 @@ def test_clear_and_capacity_refused_during_processing_ui_side():
 
 def test_dropdown_programmatic_set_and_dialog_positioning():
     # 共享下拉组件获得程序化 set（不触发 onChange / 不持久化），
-    # 并支持 transformed 祖先（设置弹窗）内 fixed 浮层的包含块换算
-    fn = APP[APP.index("function buildDropdown("):APP.index("const getGenre = buildDropdown")]
+    # 并支持 transformed 祖先（设置弹窗）内 fixed 浮层的包含块换算。
+    # （锚点用仍在使用 buildDropdown 的 cacheCap；2026-09-28 流派下拉已移除）
+    fn = APP[APP.index("function buildDropdown("):APP.index("const cacheCap = buildDropdown")]
     assert "get.set = (v)" in fn
     assert "cs.transform !== \"none\"" in fn
     assert "r.left - hr.left" in fn

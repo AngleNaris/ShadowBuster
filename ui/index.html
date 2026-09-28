@@ -119,15 +119,25 @@
 
   <!-- ═══ 处理视图（TAB 默认页）═══ -->
   <div id="pane-process">
-  <!-- ═══ 输出 / 参考音频 ═══ -->
+  <!-- ═══ 输出目录 / 参数预设 ═══ -->
   <section class="files hdw" aria-label="输出设置">
     <div class="file-card" id="output-card" tabindex="0" role="button" aria-label="输出目录">
       <span class="file-label">输出目录</span>
       <input class="path-input" id="output-path" type="text" readonly placeholder="选择输出目录…" aria-label="输出目录路径" data-need="请先选择输出目录">
     </div>
-    <div class="file-card" id="ref-card" tabindex="0" role="button" aria-label="参考音频">
-      <span class="file-label">参考音频</span>
-      <input class="path-input" id="ref-path" type="text" readonly placeholder="可选 · 自定义风格基准" aria-label="参考音频路径">
+    <div class="file-card" id="preset-card" title="预设槽位：左键空槽 = 保存当前面板参数；左键已存槽 = 一键应用；右键已存槽 = 待确认（槽位显示 ✕）：再右键移除该预设、左键用当前参数覆盖；4 秒未确认自动取消">
+      <span class="file-label">预设</span>
+      <div class="preset-pads" id="preset-pads" role="group" aria-label="参数预设槽位">
+        <button type="button" class="preset-pad" data-slot="1"><span class="pad-num">1</span></button>
+        <button type="button" class="preset-pad" data-slot="2"><span class="pad-num">2</span></button>
+        <button type="button" class="preset-pad" data-slot="3"><span class="pad-num">3</span></button>
+        <button type="button" class="preset-pad" data-slot="4"><span class="pad-num">4</span></button>
+        <button type="button" class="preset-pad" data-slot="5"><span class="pad-num">5</span></button>
+        <button type="button" class="preset-pad" data-slot="6"><span class="pad-num">6</span></button>
+        <button type="button" class="preset-pad" data-slot="7"><span class="pad-num">7</span></button>
+        <button type="button" class="preset-pad" data-slot="8"><span class="pad-num">8</span></button>
+        <button type="button" class="preset-pad" data-slot="9"><span class="pad-num">9</span></button>
+      </div>
     </div>
   </section>
 
@@ -233,9 +243,9 @@
       <div class="rack-body fader-bank">
         <div class="width-col">
           <span class="width-name" id="label-width">宽度</span>
-          <div class="width-meter" id="width-meter" tabindex="0" role="slider" aria-labelledby="label-width" aria-valuemin="0" aria-valuemax="12" aria-valuenow="6" aria-valuetext="+6.0 dB" data-min="0" data-max="12" data-step="0.5" data-default="6">
+          <div class="width-meter" id="width-meter" tabindex="0" role="slider" aria-labelledby="label-width" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0.5" aria-valuetext="50 %" data-min="0" data-max="1" data-step="0.05" data-default="0.5">
             <canvas class="width-fan" aria-hidden="true"></canvas>
-            <span class="width-value">+6.0 dB</span>
+            <span class="width-value">50 %</span>
           </div>
         </div>
         <div class="fader-stack">
@@ -276,23 +286,18 @@
       </div>
       <div class="rack-body rack-fields">
         <div class="field">
-          <span class="field-label">流派</span>
-          <div class="dropdown" id="dd-genre">
-            <button type="button" class="dd-trigger" id="dd-genre-trigger" aria-haspopup="listbox" aria-expanded="false">
-              <span id="dd-genre-label">无风格</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="square"/></svg>
-            </button>
-            <div class="dd-panel" id="dd-genre-panel" role="listbox" aria-label="流派"></div>
+          <span class="field-label">参考音频</span>
+          <div class="file-card ref-card" id="ref-card" tabindex="0" role="button" aria-label="参考音频">
+            <input class="path-input" id="ref-path" type="text" readonly placeholder="可选 · 拖入音频作音色基准" aria-label="参考音频路径">
           </div>
         </div>
         <div class="field">
           <span class="field-label">响度</span>
-          <div class="dropdown" id="dd-loudness">
-            <button type="button" class="dd-trigger" id="dd-loudness-trigger" aria-haspopup="listbox" aria-expanded="false">
-              <span id="dd-loudness-label">标准</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="square"/></svg>
-            </button>
-            <div class="dd-panel" id="dd-loudness-panel" role="listbox" aria-label="响度"></div>
+          <div class="seg" role="group" aria-label="响度">
+            <button type="button" class="seg-btn" data-loudness="soft" aria-pressed="false">轻柔</button>
+            <button type="button" class="seg-btn" data-loudness="dynamic" aria-pressed="false">动态</button>
+            <button type="button" class="seg-btn" data-loudness="normal" aria-pressed="true">标准</button>
+            <button type="button" class="seg-btn" data-loudness="loud" aria-pressed="false">响亮</button>
           </div>
         </div>
         <div class="field">

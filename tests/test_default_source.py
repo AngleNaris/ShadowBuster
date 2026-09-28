@@ -31,7 +31,9 @@ HTML_DEFAULTS = {
     "knob-punch": ("punch", D["punch_db"]),
     "knob-trans": ("trans", D["trans"]),
     "knob-sat": ("sat", D["sat"]),
-    "width-meter": ("space_width", D["space_width_db"]),
+    # 宽度旋钮单位是 0-1 授权比例（2026-09-28 语义修订）：HTML 默认 0.5
+    # 对应 DEFAULTS 的 +6dB Side 增益（100% = +12dB）。
+    "width-meter": ("space_width", D["space_width_db"] / 12),
     "fader-space": ("space", D["space_wet"]),
     "fader-denoise": ("denoise", D["space_denoise"]),
     "fader-blend": ("style_blend", D["style_blend"]),

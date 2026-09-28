@@ -677,9 +677,11 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
 
     stem_scale 是上游累计峰值缩放，所有源分轨先对齐当前混音电平。
 
-    width_db 为宽度上限（other 轨 side 增益 dB，drums 自动取一半），wet 决定向该
-    宽度目标混合的比例。wet≤0 且 denoise≤0，或缺少 drums/other stems 时直接透传
-    （位级不变）。denoise>0 时即使 wet=0 也会运行，以允许单独使用高频降噪。
+    width_db 为增长授权（2026-09-28 语义修订：other 轨 side 增益 dB，drums 自动
+    取一半；该请求本身授权新增 Side 的能量增长，DSP 内仅保留单声道兼容的占比
+    上限），wet 决定向该宽度目标混合的比例。wet≤0 且 denoise≤0，或缺少
+    drums/other stems 时直接透传（位级不变）。denoise>0 时即使 wet=0 也会运行，
+    以允许单独使用高频降噪。
     wet 同时作为声场强度授权（--space-amount，规格 §7.4）：wet>0 时 other 轨
     200-700Hz 的持续性拥挤可获 ≤1.5×wet dB 的证据门控整理（无证据不动；与宽度
     串联，不与宽度重复削同一频段）。

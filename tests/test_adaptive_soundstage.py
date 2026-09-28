@@ -21,16 +21,28 @@ def tones(freq=3000, ratio=.3, seconds=2):
 def energy(x):
     return np.mean(x[8192:-8192]**2)
 
-def test_mid_invariant_and_limited_high_growth():
-    mix,delta=tones()
-    accepted,report=width.constrain_width_delta(mix,delta,SR)
+def test_mid_invariant_and_request_authorized_growth():
+    """宽度语义（2026-09-28）：增长量由 growth_db 授权，不再有固定增长阶梯
+    ——6dB 授权把 12dB 请求截到 6dB，12dB 授权全额兑现；mid 恒不变。"""
+    mix,delta=tones()          # delta side = 3×side（12dB 幅度请求）
+    accepted,report=width.constrain_width_delta(mix,delta,SR,growth_db=6.0)
     out=mix+accepted
     np.testing.assert_allclose(out.mean(axis=1),mix.mean(axis=1),atol=1e-16)
     before=(mix[:,0]-mix[:,1])/2
     after=(out[:,0]-out[:,1])/2
     change=10*np.log10(energy(after)/energy(before))
-    assert 0.2 < change <= 3.05
-    assert report['bands']
+    assert 0.2 < change <= 6.1
+    assert report['bands'] and report['authorized_growth_db'] == 6.0
+    full,_=width.constrain_width_delta(mix,delta,SR,growth_db=12.0)
+    out_full=mix+full
+    after_full=(out_full[:,0]-out_full[:,1])/2
+    assert 10*np.log10(energy(after_full)/energy(before)) > 11.5
+
+def test_growth_db_is_validated():
+    mix,delta=tones()
+    for bad in (-.1, 12.1, float('nan')):
+        with pytest.raises(ValueError):
+            width.constrain_width_delta(mix,delta,SR,growth_db=bad)
 
 def test_overwide_does_not_grow():
     mix,delta=tones(ratio=2)
