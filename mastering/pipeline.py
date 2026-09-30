@@ -5,15 +5,17 @@ import soundfile as sf
 
 from . import ENGINE_VERSION
 from .finalizer import finalize, write_output
-from .guard import protected_match, snapshot, violations
+from .guard import protected_match_curve, snapshot, violations
 from .matchering_adapter import candidate, UnsuitableReference
+from .reference_tone import tonal_target
 from .soundstage import widen
 from .tone import apply_eq
 
 
 def master_file(input_path, output_path, loudness="normal", *, reference=None,
                 match_source=None, strength=.85, eq_profile="Neutral", lowpass=None,
-                space_wet=0.0, width_db=0.0):
+                space_wet=0.0, width_db=0.0, reference_cache=None,
+                reference_cache_artifact=None):
     if Path(input_path).resolve() == Path(output_path).resolve():
         raise ValueError("Input and output must be different files")
     if not np.isfinite(strength) or not 0 <= strength <= 1:
@@ -26,10 +28,14 @@ def master_file(input_path, output_path, loudness="normal", *, reference=None,
     if reference and strength > 0:
         print("MASTERING_PROGRESS 10", flush=True)
         try:
-            source, raw, metadata = candidate(match_source or input_path, reference,
-                                              temp_parent=Path(output_path).parent)
-            matched, ref_report = protected_match(audio, source, raw,
-                                                   metadata["reference_bandwidth_hz"], strength)
+            # The tonal target depends only on (source, reference); `reference_cache`
+            # lets a warm run skip the expensive Matchering candidate when only
+            # downstream loudness / width / EQ changed (audit §9.8).
+            frequencies, db, metadata = tonal_target(
+                candidate, match_source or input_path, reference,
+                temp_parent=Path(output_path).parent,
+                cache=reference_cache, artifact=reference_cache_artifact)
+            matched, ref_report = protected_match_curve(audio, frequencies, db, strength)
             ref_report["adapter"] = metadata
         except UnsuitableReference as exc:
             ref_report.update(status="fallback", reason=str(exc))

@@ -2,33 +2,34 @@
 import numpy as np
 from scipy import ndimage, signal
 
-from audio_metrics import measure_audio
+from audio_metrics import guard_metrics
 
 POLICY_VERSION = "reference-guard-v1"
 
 
 def snapshot(audio, sr=44100):
-    full = measure_audio(audio, sr)
-    return {k: full[k] for k in ("integrated_lufs", "true_peak_4x_dbtp", "crest_factor_db",
-            "side_mid", "stereo_correlation", "mono_fold_down_loss_db", "band_widths",
-            "band_energies")}
+    """Guard-decision metrics only (audit P1-2): the lightweight subset that
+    `violations()` reads. The persisted quality report still uses the full
+    `measure_audio`; this snapshot no longer pays for 4x true-peak resampling,
+    LUFS gating, or band_widths that no guard ever inspects."""
+    return guard_metrics(audio, sr)
 
 
 def violations(before, after):
+    # 声场保护语义（2026-09-30 裁决，与 widen() 相位 guard 统一）：只防
+    # 「本次新增的损伤」——非预期收窄（丢失已授权宽度）与新引入的相位翻转。
+    # 变宽本身、band width 变化与 mono fold-down 损失不再是违规依据：
+    # 单声道兼容性不是缺陷，保护不得抑制用户的调整意志。
     reasons = []
     a, b = before["side_mid"]["db"], after["side_mid"]["db"]
-    if a is not None and b is not None and not -.5 <= b - a <= 1.0:
+    if a is not None and b is not None and b - a < -.5:
         reasons.append("side_mid_change")
-    for key in before["band_widths"]:
-        a = before["band_widths"][key]["width"]
-        b = after["band_widths"][key]["width"]
-        if a is not None and b is not None and abs(b - a) > .035:
-            reasons.append("band_width:" + key)
-    for key, minimum in (("stereo_correlation", -.05),
-                         ("mono_fold_down_loss_db", -.5), ("crest_factor_db", -1.0)):
-        a, b = before[key], after[key]
-        if a is not None and b is not None and b - a < minimum:
-            reasons.append(key)
+    a, b = before["stereo_correlation"], after["stereo_correlation"]
+    if a is not None and b is not None and a >= 0 and b < 0:
+        reasons.append("stereo_correlation")
+    a, b = before["crest_factor_db"], after["crest_factor_db"]
+    if a is not None and b is not None and b - a < -1.0:
+        reasons.append("crest_factor_db")
     for key, band in before["band_energies"].items():
         other = after["band_energies"][key]
         if band["relative_energy_db"] > -60 and abs(
@@ -73,6 +74,15 @@ def apply_curve(audio, frequencies, db, strength, sr=44100):
 
 def protected_match(audio, source, candidate, bandwidth, strength):
     frequencies, db = matching_curve(source, candidate, bandwidth)
+    return protected_match_curve(audio, frequencies, db, strength)
+
+
+def protected_match_curve(audio, frequencies, db, strength):
+    """Guard the strength bisection against a precomputed tonal target curve.
+
+    Split out of `protected_match` (audit §9.8) so the expensive `matching_curve`
+    can be cached independently of downstream loudness / width / EQ; the guard
+    itself always recomputes against the current `audio`."""
     before = snapshot(audio)
     attempts = []
     for amount in (strength, strength / 2, strength / 4, strength / 8):

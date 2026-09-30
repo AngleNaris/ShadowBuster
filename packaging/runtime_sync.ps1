@@ -171,6 +171,9 @@ Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyCont
 New-Item -ItemType Directory -Force -Path "$stage\mastering" | Out-Null
 Copy-Item "$root\mastering\*.py" "$stage\mastering\" -ErrorAction Stop
 Copy-Item "$root\audio_metrics.py" "$stage\" -ErrorAction Stop
+# Reference tonal-target cache (audit §9.8) runs in the mastering subprocess; the
+# subprocess import is best-effort, so bundling this enables it, absence stays cold.
+Copy-Item "$root\pipeline_cache.py" "$stage\" -ErrorAction Stop
 
 Write-Host "[2/5] 拷贝 Soren 母带链 ..."
 Copy-Item "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" -ErrorAction Stop
@@ -332,6 +335,7 @@ Get-ChildItem -LiteralPath "$root\mastering" -Filter "*.py" -File | ForEach-Obje
     Assert-SameFile $_.FullName (Join-Path "$stage\mastering" $_.Name) "独立母带源码"
 }
 Assert-SameFile "$root\audio_metrics.py" "$stage\audio_metrics.py" "母带测量"
+Assert-SameFile "$root\pipeline_cache.py" "$stage\pipeline_cache.py" "参考音色目标缓存"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"
 Assert-SameFile "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
@@ -347,7 +351,7 @@ Assert-SameFile $ffmpeg "$stage\ffmpeg\bin\ffmpeg.exe" "ffmpeg"
 $manifestPath = "$stage\critical-manifest.sha256"
 $manifestRoots = @(
     "$stage\env\python.exe", "$site\numpy", "$site\numpy.libs",
-    "$stage\mastering", "$stage\audio_metrics.py",
+    "$stage\mastering", "$stage\audio_metrics.py", "$stage\pipeline_cache.py",
     "$stage\Apollo\lew_upscale.py", "$stage\Apollo\bass_enhance.py",
     "$stage\Apollo\drum_enhance.py", "$stage\Apollo\soundstage_reshape.py", "$stage\Apollo\noise_profile.py",
     "$stage\Apollo\stem_enhance.py",

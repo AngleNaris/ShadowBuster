@@ -77,6 +77,35 @@ def test_dynamic_budget_allows_below_target():
     assert stats["limiter"]["gain_reduction_p95_db"] <= stats["limiter_p95_budget_db"] + 1e-6
 
 
+def test_finalize_reuses_loop_measurements_and_matches_full_rescan():
+    """审计 P1-3：finalize 收尾复用搜索循环对胜出候选算出的 LUFS / 真峰，
+    复用值必须与独立全量重测一致（LUFS 逐位相同，真峰差在浮点噪声内）。"""
+    from audio_metrics import integrated_lufs
+    from mastering.finalizer import true_peak_db
+    result, stats = finalize(music(2), SR, "normal")
+    fresh_lufs, _ = integrated_lufs(result, SR)
+    assert stats["actual_lufs"] == fresh_lufs                       # 同一数组同一函数
+    assert abs(stats["true_peak_dbtp"] - true_peak_db(result)) < 1e-9
+    assert stats["true_peak_dbtp"] <= TRUE_PEAK_CEILING_DB
+
+
+def test_finalize_does_not_rescan_result_after_search(monkeypatch):
+    """整曲扫描计数：LUFS = 输入 1 次 + 每迭代 1 次；真峰 = 每迭代 1 次。
+    收尾复用 → 两者都不得再多出一次对 result 的整曲复测。"""
+    import mastering.finalizer as fin
+    from audio_metrics import integrated_lufs as real_lufs
+    real_peak = fin.true_peak_db
+    lufs_calls, peak_calls = [], []
+    monkeypatch.setattr(fin, "integrated_lufs",
+                        lambda a, sr: (lufs_calls.append(1), real_lufs(a, sr))[1])
+    monkeypatch.setattr(fin, "true_peak_db",
+                        lambda a: (peak_calls.append(1), real_peak(a))[1])
+    _, stats = fin.finalize(music(2), SR, "normal")
+    iters = stats["iterations"]
+    assert len(lufs_calls) == 1 + iters      # 旧实现为 2 + iters（收尾多一次）
+    assert len(peak_calls) == iters          # 旧实现为 iters + 1
+
+
 @pytest.mark.parametrize("bad", [np.zeros((SR, 2)), np.full((100, 2), np.nan), np.zeros((0, 2))])
 def test_invalid_audio_is_rejected(bad):
     with pytest.raises(ValueError):

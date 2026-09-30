@@ -47,7 +47,7 @@ def lew(backend, input_wav, out_wav, *, cache_enabled=True, **kwargs):
     params = {k:v for k,v in kwargs.items() if k not in ('progress', 'cancel')}
     with _lock, tempfile.TemporaryDirectory(prefix='sb-ai-lew-') as temp:
         raw = Path(temp)/'reconstructed.wav'
-        cache = pipeline_cache.StageCache(cache_enabled, _identity(backend, 'lew'))
+        cache = pipeline_cache.StageCache(cache_enabled, _identity(backend, 'lew'), tier='A')
         cache.run('prepared_lew', [input_wav], params, [raw],
                    lambda: backend.stage_lew(input_wav, raw, **kwargs))
         wet = min(1.0, max(0.0, guidance/2))
@@ -70,7 +70,7 @@ def demucs(backend, input_wav, out_dir, *, model='htdemucs', cache_enabled=True,
     target = Path(out_dir)/model/Path(input_wav).stem
     params = {'model': model, **{k:v for k,v in kwargs.items() if k not in ('progress', 'cancel')}}
     with _lock:
-        cache = pipeline_cache.StageCache(cache_enabled, _identity(backend, 'demucs'))
+        cache = pipeline_cache.StageCache(cache_enabled, _identity(backend, 'demucs'), tier='A')
         cache.run('prepared_demucs', [input_wav], params, [target],
                   lambda: backend.stage_demucs(input_wav, out_dir, model=model, **kwargs))
     return target

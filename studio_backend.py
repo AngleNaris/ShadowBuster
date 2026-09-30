@@ -395,6 +395,157 @@ def _run_stream(cmd, cwd, env=None, on_progress=None, cancel=None):
     return buf
 
 
+# ── Persistent audio worker client (audit §9.9 / P1-8) ─────────────────
+# Opt-in and OFF by default: `SB_WORKER=1` turns it on. The existing stage code paths
+# keep calling `_run_stream` unchanged; a stage is migrated deliberately (and only when
+# its environment matches the single worker's) after in-app CUDA/GUI validation.
+class WorkerUnavailable(Exception):
+    """Raised when the worker process is gone / unresponsive; callers fall back to a
+    plain subprocess so a worker problem never breaks the pipeline."""
+
+
+def worker_enabled():
+    return os.environ.get("SB_WORKER") == "1" and os.environ.get("SB_WORKER_DISABLE") != "1"
+
+
+class _AudioWorker:
+    """Line-delimited JSON-RPC client for `python -m audio_worker`. One job at a time
+    (matches GPU serialization and the caller's `_gpu_lock`)."""
+    def __init__(self):
+        self._proc = None
+        self._id = 0
+        self._lock = threading.Lock()
+
+    def _spawn(self):
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(MASTERING_ROOT)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        self._proc = subprocess.Popen(
+            [PYTHON, "-u", "-m", "audio_worker"], cwd=str(MASTERING_ROOT), env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=_NO_WINDOW, start_new_session=(os.name != "nt"))
+        # Block until the worker announces `ready` (or dies).
+        while True:
+            line = self._proc.stdout.readline()
+            if not line:
+                raise WorkerUnavailable("worker failed to start")
+            try:
+                frame = json.loads(line)
+            except ValueError:
+                continue
+            if frame.get("type") == "ready":
+                return
+
+    def stop(self):
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._proc = None
+                return
+            try:
+                self._proc.stdin.write(b'{"op":"shutdown"}\n'); self._proc.stdin.flush()
+            except OSError:
+                pass
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _kill_tree(self._proc)
+            self._proc = None
+
+    def run(self, kind, target, argv, cwd, on_progress, cancel):
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._spawn()
+            self._id += 1
+            jid = self._id
+            request = {"op": "run", "id": jid, "kind": kind, "target": target,
+                       "argv": list(argv), "cwd": str(cwd) if cwd else None}
+            try:
+                self._proc.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
+                self._proc.stdin.flush()
+            except OSError as exc:
+                self._proc = None
+                raise WorkerUnavailable(str(exc))
+            cancelled = False
+            while True:
+                if cancel and cancel() and not cancelled:
+                    cancelled = True
+                    try:
+                        self._proc.stdin.write(b'{"op":"cancel"}\n'); self._proc.stdin.flush()
+                    except OSError:
+                        self._proc = None; raise WorkerUnavailable("worker gone during cancel")
+                line = self._proc.stdout.readline()
+                if not line:
+                    self._proc = None
+                    raise WorkerUnavailable("worker exited")
+                try:
+                    frame = json.loads(line)
+                except ValueError:
+                    continue
+                if frame.get("type") in ("ready", "bye", "pong"):
+                    continue
+                if frame.get("id") != jid:
+                    continue
+                kind_frame = frame.get("type")
+                if kind_frame == "progress":
+                    if on_progress:
+                        on_progress(frame["pct"] / 100.0)
+                elif kind_frame == "done":
+                    return frame.get("text", "")
+                elif kind_frame == "cancelled":
+                    raise PipelineError("用户取消")
+                elif kind_frame == "error":
+                    raise PipelineError("worker 阶段失败: %s" % frame.get("message", ""))
+
+
+_worker_instance = None
+
+
+def get_worker():
+    global _worker_instance
+    if _worker_instance is None:
+        _worker_instance = _AudioWorker()
+    return _worker_instance
+
+
+def _cmd_to_job(cmd):
+    """Map a `python -m module …` / `python script.py …` command to a worker job, or
+    None if it is not a shape the worker can run in-process."""
+    cmd = [str(c) for c in cmd]
+    if len(cmd) < 2 or cmd[0] != str(PYTHON):
+        return None
+    if cmd[1] == "-m" and len(cmd) >= 3:
+        return ("module", cmd[2], cmd[3:])
+    if cmd[1].endswith(".py"):
+        return ("script", cmd[1], cmd[2:])
+    return None
+
+
+def _env_matches_worker(env, cwd):
+    """The single worker holds one fixed import environment; only route stages whose
+    env/cwd match it (e.g. mastering: PYTHONPATH=MASTERING_ROOT). Torch-home or
+    APOLLO_PATH stages fall back to a subprocess until separately migrated."""
+    if env is not None:
+        if env.get("TORCH_HOME") or env.get("HF_HOME") or env.get("HF_HUB_OFFLINE"):
+            return False
+        if env.get("PYTHONPATH") not in (None, str(MASTERING_ROOT)):
+            return False
+    return str(cwd) == str(MASTERING_ROOT)
+
+
+def stream_or_worker(cmd, cwd, env=None, on_progress=None, cancel=None):
+    """Worker when enabled + compatible, else the proven `_run_stream` subprocess.
+    Disabled by default, so behaviour is byte-for-byte today's path."""
+    if not worker_enabled():
+        return _run_stream(cmd, cwd, env=env, on_progress=on_progress, cancel=cancel)
+    job = _cmd_to_job(cmd)
+    if job is None or not _env_matches_worker(env, cwd):
+        return _run_stream(cmd, cwd, env=env, on_progress=on_progress, cancel=cancel)
+    try:
+        return get_worker().run(job[0], job[1], job[2], cwd, on_progress, cancel)
+    except WorkerUnavailable:
+        return _run_stream(cmd, cwd, env=env, on_progress=on_progress, cancel=cancel)
+
+
 # 内部音频格式版本：所有 FFmpeg 中转、Lew 干湿混合、参考分离产物统一 44.1k/双声道/
 # 32-bit float WAV；最终量化只发生在 Soren 的 PCM24 输出。版本号进入缓存身份，
 # 旧 PCM16 时代的缓存产物不与本版本产物混用。
@@ -403,8 +554,11 @@ AUDIO_FORMAT_VERSION = "f32-internal-1"
 # DSP 引擎版本（开发规格 v2 §16.1，schema/engine/profile 三版本分离）：
 # 低频/声场 DSP 算法映射变更时递增。v2 起：瞬态检测器 v2（dB 预算制、
 # 立体声联动、相对活动门）、饱和 4× 过采样、低频协调授权 u_low、
-# other 轨 200-700Hz 空间去拥挤。进入缓存身份（§16.5：新引擎不与旧缓存混用）。
-DSP_ENGINE_VERSION = "dsp-v2-20260917"
+# other 轨 200-700Hz 空间去拥挤。v3 起（2026-09-30，审计 P0 批次）：
+# 声场保护只在新引入相位翻转时触发（mono 兼容封顶废弃）、premaster 低切
+# 素材自适应、reshape 同轨 denoise→width 真串联。进入缓存身份（§16.5：
+# 新引擎不与旧缓存混用）。
+DSP_ENGINE_VERSION = "dsp-v3-20260930"
 
 
 def ffmpeg_convert(src, dst, sr=44100, subtype="FLOAT"):

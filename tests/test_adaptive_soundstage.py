@@ -22,8 +22,9 @@ def energy(x):
     return np.mean(x[8192:-8192]**2)
 
 def test_mid_invariant_and_request_authorized_growth():
-    """宽度语义（2026-09-28）：增长量由 growth_db 授权，不再有固定增长阶梯
-    ——6dB 授权把 12dB 请求截到 6dB，12dB 授权全额兑现；mid 恒不变。"""
+    """宽度语义（2026-09-30）：增长量由 growth_db 授权；唯一固定保护是相位
+    翻转边界（带内 Side 能量不得新推过 Mid 能量）——6dB 授权把 12dB 请求截到
+    6dB；12dB 授权在不越界素材上全额兑现、越界素材上停在边界；mid 恒不变。"""
     mix,delta=tones()          # delta side = 3×side（12dB 幅度请求）
     accepted,report=width.constrain_width_delta(mix,delta,SR,growth_db=6.0)
     out=mix+accepted
@@ -33,10 +34,23 @@ def test_mid_invariant_and_request_authorized_growth():
     change=10*np.log10(energy(after)/energy(before))
     assert 0.2 < change <= 6.1
     assert report['bands'] and report['authorized_growth_db'] == 6.0
+    # ratio .2：12dB 全额兑现后 Side 能量（0.64×Mid）仍在翻转边界内
+    narrow,narrow_delta=tones(ratio=.2)
+    full,_=width.constrain_width_delta(narrow,narrow_delta,SR,growth_db=12.0)
+    out_full=narrow+full
+    before_full=(narrow[:,0]-narrow[:,1])/2
+    after_full=(out_full[:,0]-out_full[:,1])/2
+    assert 10*np.log10(energy(after_full)/energy(before_full)) > 11.5
+    # ratio .3：12dB 请求会把 Side 推过 Mid（相位翻转边界），停在边界 ~10.5dB
     full,_=width.constrain_width_delta(mix,delta,SR,growth_db=12.0)
     out_full=mix+full
+    np.testing.assert_allclose(out_full.mean(axis=1),mix.mean(axis=1),atol=1e-16)
     after_full=(out_full[:,0]-out_full[:,1])/2
-    assert 10*np.log10(energy(after_full)/energy(before)) > 11.5
+    change=10*np.log10(energy(after_full)/energy(before))
+    assert 10.0 < change < 12.0
+    side_e=energy(after_full)
+    mid_e=energy(out_full.mean(axis=1))
+    assert side_e <= mid_e*(1+1e-3)
 
 def test_growth_db_is_validated():
     mix,delta=tones()

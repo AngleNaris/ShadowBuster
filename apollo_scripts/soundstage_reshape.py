@@ -213,11 +213,14 @@ MODES = {
 }
 
 
-# 宽度预算（2026-09-28 语义修订）：新增 Side 的增长量由用户的宽度请求授权
-# （constrain_width_delta 的 growth_db），本表只保留单声道兼容的占比上限
-# （Side 能量相对 Mid 能量的宽松封顶）。旧固定增长阶梯（+1/+2/+3/+2dB）在
-# 默认档位就已封顶，用户向上调整听不到变化；占比上限同步放宽，低频段仍最严。
-WIDTH_BANDS = ((120, 300, 0.40), (300, 2000, 0.60), (2000, 8000, 0.75), (8000, 24000, 0.70))
+# 宽度保护（2026-09-30 裁决，与 mastering/soundstage.py widen() 的相位 guard
+# 同语义）：增长量由用户的宽度请求授权（constrain_width_delta 的 growth_db）；
+# 唯一固定保护是**相位翻转边界**——分析带内 Side 能量不得被本次处理新推到超过
+# Mid 能量（占比 0.50，等价于局部 correlation 被推负）。已越过边界的素材
+# 原样保留（部分歌曲本就存在单声道内容/超宽混音），不收窄也不再增宽。
+# 旧分带单声道兼容占比上限（0.40/0.60/0.75/0.70）同日废弃：mono 兼容性
+# 不是缺陷，保护不得抑制用户的调整意志。
+WIDTH_BANDS = ((120, 300, 0.50), (300, 2000, 0.50), (2000, 8000, 0.50), (8000, 24000, 0.50))
 
 
 def drum_width_envelope(stem, sr):
@@ -238,13 +241,14 @@ def constrain_width_delta(mix, delta, sr, growth_db=6.0):
     """Bound added Side against the final mix in overlapping time/frequency windows.
 
     growth_db is the user-authorized Side energy growth (10**(growth_db/10)),
-    not a fixed cap: the request itself is what admits headroom. Fraction
-    ceilings in WIDTH_BANDS are the only remaining fixed guard (mono
-    compatibility). Caps are analysis-domain budgets, not perceptual width
-    units. Reconstruction can change window energies slightly; existing
-    over-wide content is retained. The returned delta is side-only by
-    construction: any mid component of the input delta is discarded, and
-    bands whose existing mix side is silent admit no new width.
+    not a fixed cap: the request itself is what admits headroom. The only
+    fixed guard is the per-band phase-inversion boundary in WIDTH_BANDS
+    (side energy must not be newly pushed above mid energy; already-inverted
+    content is retained untouched). Caps are analysis-domain budgets, not
+    perceptual width units. Reconstruction can change window energies
+    slightly. The returned delta is side-only by construction: any mid
+    component of the input delta is discarded, and bands whose existing mix
+    side is silent admit no new width.
     """
     if not np.isfinite(growth_db) or not 0.0 <= growth_db <= 12.0:
         raise ValueError("growth_db must be finite and within [0, 12]")
@@ -556,40 +560,15 @@ def main():
                   f"(auth={unmask_report['auth']:.2f}, coverage={unmask_report['coverage']:.0%})")
         else:
             print(f"  other: 空间去拥挤未动作（{unmask_report.get('reason')}）")
-    for name, (db, fc, gain) in params.items():
-        stem, s_sr = sf.read(stem_dir / f"{name}.wav", always_2d=True, dtype="float64")
-        if s_sr != sr:
-            raise SystemExit(f"{name} sample rate {s_sr} != {sr}")
-        try:
-            validate_audio_pair(stem, out, s_sr, primary_name=name, secondary_name="in-mix")
-        except ValueError as exc:
-            raise SystemExit(str(exc))
-        stem = stem * args.stem_scale
-        if name == "other" and other_stem_processed is not None \
-                and unmask_report.get("applied"):
-            stem = other_stem_processed    # 宽度作用于去拥挤后的 other（串联）
-        n = len(stem)
-        if args.mode == "dynamic" and db > 0:
-            reshaped = _dynamic_side_shelf(stem, sr, fc, db)
-        else:
-            reshaped = _reshape_stem(stem, sr, db, fc, gain)
-        delta = (reshaped - stem) * wet
-        if name == 'drums':
-            delta *= drum_width_envelope(stem, sr)[:, None]
-        delta = _protect_widen_delta(delta, sr)
-        width_delta += delta
-        processed = stem + delta
-        if args.noise_mode == "other" and name == "other" and args.other_denoise_amount > 0:
-            cleaned = _spectral_denoise(processed, sr, args.other_denoise_fc,
-                                       args.other_denoise_amount)
-            denoise_delta += cleaned - processed
-            print(f"  other: ≥{args.other_denoise_fc:.0f}Hz 噪声地板降噪 {args.other_denoise_amount*100:.0f}%")
-        if args.mode == "dynamic" and db > 0:
-            # 动态分支不施加静态 side 增益，打印不得谎报已生效的参数。
-            print(f"  {name}: 动态门 side shelf +{db}dB@{fc:.0f}Hz"
-                  "（包络控制；静态 side 增益在此模式不适用）")
-        else:
-            print(f"  {name}: shelf +{db}dB@{fc:.0f}Hz, side gain +{gain}dB")
+    # 各 stem 的 working 基底（审计 P0-4，2026-09-30）：同轨处理必须真串联
+    # denoise → width。旧实现里 adaptive_all 的降噪 delta 与宽度 delta 都基于
+    # RAW stem 独立计算后相加——宽度 delta 会把降噪刚削掉的高频噪声重新放大
+    # 带回混音。现在降噪先行，宽度 delta 在降噪后的 working stem 上计算；
+    # 去拥挤后的 other 作为降噪输入（unmask → denoise → width 同轨串联）。
+    # 残差设计不变：最终仍是 mix += Σ(各 delta)，Demucs 解释不了的残差保留。
+    working_stems = {}
+    if other_stem_processed is not None and unmask_report.get("applied"):
+        working_stems["other"] = other_stem_processed
     if args.noise_mode == "adaptive_all":
         for name in ("vocals", "drums", "bass", "other", "guitar", "piano"):
             path = stem_dir / f"{name}.wav"
@@ -601,25 +580,71 @@ def main():
                 noise_report["stems"][name] = {"status": "not_applied", "applied": False,
                                                 "reason": "disabled"}
                 continue
-            stem, s_sr = sf.read(path, always_2d=True, dtype="float64")
-            validate_audio_pair(stem, mix, s_sr, primary_name=name,
-                                secondary_name="in-mix", require_sr=sr)
-            stem = stem * args.stem_scale
+            base_stem = working_stems.get(name)
+            if base_stem is None:
+                stem, s_sr = sf.read(path, always_2d=True, dtype="float64")
+                validate_audio_pair(stem, mix, s_sr, primary_name=name,
+                                    secondary_name="in-mix", require_sr=sr)
+                base_stem = stem * args.stem_scale
             stats = {}
             # 人声轨参与降噪（AI 人声的嘶声烙在人声内容里，分离后主要落在
             # vocals 轨），但最大衰减减半：气声/齿音由瞬态与谐波保护负责，
             # 稳定嘶声仍会被处理，真空气最多损失 cap/2，不设排除性豁免。
             cap = args.noise_max_attenuation_db * (0.5 if name == "vocals" else 1.0)
-            cleaned = adaptive_denoise(stem, sr, args.other_denoise_amount,
+            cleaned = adaptive_denoise(base_stem, sr, args.other_denoise_amount,
                                        args.noise_low_hz, args.noise_high_hz,
                                        cap, report=stats)
-            denoise_delta += cleaned - stem
+            denoise_delta += cleaned - base_stem
+            working_stems[name] = cleaned
             noise_report["stems"][name] = stats
         denoise_delta, noise_report["mix_budget"] = constrain_noise_delta(
             out, denoise_delta, sr, args.noise_low_hz, args.noise_high_hz,
             args.noise_max_attenuation_db * args.other_denoise_amount)
         noise_report["applied"] = noise_report["mix_budget"]["applied"]
-    else:
+    # wet=0 宽度整块旁路（审计 P1-1，2026-09-30）：不加载 stem、不做
+    # reshape / 鼓包络 / delta 低频保护，width_delta 恒为零。只保留 legacy
+    # other 降噪（noise_mode=="other" 且 amount>0）所需的最小 other 轨路径；
+    # adaptive_all 降噪已在上方独立完成，denoise / unmask 语义不受影响。
+    legacy_other_denoise = (args.noise_mode == "other"
+                            and args.other_denoise_amount > 0)
+    for name, (db, fc, gain) in params.items():
+        if wet == 0 and not (name == "other" and legacy_other_denoise):
+            continue
+        stem, s_sr = sf.read(stem_dir / f"{name}.wav", always_2d=True, dtype="float64")
+        if s_sr != sr:
+            raise SystemExit(f"{name} sample rate {s_sr} != {sr}")
+        try:
+            validate_audio_pair(stem, out, s_sr, primary_name=name, secondary_name="in-mix")
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        stem = stem * args.stem_scale
+        working = working_stems.get(name, stem)
+        if wet > 0:
+            if args.mode == "dynamic" and db > 0:
+                reshaped = _dynamic_side_shelf(working, sr, fc, db)
+            else:
+                reshaped = _reshape_stem(working, sr, db, fc, gain)
+            delta = (reshaped - working) * wet
+            if name == 'drums':
+                delta *= drum_width_envelope(working, sr)[:, None]
+            delta = _protect_widen_delta(delta, sr)
+            width_delta += delta
+            processed = working + delta
+        else:
+            processed = working
+        if legacy_other_denoise and name == "other":
+            cleaned = _spectral_denoise(processed, sr, args.other_denoise_fc,
+                                       args.other_denoise_amount)
+            denoise_delta += cleaned - processed
+            print(f"  other: ≥{args.other_denoise_fc:.0f}Hz 噪声地板降噪 {args.other_denoise_amount*100:.0f}%")
+        if wet > 0:
+            if args.mode == "dynamic" and db > 0:
+                # 动态分支不施加静态 side 增益，打印不得谎报已生效的参数。
+                print(f"  {name}: 动态门 side shelf +{db}dB@{fc:.0f}Hz"
+                      "（包络控制；静态 side 增益在此模式不适用）")
+            else:
+                print(f"  {name}: shelf +{db}dB@{fc:.0f}Hz, side gain +{gain}dB")
+    if args.noise_mode != "adaptive_all":
         noise_report.update(applied=bool(np.any(denoise_delta)),
                             reason="legacy_other" if args.other_denoise_amount else "disabled")
     base = out + denoise_delta

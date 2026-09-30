@@ -11,6 +11,7 @@ import soundfile as sf
 from scipy import signal
 
 import studio_backend as backend
+from audio_metrics import measure_audio
 from mastering import guard
 from mastering import pipeline
 from mastering.matchering_adapter import candidate, UnsuitableReference
@@ -207,36 +208,57 @@ def test_width_monotonic_preserves_mid_and_sub_side():
         assert abs(10*np.log10(np.mean(new**2)/np.mean(old**2))) < .03
 
 
-def test_width_request_authorizes_growth_and_mono_ceiling():
-    """宽度语义（2026-09-28）：增长由请求授权——小请求全额兑现，大请求不再被
-    固定增长阶梯截断；唯一固定保护是占比上限（全局 Side/Mid 能量比 ≤ 0.70，
-    即 S/M ≤ +3.67dB），原本就更宽的素材不收窄。"""
+def test_width_request_authorizes_growth_without_mono_ceiling():
+    """宽度语义（2026-09-30 裁决）：请求全额授权增长，不再有 Side/Mid 占比
+    封顶；mono 兼容性不是缺陷，只要不新引入相位翻转就全额兑现。"""
     x = audio(2)
     t = np.arange(len(x)) / SR
     x = x + np.column_stack((.03*np.sin(2*np.pi*55*t), -.03*np.sin(2*np.pi*55*t)))
-    se = float(np.mean(((x[:, 0] - x[:, 1]) / 2)**2))
-    me = float(np.mean(x.mean(axis=1)**2))
     gains = []
     for request in (1.0, 2.0, 4.0, 8.0, 12.0):
         y, stats = widen(x, 1.0, request)
         gains.append(stats["accepted_delta_gain"])
         np.testing.assert_allclose(y.mean(axis=1), x.mean(axis=1), atol=1e-14)
-        after = float(np.mean(((y[:, 0] - y[:, 1]) / 2)**2))
-        assert after <= max(se, me * .70 / (1 - .70)) * (1 + 1e-6)
+        assert "phase_guard" not in stats          # 未触发唯一保护
+        assert stats["applied"]
     assert all(b >= a - 1e-12 for a, b in zip(gains, gains[1:]))        # 请求单调
-    assert gains[0] == pytest.approx(10 ** (1/20) - 1, rel=1e-6)        # 1dB 请求全额兑现
-    # 旧固定阶梯在此素材上最多兑现 ~+3dB；授权语义下 12dB 请求应大幅兑现
-    assert 20 * np.log10(1 + gains[-1]) > 6.0
+    for request, gain in zip((1.0, 2.0, 4.0, 8.0, 12.0), gains):
+        assert gain == pytest.approx(10 ** (request/20) - 1, rel=1e-6)  # 全额兑现
 
 
-def test_width_keeps_mono_and_already_wide_audio():
+def test_width_phase_guard_limits_only_new_inversion():
+    """唯一保护：输入 correlation 非负、请求会把它推成负值时，二分收回至
+    correlation ≥ 0 的最小干预；小请求不受影响；解析值与 measure_audio 一致。"""
+    rng = np.random.default_rng(7)
+    n = int(SR * 2)
+    mid = signal.sosfilt(signal.butter(1, 7000, fs=SR, output="sos"), rng.normal(0, .1, n))
+    side = signal.sosfilt(signal.butter(1, 10000, fs=SR, output="sos"), rng.normal(0, .05, n))
+    x = np.column_stack((mid + side, mid - side))
+    assert measure_audio(x, SR)["stereo_correlation"] >= 0
+    y, report = widen(x, 1.0, 12)
+    assert report["applied"] and "phase_guard" in report
+    assert report["accepted_delta_gain"] < 10 ** (12/20) - 1
+    after_corr = measure_audio(y, SR)["stereo_correlation"]
+    assert after_corr >= 0
+    np.testing.assert_allclose(after_corr, report["phase_guard"]["admitted_correlation"],
+                               atol=1e-8)
+    small, small_report = widen(x, 1.0, 1.0)
+    assert "phase_guard" not in small_report
+    assert small_report["accepted_delta_gain"] == pytest.approx(10 ** (1/20) - 1, rel=1e-6)
+
+
+def test_width_keeps_mono_and_honors_request_on_already_wide_audio():
     x = audio()
     mono = np.column_stack((x[:, 0], x[:, 0]))
+    result, report = widen(mono, 1, 12)
+    np.testing.assert_array_equal(result, mono)
+    assert not report['applied'] and report['reason'] == 'no_existing_side'
+    # 2026-09-30 裁决：已负相关的输入不是损伤，保护不介入，请求照常兑现。
     wide = np.column_stack((x[:, 0], -x[:, 0]))
-    for original in (mono, wide):
-        result, report = widen(original, 1, 12)
-        np.testing.assert_array_equal(result, original)
-        assert not report['applied']
+    result, report = widen(wide, 1, 12)
+    assert report['applied'] and 'phase_guard' not in report
+    np.testing.assert_allclose(result.mean(axis=1), wide.mean(axis=1), atol=1e-14)
+    assert measure_audio(result, SR)['stereo_correlation'] < 0
 
 
 def test_final_guard_uses_no_reference_finalizer_on_rejection(tmp_path, monkeypatch):
@@ -339,3 +361,81 @@ def test_reference_cache_restores_report_and_invalidates_changed_reference(tmp_p
     write(ref, audio()*.6)
     backend.run_pipeline(src, tmp_path/'out', **opts)
     assert len(calls) == 2
+
+
+# ── audit §9.8: reference tonal target 独立缓存 ─────────────────────────
+
+def _tonal_target_cache(tmp_path, monkeypatch):
+    """Point the shared cache at a temp dir and build the tonal-target StageCache."""
+    import pipeline_cache
+    from mastering import reference_tone
+    monkeypatch.setenv('SB_PROCESSING_CACHE_DIR', str(tmp_path/'cache'))
+    monkeypatch.delenv('SB_CACHE_DISABLE', raising=False)
+    mastering_dir = Path(pipeline.__file__).parent
+    return pipeline_cache.StageCache(True,
+        reference_tone.identity(mastering_dir, sys.executable))
+
+
+def test_tonal_target_uncached_equals_candidate_and_matching_curve(tmp_path):
+    """cache=None → 逐位等于旧 inline 路径（candidate→matching_curve），保证冷启动
+    输出与 §9.8 之前完全一致。"""
+    from mastering import reference_tone
+    x = audio(2)
+    src, ref = write(tmp_path/'source.wav', x), write(tmp_path/'ref.wav', x*.7)
+    calls = []
+    def fake(source, reference, *, temp_parent=None):
+        calls.append((source, reference)); return x, x*.8, {'reference_bandwidth_hz': 20000}
+    f, db, meta = reference_tone.tonal_target(fake, src, ref)
+    expected_f, expected_db = guard.matching_curve(x, x*.8, 20000)
+    np.testing.assert_array_equal(f, expected_f)
+    np.testing.assert_array_equal(db, expected_db)
+    assert meta == {'reference_bandwidth_hz': 20000}
+    assert len(calls) == 1
+
+
+def test_tonal_target_cache_hit_skips_candidate_and_matches_cold(tmp_path, monkeypatch):
+    """命中缓存不再调用昂贵的 candidate；warm 曲线与 cold 逐位相同；改参考内容失效。"""
+    from mastering import reference_tone
+    cache = _tonal_target_cache(tmp_path, monkeypatch)
+    x = audio(2)
+    src, ref = write(tmp_path/'source.wav', x), write(tmp_path/'ref.wav', x*.7)
+    calls = []
+    def fake(*a, **k):
+        calls.append(a); return x, x*.8, {'reference_bandwidth_hz': 20000}
+    f1, db1, m1 = reference_tone.tonal_target(fake, src, ref, cache=cache,
+                                              artifact=tmp_path/'a1.json')
+    f2, db2, m2 = reference_tone.tonal_target(fake, src, ref, cache=cache,
+                                              artifact=tmp_path/'a2.json')
+    assert len(calls) == 1                       # 第二次命中，candidate 未再跑
+    np.testing.assert_array_equal(f1, f2)
+    np.testing.assert_array_equal(db1, db2)
+    assert m1 == m2
+    ef, ed = guard.matching_curve(x, x*.8, 20000)  # warm == cold
+    np.testing.assert_array_equal(f2, ef)
+    np.testing.assert_array_equal(db2, ed)
+    write(ref, x*.6)                             # 改参考内容 → 内容哈希变 → 失效
+    reference_tone.tonal_target(fake, src, ref, cache=cache, artifact=tmp_path/'a3.json')
+    assert len(calls) == 2
+
+
+def test_master_file_reuses_reference_candidate_across_downstream_params(tmp_path, monkeypatch):
+    """同一 (source, reference) 但 loudness 不同（外层母带缓存会 miss）：内层
+    音色目标缓存让昂贵的 candidate 只生成一次，参考报告仍完整。"""
+    cache = _tonal_target_cache(tmp_path, monkeypatch)
+    x = audio()
+    src, ref = write(tmp_path/'source.wav', x), write(tmp_path/'ref.wav', x*.7)
+    calls = []
+    def fake(source, reference, *, temp_parent=None):
+        calls.append(1); return x, x*.8, {'reference_bandwidth_hz': 20000}
+    monkeypatch.setattr(pipeline, 'candidate', fake)
+    one = pipeline.master_file(src, tmp_path/'normal.wav', 'normal', reference=ref,
+                              strength=.5, reference_cache=cache,
+                              reference_cache_artifact=tmp_path/'t1.json')
+    two = pipeline.master_file(src, tmp_path/'soft.wav', 'soft', reference=ref,
+                              strength=.5, reference_cache=cache,
+                              reference_cache_artifact=tmp_path/'t2.json')
+    assert len(calls) == 1                       # 响度改变不重算 candidate
+    assert one['reference']['status'] == two['reference']['status'] == 'accepted'
+    assert one['reference']['accepted_strength'] == two['reference']['accepted_strength']
+    assert one['reference']['adapter']['reference_bandwidth_hz'] == 20000
+    assert one['target_lufs'] != two['target_lufs']   # 下游响度目标各自独立生效

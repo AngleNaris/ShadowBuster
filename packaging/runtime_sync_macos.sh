@@ -127,6 +127,9 @@ cp -R "$SB_APOLLO/ckpts" "$STAGE/Apollo/ckpts"
 mkdir -p "$STAGE/mastering"
 cp "$REPO_ROOT/mastering/"*.py "$STAGE/mastering/"
 cp "$REPO_ROOT/audio_metrics.py" "$STAGE/"
+# Reference tonal-target cache (audit §9.8): subprocess import is best-effort, so
+# bundling enables it in the packaged mastering runtime; absence stays on cold path.
+cp "$REPO_ROOT/pipeline_cache.py" "$STAGE/"
 
 log "[2/5] 拷贝 Soren 母带链"
 cp "$REPO_ROOT/packaging/soren_core.py" "$STAGE/Soren_src/core_decrypted.py"

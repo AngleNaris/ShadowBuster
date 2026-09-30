@@ -18,7 +18,7 @@ import soundfile as sf
 from audio_validation import validate_audio_pair, finite_range
 from stage_metadata import write_report
 
-from bass_enhance import _bell, transient_emphasize, transient_emphasize_curves
+from bass_enhance import _ar_envelope, _bell, transient_emphasize, transient_emphasize_curves
 
 
 def _gate(x, sr, gate_db=-45.0, attack_ms=5.0, release_ms=150.0):
@@ -30,13 +30,7 @@ def _gate(x, sr, gate_db=-45.0, attack_ms=5.0, release_ms=150.0):
     target = np.where(env_db > gate_db, 1.0, 0.0)
     a = 1.0 - np.exp(-1.0 / (sr * attack_ms / 1000.0))
     r = 1.0 - np.exp(-1.0 / (sr * release_ms / 1000.0))
-    gate = np.empty_like(target)
-    acc = 0.0
-    for i in range(len(target)):
-        alpha = a if target[i] >= acc else r
-        acc = acc + alpha * (target[i] - acc)
-        gate[i] = acc
-    return gate
+    return _ar_envelope(target, a, r)
 
 
 def enhance_drum_stem(x, sr, punch_db=2.0, trans=0.3, transient_curves=None, activity_gate=None):

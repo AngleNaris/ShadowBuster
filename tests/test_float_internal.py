@@ -97,9 +97,9 @@ def test_pipeline_identity_carries_audio_format(tmp_path, monkeypatch):
     real_cache = pipeline_cache.StageCache
 
     class SpyCache(real_cache):
-        def __init__(self, enabled=True, identity=None):
+        def __init__(self, enabled=True, identity=None, tier='C'):
             identities.append(identity)
-            super().__init__(enabled, identity)
+            super().__init__(enabled, identity, tier)
 
     monkeypatch.setattr(pipeline_cache, "StageCache", SpyCache)
     runtime = tmp_path / "runtime"

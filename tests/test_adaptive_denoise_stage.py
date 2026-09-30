@@ -116,6 +116,98 @@ def test_adaptive_amount_zero_does_not_call_analyzer(tmp_path, monkeypatch):
     assert not report['extra']['noise']['applied']
 
 
+def test_adaptive_width_delta_computed_on_denoised_stem(tmp_path, monkeypatch):
+    """审计 P0-4：同轨 denoise → width 真串联。12kHz 纯 side 嘶声被降噪削掉后，
+    宽度 delta 不得再从 RAW stem 把它放大带回（旧实现两 delta 独立叠加会带回）。"""
+    from scipy import signal as sps
+    n = SR * 2
+    t = np.arange(n) / SR
+    stems = tmp_path / 'stems'
+    stems.mkdir()
+    hiss = (.02 * np.sin(2 * np.pi * 12000 * t))[:, None] * np.array([1., -1.])
+    body = (.05 * np.sin(2 * np.pi * 440 * t))[:, None] * np.ones((1, 2))
+    mix = np.zeros((n, 2))
+    for name in ('vocals', 'drums', 'bass', 'other', 'guitar', 'piano'):
+        x = body + (hiss if name == 'other' else 0)
+        sf.write(stems / f'{name}.wav', x, SR, subtype='FLOAT')
+        mix += x
+    source = tmp_path / 'input.wav'
+    sf.write(source, mix, SR, subtype='FLOAT')
+
+    def remove_hiss(x, sr, *args, report):
+        report.update(applied=True, reason='test')
+        sos = sps.butter(4, 8000, btype='lowpass', fs=sr, output='sos')
+        return sps.sosfiltfilt(sos, x, axis=0)
+
+    monkeypatch.setattr(shape, 'adaptive_denoise', remove_hiss)
+    monkeypatch.setattr(shape, 'constrain_noise_delta',
+                        lambda mix_, delta, *a: (delta, {'applied': True}))
+    y, _ = invoke(shape, monkeypatch, stems, source, tmp_path / 'out.wav',
+                  '--wet', '1', '--noise-mode', 'adaptive_all',
+                  '--other-denoise-amount', '.5')
+
+    def band_energy(x):
+        sos = sps.butter(4, [11000, 13000], btype='bandpass', fs=SR, output='sos')
+        return float(np.mean(sps.sosfiltfilt(sos, x, axis=0) ** 2))
+    # 输出里 12kHz 嘶声应基本消失；旧独立叠加实现会把它重新放大（> 输入水平）
+    assert band_energy(y) < 1e-4 * band_energy(mix)
+
+
+def test_wet_zero_bypasses_width_dsp_and_stem_io(tmp_path, monkeypatch):
+    """审计 P1-1：wet=0 且无 legacy 降噪时，宽度整块旁路——
+    不调用任何宽度 DSP，也不加载 drums/other stem，输出与输入位级一致。"""
+    stems, source = fixtures(tmp_path)
+
+    def forbidden(*a, **kw):
+        pytest.fail('width DSP called with wet=0')
+
+    for fn in ('_reshape_stem', '_dynamic_side_shelf', 'drum_width_envelope',
+               '_protect_widen_delta', '_spectral_denoise'):
+        monkeypatch.setattr(shape, fn, forbidden)
+
+    reads = []
+    orig_read = sf.read
+
+    def tracking_read(path, *a, **kw):
+        reads.append(Path(path).name)
+        return orig_read(path, *a, **kw)
+
+    monkeypatch.setattr(sf, 'read', tracking_read)
+    y, report = invoke(shape, monkeypatch, stems, source, tmp_path / 'out.wav')
+    np.testing.assert_array_equal(y, orig_read(source, always_2d=True)[0])
+    assert 'drums.wav' not in reads      # 宽度旁路：drums stem 根本不加载
+    assert 'other.wav' not in reads      # legacy 降噪关闭时 other 也不加载
+    assert report['extra']['width']['bands'] == []
+
+
+def test_wet_zero_keeps_legacy_other_denoise(tmp_path, monkeypatch):
+    """wet=0 但 legacy other 降噪开启时：宽度仍旁路，降噪照常生效。"""
+    stems, source = fixtures(tmp_path)
+
+    def forbidden(*a, **kw):
+        pytest.fail('width DSP called with wet=0')
+
+    for fn in ('_reshape_stem', '_dynamic_side_shelf', 'drum_width_envelope',
+               '_protect_widen_delta'):
+        monkeypatch.setattr(shape, fn, forbidden)
+
+    reads = []
+    orig_read = sf.read
+
+    def tracking_read(path, *a, **kw):
+        reads.append(Path(path).name)
+        return orig_read(path, *a, **kw)
+
+    monkeypatch.setattr(sf, 'read', tracking_read)
+    y, report = invoke(shape, monkeypatch, stems, source, tmp_path / 'out.wav',
+                       '--other-denoise-amount', '.5')
+    assert 'drums.wav' not in reads      # 宽度旁路：drums 不加载
+    assert 'other.wav' in reads          # legacy 降噪仍需 other stem
+    assert report['extra']['noise']['applied']
+    assert report['extra']['width']['bands'] == []
+    assert np.isfinite(y).all()
+
+
 def test_wrong_stem_length_rejected(tmp_path, monkeypatch):
     stems, source = fixtures(tmp_path)
     sf.write(stems / 'vocals.wav', np.zeros((100, 2)), SR, subtype='FLOAT')

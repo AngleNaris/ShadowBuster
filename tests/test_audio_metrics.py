@@ -1,10 +1,12 @@
 import json
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 from audio_metrics import (
     assess_quality,
+    guard_metrics,
     measure_audio,
     quality_report_path,
     read_quality_report,
@@ -140,3 +142,65 @@ def test_quality_report_has_third_octave_compare(tmp_path):
     # （纯音合成信号的空频段只有窗函数泄漏底，长窗下可以远低于 -95dB；
     #   报告页纵轴在 -96 dB 处封底，曲线只会贴底，不会撑坏坐标）
     assert all(-400 <= d <= 5 for d in cmp["input_db"] + cmp["output_db"])
+
+
+# ── 审计 P1-2：guard 指标按需计算 ────────────────────────────────────────
+
+def _stereo(sr=44100, seconds=2):
+    t = np.arange(sr * seconds) / sr
+    mid = 0.08 * np.sin(2 * np.pi * 220 * t) + 0.03 * np.sin(2 * np.pi * 3700 * t)
+    side = 0.035 * np.sin(2 * np.pi * 610 * t)
+    return np.column_stack((mid + side, mid - side))
+
+
+def test_guard_metrics_matches_measure_audio_on_shared_keys():
+    """共享键必须与 measure_audio 逐位相等（同一公式，guard 决策口径不变）。"""
+    audio = _stereo()
+    full, light = measure_audio(audio, 44100), guard_metrics(audio, 44100)
+    for key in ("side_mid", "stereo_correlation", "crest_factor_db", "band_energies"):
+        assert light[key] == full[key]
+
+
+def test_guard_metrics_omits_expensive_report_only_keys():
+    """guard 从不读的昂贵键不得进入轻量快照——这正是 P1-2 省下的整曲通道。"""
+    audio = _stereo(seconds=1)
+    light = guard_metrics(audio, 44100)
+    for absent in ("integrated_lufs", "true_peak_4x", "true_peak_4x_dbtp",
+                   "mono_fold_down_loss_db", "band_widths", "low_band_side_mid",
+                   "short_term_lufs", "momentary_lufs", "lra_lu",
+                   "spectral_centroid_hz", "clipping_samples"):
+        assert absent not in light
+    # bands=False 进一步跳过整曲均值谱（widen 只读 side_mid.db）
+    assert "band_energies" not in guard_metrics(audio, 44100, bands=False)
+    assert guard_metrics(audio, 44100, bands=False)["side_mid"] == light["side_mid"]
+
+
+def test_guard_metrics_never_invokes_expensive_whole_file_passes(monkeypatch):
+    """真·按需：把昂贵整曲通道全部炸掉，guard_metrics 仍须正常返回；
+    对照 measure_audio 必然触发其中之一，证明补丁有效。"""
+    import audio_metrics as am
+    from scipy import signal as sps
+
+    def boom(*a, **k):
+        raise AssertionError("expensive whole-file pass invoked")
+
+    monkeypatch.setattr(am, "integrated_lufs", boom)
+    monkeypatch.setattr(am, "_block_loudness", boom)
+    monkeypatch.setattr(am, "_band_widths", boom)
+    monkeypatch.setattr(am, "_low_band_ratio", boom)
+    monkeypatch.setattr(sps, "resample_poly", boom)
+
+    audio = _stereo()
+    light = am.guard_metrics(audio, 44100)
+    assert light["side_mid"]["db"] is not None
+    assert light["band_energies"]
+    with pytest.raises(AssertionError):
+        am.measure_audio(audio, 44100)
+
+
+def test_guard_metrics_validates_like_measure_audio():
+    for bad in (np.zeros((0, 2)), np.full((100, 2), np.nan)):
+        with pytest.raises(ValueError):
+            guard_metrics(bad, 44100)
+    with pytest.raises(ValueError):
+        guard_metrics(np.zeros((44100, 2)), 4000)

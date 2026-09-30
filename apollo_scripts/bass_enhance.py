@@ -52,6 +52,30 @@ from stage_metadata import write_report
 from scipy import ndimage, signal
 
 
+# 一阶 attack/release 包络递推（审计 P1-4，2026-09-30）：上升用系数 a、下降用 r
+# 的逐样本状态机，系数依赖运行中的 acc，无法用 numpy 向量化。四处同构循环
+# （drum _gate、bass _gate_curve / _relative_activity_gate / _follower）统一到此，
+# 并在 numba 可用时 JIT 编译（与 mastering/finalizer._release_envelope 同先例）。
+# _gate / _gate_curve 是逐样本循环（4 分钟曲目 ≈ 1e7 次迭代），JIT 收益最大。
+# 编译路径与纯 Python 路径逐位一致（同 float64、同运算次序、fastmath 关闭）；
+# numba 缺失时回退等价 Python 循环，输出不变。
+def _ar_envelope_py(x, a, r):
+    out = np.empty(len(x), dtype=np.float64)
+    acc = 0.0
+    for i in range(len(x)):
+        v = x[i]
+        acc += (a if v >= acc else r) * (v - acc)
+        out[i] = acc
+    return out
+
+
+try:
+    from numba import njit
+    _ar_envelope = njit(cache=True, fastmath=False)(_ar_envelope_py)
+except ImportError:  # 无 numba 的运行时：回退纯 Python（逐位等价）
+    _ar_envelope = _ar_envelope_py
+
+
 def soft_clip(x, drive):
     """tanh 软限幅产生温和谐波"""
     return np.tanh(x * drive) / np.tanh(drive)
@@ -225,13 +249,7 @@ def _relative_activity_gate(e_slow, hop, sr):
     target = (e_slow > floor).astype(np.float64)
     a = 1.0 - np.exp(-hop / (sr * TRANS_GATE_ATTACK_MS / 1000.0))
     r = 1.0 - np.exp(-hop / (sr * TRANS_GATE_RELEASE_MS / 1000.0))
-    out = np.empty(len(target))
-    acc = 0.0
-    for i in range(len(target)):
-        alpha = a if target[i] >= acc else r
-        acc += alpha * (target[i] - acc)
-        out[i] = acc
-    return out
+    return _ar_envelope(target, a, r)
 
 
 def _transient_bands(x2, sr):
@@ -501,13 +519,7 @@ def _follower(level, sr, attack_ms, release_ms):
     """
     a = 1.0 - np.exp(-1000.0 / (sr * max(float(attack_ms), 1e-6)))
     r = 1.0 - np.exp(-1000.0 / (sr * max(float(release_ms), 1e-6)))
-    out = np.empty(len(level), dtype=np.float64)
-    acc = 0.0
-    for i in range(len(level)):
-        v = level[i]
-        acc += (a if v >= acc else r) * (v - acc)
-        out[i] = acc
-    return out
+    return _ar_envelope(level, a, r)
 
 
 def _normalize_p99(y):
@@ -742,13 +754,7 @@ def _gate_curve(power, sr, gate_db=GATE_THRESHOLD_DB,
     target = np.where(env_db > gate_db, 1.0, 0.0)
     a = 1.0 - np.exp(-1.0 / (sr * attack_ms / 1000.0))
     r = 1.0 - np.exp(-1.0 / (sr * release_ms / 1000.0))
-    gate = np.empty_like(target)
-    acc = 0.0
-    for i in range(len(target)):
-        alpha = a if target[i] >= acc else r
-        acc = acc + alpha * (target[i] - acc)
-        gate[i] = acc
-    return gate
+    return _ar_envelope(target, a, r)
 
 
 def _stereo_activity_gate(bass, sr):

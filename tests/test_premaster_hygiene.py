@@ -104,6 +104,97 @@ def test_disabled_paths_are_bit_exact(tmp_path):
     assert np.array_equal(out, audio)
 
 
+# ── 1b. 素材自适应低切裁决（2026-09-30，审计 P0-3）────────────────────
+
+def _gated(seconds, sr):
+    """1s 开 / 1s 关的门控 × 0.5Hz 慢起伏：活跃帧内有 dB 方差可测联动。"""
+    t = np.arange(int(sr * seconds)) / sr
+    gate = ((t % 2.0) < 1.0).astype(float)
+    gate = np.convolve(gate, np.ones(int(sr * .02)) / (sr * .02), mode="same")
+    return t, gate * (0.6 + 0.4 * np.sin(2 * np.pi * 0.5 * t))
+
+
+def _musical_sub_audio(sr=44100, seconds=6.0):
+    """31.5Hz 音乐性 sub：与 100Hz 基频带共享同一包络，静默段一起消失。"""
+    t, env = _gated(seconds, sr)
+    mono = env * (0.15 * np.sin(2 * np.pi * 31.5 * t)
+                  + 0.3 * np.sin(2 * np.pi * 100 * t)
+                  + 0.05 * np.sin(2 * np.pi * 1000 * t))
+    return np.column_stack((mono, mono))
+
+
+def _rumble_audio(sr=44100, seconds=6.0):
+    """恒定 20-30Hz rumble：与音乐包络无关，静默段照样漂移。"""
+    from scipy import signal as sps
+    t, env = _gated(seconds, sr)
+    rng = np.random.default_rng(3)
+    sos = sps.butter(4, 30.0, btype="lowpass", fs=sr, output="sos")
+    rumble = sps.sosfiltfilt(sos, rng.normal(0, 0.5, len(t)))
+    mono = env * (0.3 * np.sin(2 * np.pi * 100 * t)
+                  + 0.05 * np.sin(2 * np.pi * 1000 * t)) + rumble
+    return np.column_stack((mono, mono))
+
+
+def test_musical_sub_is_not_filtered():
+    audio = _musical_sub_audio()
+    chosen, analysis = premaster_hygiene.choose_low_cut_hz(audio, 44100, 40.0)
+    assert chosen == 0.0                       # 强音乐性 → 不处理
+    assert analysis["envelope_correlation"] >= 0.5
+    assert analysis["sub_ratio_db"] >= -20.0
+    assert analysis["silent_leak_db"] <= -6.0
+    assert analysis["chosen_hz"] == 0.0 and analysis["requested_hz"] == 40.0
+
+
+def test_rumble_keeps_requested_low_cut():
+    audio = _rumble_audio()
+    chosen, analysis = premaster_hygiene.choose_low_cut_hz(audio, 44100, 40.0)
+    assert chosen == 40.0                      # 与音乐无关的漂移 → 请求值全额处理
+    assert analysis["envelope_correlation"] < 0.35
+
+
+def test_constant_tone_and_short_material_keep_requested():
+    # 恒定电平（合成测试音）：包络无起伏 → 无联动证据 → 请求值
+    sr = 44100
+    t = np.arange(int(sr * 3)) / sr
+    mono = 0.2 * np.sin(2 * np.pi * 30 * t) + 0.2 * np.sin(2 * np.pi * 100 * t)
+    chosen, analysis = premaster_hygiene.choose_low_cut_hz(
+        np.column_stack((mono, mono)), sr, 40.0)
+    assert chosen == 40.0 and analysis["envelope_correlation"] == 0.0
+    # 素材过短：保守沿用请求值
+    chosen, analysis = premaster_hygiene.choose_low_cut_hz(
+        _musical_sub_audio(seconds=1.0), sr, 40.0)
+    assert chosen == 40.0 and analysis["skipped"] == "insufficient_material"
+
+
+def test_chosen_never_exceeds_requested():
+    for requested in (25.0, 30.0, 40.0, 100.0):
+        chosen, _ = premaster_hygiene.choose_low_cut_hz(
+            _musical_sub_audio(), 44100, requested)
+        assert 0.0 <= chosen <= requested
+
+
+def test_cli_records_adaptive_decision_in_report(tmp_path):
+    sr = 44100
+    src = tmp_path / "musical.wav"
+    sf.write(src, _musical_sub_audio().astype(np.float32), sr, subtype="FLOAT")
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(APOLLO_DIR / "premaster_hygiene.py"),
+         "--in", str(src), "--out", str(tmp_path / "out.wav"),
+         "--low-cut-hz", "40", "--report-json", str(tmp_path / "r.json")],
+        capture_output=True, text=True, cwd=str(APOLLO_DIR), timeout=300)
+    assert result.returncode == 0, result.stderr
+    import json
+    extra = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["extra"]
+    assert extra["low_cut"]["requested_hz"] == 40.0
+    assert extra["low_cut"]["hz"] == 0.0 and not extra["low_cut"]["applied"]
+    assert extra["low_cut"]["analysis"]["chosen_hz"] == 0.0
+    # 裁决不处理时输出与输入位级一致（只有低通未启用、无峰值缩放路径）
+    out, _ = sf.read(tmp_path / "out.wav", dtype="float64", always_2d=True)
+    src_audio, _ = sf.read(src, dtype="float64", always_2d=True)
+    np.testing.assert_array_equal(out, src_audio)
+
+
 # ── 2. 阶段命令与报告 ────────────────────────────────────────────────
 
 def test_stage_hygiene_forwards_requested_cutoffs(monkeypatch, tmp_path):

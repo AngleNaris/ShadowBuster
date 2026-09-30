@@ -1030,6 +1030,12 @@ class Bridge(QObject):
     def _draft_worker(self, path, start, end, params, request_id):
         import json
         import draft_preview
+        released = threading.Event()
+        def gpu_release():
+            if not released.is_set():
+                released.set()
+                self._gpu_lock.release()
+        session = None
         try:
             cache_key = self._draft_cache_key(path, params)
             session = draft_preview.Session()
@@ -1037,7 +1043,8 @@ class Bridge(QObject):
             def progress(frac, label):
                 self.draftProgress.emit(json.dumps({'id':request_id, 'label':label, 'fraction':frac}, ensure_ascii=False))
             result = draft_preview.prepare(backend, path, start, end, kwargs,
-                                           progress=progress, cancel=self._cancel_flag.is_set, session=session)
+                                           progress=progress, cancel=self._cancel_flag.is_set,
+                                           session=session, gpu_release=gpu_release)
             self._draft_session = session
             self._draft_session_id = request_id
             result['id'] = request_id
@@ -1047,7 +1054,10 @@ class Bridge(QObject):
         except Exception as exc:
             self.draftFailed.emit(json.dumps({'id':request_id, 'error':str(exc)}, ensure_ascii=False))
         finally:
-            self._gpu_lock.release()
+            # Long songs hand the GPU lock to the background full-song thread; releasing
+            # it here too would let a second GPU job overlap that thread. Otherwise free now.
+            if session is None or not getattr(session, 'deferred_release', False):
+                gpu_release()
 
     @Slot(int, int, int)
     def draftReadChunk(self, session_id, index, generation):

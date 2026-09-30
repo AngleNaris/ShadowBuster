@@ -198,3 +198,99 @@ def test_saturation_empty_and_short_safe():
     short = _steady_sine(80.0, 0.01, 0.5)
     out = bass.saturation_wet(short, drive=1.6)
     assert out.shape == short.shape and np.isfinite(out).all()
+
+
+# ── P1-4：逐样本 attack/release 包络 JIT 位级一致 ───────────────────────
+# 4 处 per-sample 循环（bass._relative_activity_gate/_follower/_gate_curve、
+# drum_enhance._gate）共用同一条递推：acc += (a if x>=acc else r)*(x-acc)。
+# 抽成 _ar_envelope 并用 numba njit(fastmath=False) 加速后，控制曲线必须与
+# 原 Python 循环逐位一致（fastmath=False 禁止 FMA 收缩 → 无重结合）。
+
+def _orig_ar_loop(x, a, r):
+    """P1-4 之前 4 处循环的原始逐样本形式（作为位级参照）。"""
+    out = np.empty(len(x), dtype=np.float64)
+    acc = 0.0
+    for i in range(len(x)):
+        alpha = a if x[i] >= acc else r
+        acc = acc + alpha * (x[i] - acc)
+        out[i] = acc
+    return out
+
+
+def test_ar_envelope_jit_matches_original_per_sample_loop():
+    """JIT 版与 Python 回退版都与原循环逐位一致（控制曲线 max diff = 0）。"""
+    n = SR // 2
+    t = np.arange(n) / SR
+    cases = {
+        'binary_target': (t / 0.2 % 1.0 < 0.4).astype(np.float64),
+        'continuous_level': np.abs(0.5 * np.sin(2 * np.pi * 3.0 * t)),
+        'ramp': np.linspace(0.0, 1.0, n),
+        'impulse': (np.arange(n) == n // 4).astype(np.float64),
+    }
+    for a, r in ((0.5, 0.05), (0.9, 0.001), (0.01, 0.3)):
+        for name, x in cases.items():
+            ref = _orig_ar_loop(x, a, r)
+            np.testing.assert_array_equal(
+                bass._ar_envelope(x, a, r), ref,
+                err_msg=f'njit 位级偏离 {name} a={a} r={r}')
+            np.testing.assert_array_equal(
+                bass._ar_envelope_py(x, a, r), ref,
+                err_msg=f'py 回退位级偏离 {name} a={a} r={r}')
+
+
+def test_gate_functions_bit_identical_to_pre_jit_head():
+    """与 git HEAD（P1-4 只动了 bass/drum 这两文件）位级对比：4 个门函数
+    的输出数组逐位不变。"""
+    import importlib.util
+    import subprocess
+
+    def _load_head(relpath, modname):
+        src = subprocess.check_output(
+            ['git', 'show', f'HEAD:{relpath}'], cwd=ROOT)
+        modfile = ROOT / '.head_snapshot' / f'{modname}.py'
+        modfile.parent.mkdir(exist_ok=True)
+        modfile.write_bytes(src)
+        spec = importlib.util.spec_from_file_location(modname, modfile)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[modname] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    try:
+        head_bass = _load_head('apollo_scripts/bass_enhance.py', '_head_bass')
+        head_drum = _load_head('apollo_scripts/drum_enhance.py', '_head_drum')
+
+        t = np.arange(SR) / SR
+        mono = np.abs(0.4 * np.sin(2 * np.pi * 2.0 * t)) \
+            * ((t / 0.25 % 1.0) < 0.4)
+        stereo = np.column_stack((mono, mono * 0.8))
+        power = mono ** 2                       # 1-D 功率（门/活动检测输入）
+        level = np.abs(mono)                    # 1-D 电平（_follower 输入）
+        hop = 256
+        e_slow = np.maximum(power[::hop % 7 + 1], 1e-9)  # 1-D 慢包络（帧级功率）
+
+        # drum_enhance._gate(x, sr, ...)：立体声输入
+        np.testing.assert_array_equal(
+            drum_enhance._gate(stereo, SR),
+            head_drum._gate(stereo, SR))
+        # bass._gate_curve(power, sr, ...)
+        np.testing.assert_array_equal(
+            bass._gate_curve(power, SR), head_bass._gate_curve(power, SR),
+            err_msg='_gate_curve 与 HEAD 位级不一致')
+        # bass._relative_activity_gate(e_slow, hop, sr)
+        np.testing.assert_array_equal(
+            bass._relative_activity_gate(e_slow, hop, SR),
+            head_bass._relative_activity_gate(e_slow, hop, SR),
+            err_msg='_relative_activity_gate 与 HEAD 位级不一致')
+        # bass._follower(level, sr, attack_ms, release_ms)
+        np.testing.assert_array_equal(
+            bass._follower(level, SR, 5.0, 150.0),
+            head_bass._follower(level, SR, 5.0, 150.0),
+            err_msg='_follower 与 HEAD 位级不一致')
+    finally:
+        for m in ('_head_bass', '_head_drum'):
+            sys.modules.pop(m, None)
+        snap = ROOT / '.head_snapshot'
+        if snap.exists():
+            import shutil
+            shutil.rmtree(snap, ignore_errors=True)

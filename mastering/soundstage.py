@@ -1,16 +1,32 @@
 """Final mix width: amplify existing Side above 120 Hz, never sum old stem deltas."""
 import math
+
 import numpy as np
-from scipy import fft, signal
+from scipy import fft
 
-from .guard import snapshot
+from audio_metrics import guard_metrics
 
-# 单声道兼容占比上限（Side 能量相对 Mid 能量的宽松封顶），是唯一不随请求
-# 变化的固定保护；增长量本身由用户的宽度请求授权。旧固定增长阶梯
-# （2026-09-22 的 +3/+4dB 与全局 S/M ≤ 0dB）在默认档位就已封顶，用户向上
-# 调整听不到变化，2026-09-28 起废弃。
-GLOBAL_SIDE_FRACTION = 0.70
-WIDTH_BANDS = ((120, 2000, 0.60), (2000, 8000, 0.75), (8000, None, 0.75))
+# 相位翻转保护（2026-09-30 裁决）：宽度增长由用户请求全额授权，唯一保护是
+# 「本次处理新引入的相位翻转」——输入 broadband correlation 非负、而请求会把它
+# 推成负值时，二分收回至 correlation ≥ 0 所需的最小增益。输入本就负相关的素材
+# （部分歌曲存在单声道内容或超宽混音）不是损伤，不做任何干预；mono fold-down
+# 与 Side 能量占比（旧 GLOBAL_SIDE_FRACTION / WIDTH_BANDS 封顶）不再作为保护
+# 依据——单声道兼容性不是缺陷，保护不得抑制用户的调整意志。
+
+
+def _side_correlation(em, es, ed, cross, cms, cm, gain):
+    """Broadband L/R correlation after side' = side + gain*added (DC-centered).
+
+    Matches audio_metrics.measure_audio's stereo_correlation definition:
+    corr = E[LR] / sqrt(E[L^2] E[R^2]) with L = mid+side', R = mid-side'.
+    """
+    es_after = es + 2 * gain * cross + gain * gain * ed
+    cms_after = cms + gain * cm
+    total = em + es_after
+    variance = (total + 2 * cms_after) * (total - 2 * cms_after)
+    if variance <= 0:
+        return 0.0
+    return (em - es_after) / math.sqrt(variance)
 
 
 def widen(audio, wet=0.0, width_db=0.0, sr=44100):
@@ -29,40 +45,40 @@ def widen(audio, wet=0.0, width_db=0.0, sr=44100):
     freq = fft.rfftfreq(n, 1 / sr)
     mask = .5 - .5 * np.cos(np.pi * np.clip((freq - 120) / 120, 0, 1))
     added = fft.irfft(fft.rfft(padded, n) * mask, n)[2048:2048 + len(side)]
-    # A request-independent cap makes the admitted gain monotonic in the knob.
-    em, es = float(np.mean(mid ** 2)), float(np.mean(side ** 2))
-    ed, cross = float(np.mean(added ** 2)), float(np.mean(side * added))
-    if cross <= 0:
+    if float(np.mean(side * added)) <= 0:
         report["reason"] = "nonconstructive_side_delta"
         return audio.copy(), report
-    growth = 10 ** (width_db / 10)
-    allowed = max(0.0, min(em * GLOBAL_SIDE_FRACTION / (1 - GLOBAL_SIDE_FRACTION),
-                           es * growth) - es)
-    cap = max(0.0, (-cross + math.sqrt(max(0.0, cross ** 2 + ed * allowed))) / max(ed, 1e-30))
-    nperseg = min(8192, len(mid))
-    f, pm = signal.welch(mid, sr, nperseg=nperseg)
-    _, ps = signal.welch(side, sr, nperseg=nperseg)
-    _, pd = signal.welch(added, sr, nperseg=nperseg)
-    _, pc = signal.csd(side, added, sr, nperseg=nperseg)
-    band_caps = []
-    for lo, hi, fraction in WIDTH_BANDS:
-        band = (f >= lo) & ((f < hi) if hi is not None else (f <= sr / 2))
-        m, s, d, c = (float(np.sum(p[band])) for p in (pm, ps, pd, pc.real))
-        if s < float(np.sum(ps)) * 1e-8:
-            continue
-        budget = max(0.0, min(m * fraction / (1 - fraction), s * growth) - s)
-        limit = max(0.0, (-c + math.sqrt(max(0.0, c*c + d*budget))) / max(d, 1e-30))
-        cap = min(cap, limit)
-        band_caps.append({"low_hz": lo, "high_hz": min(hi or sr / 2, sr / 2),
-                          "side_fraction_cap": fraction, "delta_cap": limit})
-    report["band_caps"] = band_caps
-    admitted = min(wet * (10 ** (width_db / 20) - 1), cap)
+    requested = wet * (10 ** (width_db / 20) - 1)
+    m = mid - mid.mean()
+    s = side - side.mean()
+    d = added - added.mean()
+    moments = (float(np.mean(m * m)), float(np.mean(s * s)), float(np.mean(d * d)),
+               float(np.mean(s * d)), float(np.mean(m * s)), float(np.mean(m * d)))
+    corr = lambda gain: _side_correlation(*moments, gain)
+    admitted = requested
+    input_corr, unlimited_corr = corr(0.0), corr(requested)
+    if input_corr >= 0 and unlimited_corr < 0:
+        low, high = 0.0, requested
+        for _ in range(40):
+            probe = (low + high) / 2
+            if corr(probe) >= 0:
+                low = probe
+            else:
+                high = probe
+        admitted = low
+        report["phase_guard"] = {"input_correlation": input_corr,
+                                 "unlimited_correlation": unlimited_corr,
+                                 "admitted_correlation": corr(admitted)}
     if admitted <= 0:
-        report["reason"] = "existing_width_at_budget"
+        report["reason"] = "phase_inversion_guard"
         return audio.copy(), report
     new_side = side + admitted * added
     result = np.column_stack((mid + new_side, mid - new_side))
-    before, after = snapshot(audio), snapshot(result)
+    # widen() only guards the broadband Mid/Side ratio (width_decreased check below),
+    # so request the band-free guard metrics: no whole-file spectrum, no true-peak
+    # resample, no LUFS. Full measure_audio still runs once for the quality report.
+    before = guard_metrics(audio, sr, bands=False)
+    after = guard_metrics(result, sr, bands=False)
     # Reconstruction boundaries must not turn an intended increase into a loss.
     a, b = before["side_mid"]["db"], after["side_mid"]["db"]
     if a is not None and b is not None and b < a - .05:

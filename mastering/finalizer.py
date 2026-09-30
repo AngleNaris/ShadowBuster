@@ -105,14 +105,18 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
         else:
             candidate = signal.resample_poly(limited, 1, OVERSAMPLING, axis=0,
                                              window=("kaiser", 8.6))[:len(data)]
-        trim = min(0.0, TRUE_PEAK_CEILING_DB - .02 - true_peak_db(candidate))
+        # 审计 P1-3：本次迭代对候选的整曲真峰扫描只此一次——trim 由它决定，
+        # 胜出后真峰严格平移 trim dB（标量增益），LUFS 就是下面算出的 actual，
+        # 收尾复用二者，不再对 result 重跑整曲 LUFS + 4× 重采样。
+        peak_before_trim = true_peak_db(candidate)
+        trim = min(0.0, TRUE_PEAK_CEILING_DB - .02 - peak_before_trim)
         candidate *= 10 ** (trim / 20)
         actual, _ = integrated_lufs(candidate, sample_rate)
         error = target - actual
         feasible = (stats["gain_reduction_p95_db"] <= p95_budget + 1e-6
                     and stats["max_gain_reduction_db"] <= peak_budget + 1e-6)
         if feasible and (best is None or abs(error) < best[0]):
-            best = (abs(error), candidate, stats, drive, trim)
+            best = (abs(error), candidate, stats, drive, trim, actual, peak_before_trim)
         if feasible and abs(error) <= .1:
             reason = "target_met"
             break
@@ -135,7 +139,7 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
             drive = next_drive
     if best is None:
         raise RuntimeError("No safe mastering candidate")
-    _, result, limiter_stats, drive, trim = best
+    _, result, limiter_stats, drive, trim, actual_lufs, peak_before_trim = best
     stats = {
         "engine": ENGINE_VERSION, "style_mode": "off", "spectral_processing": False,
         "loudness_option": loudness, "loudness_target_source": "application_preset",
@@ -146,20 +150,30 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
         "iterations": attempt + 1, "applied_gain_db": drive, "safety_trim_db": trim,
         "true_peak_ceiling_dbtp": TRUE_PEAK_CEILING_DB,
     }
-    _update_measurements(result, sample_rate, stats)
+    # result 即胜出候选（已含 trim）。LUFS 复用循环里对同一数组算出的 actual_lufs
+    # （逐位相同）；真峰 = peak_before_trim + trim（标量增益在实数域严格平移，
+    # 浮点差 ~1e-15 dB，远低于 0.01 dB 报告口径，且在 write_output 路径会被回读
+    # 测量覆盖）。收尾不再对 result 重跑整曲 LUFS + 4× 重采样真峰。
+    _apply_measurements(stats, actual_lufs, peak_before_trim + trim)
     return result, stats
 
 
-def _update_measurements(audio, sample_rate, stats):
-    actual, _ = integrated_lufs(audio, sample_rate)
+def _apply_measurements(stats, actual, true_peak_dbtp):
+    """Record loudness/peak outcomes into stats. Values may be freshly measured
+    (`_update_measurements`) or reused from the search loop (`finalize`, audit
+    P1-3) — the target-status logic is identical either way."""
     error = stats["target_lufs"] - actual
     met = abs(error) <= .2
     stats.update(actual_lufs=actual, target_error_lu=abs(error),
                  target_signed_error_lu=error, target_met=met,
                  target_status="met" if met else ("below_target" if error > 0 else "above_target"),
-                 true_peak_dbtp=true_peak_db(audio))
+                 true_peak_dbtp=true_peak_dbtp)
     if met:
         stats.update(stop_reason="target_met", dynamic_budget_limited=False)
+
+
+def _update_measurements(audio, sample_rate, stats):
+    _apply_measurements(stats, integrated_lufs(audio, sample_rate)[0], true_peak_db(audio))
 
 
 def master_file(input_path, output_path, loudness="normal"):

@@ -287,6 +287,61 @@ def measure_audio(audio: np.ndarray, sample_rate: int) -> dict[str, Any]:
     }
 
 
+def guard_metrics(audio: np.ndarray, sample_rate: int, *, bands: bool = True) -> dict[str, Any]:
+    """Lightweight metric subset for engineering guards (audit P1-2, 2026-09-30).
+
+    Computes only what `mastering.guard.violations()` and `mastering.soundstage.widen()`
+    actually read: ``side_mid``, ``stereo_correlation``, ``crest_factor_db`` and (when
+    ``bands=True``) ``band_energies``. The formulas are identical to ``measure_audio``
+    so shared keys are bit-for-bit equal.
+
+    Deliberately skips the expensive whole-file passes that guards never inspect:
+    4x true-peak resampling, integrated/short/momentary loudness (K-weighting +
+    gating), ``band_widths`` (4 bandpass sosfiltfilt), and ``low_band_side_mid``.
+    ``protected_match`` alone called the full ``measure_audio`` up to 5x per master;
+    ``widen`` called it 2x just to read one ``side_mid.db``. Use ``measure_audio``
+    for the persisted quality report, ``guard_metrics`` for guard decisions.
+
+    ``bands=False`` additionally skips the whole-file mean spectrum, for callers
+    (``widen``) that only need the broadband Mid/Side ratio.
+    """
+    data = np.asarray(audio, dtype=np.float64)
+    if data.ndim == 1:
+        data = data[:, None]
+    if data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0:
+        raise ValueError("audio must be a nonempty [frames, channels] array")
+    if sample_rate < 8_000:
+        raise ValueError("sample rate is too low for measurement")
+    if not np.isfinite(data).all():
+        raise ValueError("audio contains NaN or infinity")
+
+    sample_peak = float(np.max(np.abs(data)))
+    rms = float(np.sqrt(np.mean(data ** 2)))
+    stereo_corr = None
+    side_mid = None
+    if data.shape[1] == 2:
+        left = data[:, 0] - np.mean(data[:, 0])
+        right = data[:, 1] - np.mean(data[:, 1])
+        denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
+        stereo_corr = float(np.dot(left, right) / denominator) if denominator else 0.0
+        mid = (data[:, 0] + data[:, 1]) * 0.5
+        side = (data[:, 0] - data[:, 1]) * 0.5
+        mid_energy = float(np.mean(mid ** 2))
+        side_energy = float(np.mean(side ** 2))
+        ratio = math.sqrt(side_energy / mid_energy) if mid_energy else None
+        side_mid = {"ratio": ratio, "db": _db(ratio) if ratio is not None else None}
+    result: dict[str, Any] = {
+        "sample_peak": sample_peak,
+        "rms": rms,
+        "crest_factor_db": _db(sample_peak / rms) if rms else None,
+        "stereo_correlation": stereo_corr,
+        "side_mid": side_mid,
+    }
+    if bands:
+        result["band_energies"] = _band_energies(data, sample_rate)
+    return result
+
+
 def _constraint(status: str, value: Any = None, reason: str = "") -> dict[str, Any]:
     return {"status": status, "value": value, "reason": reason}
 
