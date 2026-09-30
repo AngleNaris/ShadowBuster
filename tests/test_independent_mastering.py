@@ -12,7 +12,9 @@ from scipy import signal
 import studio_backend as backend
 from audio_metrics import measure_audio
 from mastering import LOUDNESS_TARGETS, TRUE_PEAK_CEILING_DB
-from mastering.finalizer import finalize, linked_limiter, master_file
+import mastering.finalizer as finalizer
+from mastering.finalizer import (ACTIVE_BUDGET_FRACTION, finalize, linked_limiter,
+                                 master_file)
 
 SR = 44100
 
@@ -75,6 +77,57 @@ def test_dynamic_budget_allows_below_target():
     assert stats["dynamic_budget_limited"]
     assert stats["limiter"]["max_gain_reduction_db"] <= stats["limiter_peak_budget_db"] + 1e-6
     assert stats["limiter"]["gain_reduction_p95_db"] <= stats["limiter_p95_budget_db"] + 1e-6
+    assert stats["limiter"]["active_fraction"] <= stats["limiter_active_budget_fraction"] + 1e-6
+    assert stats["limiter"]["gain_reduction_p50_db"] <= stats["limiter_median_gr_budget_db"] + 1e-6
+
+
+def _block_peak_iqr(y, ms=50.0):
+    a = np.abs(y).max(axis=1)
+    w = round(SR * ms / 1000)
+    blk = a[:len(a) - len(a) % w].reshape(-1, w).max(axis=1)
+    return float(np.percentile(blk, 75) - np.percentile(blk, 25))
+
+
+def dense_noise(seconds=4.0, band=1200.0, seed=7):
+    """Peak-heavy material whose 响亮 target is out of reach: the regime where a
+    depth-only budget is satisfied by limiting on every single sample."""
+    rng = np.random.default_rng(seed)
+    x = signal.sosfiltfilt(signal.butter(4, [100 / (SR / 2), band / (SR / 2)],
+                                         btype="band", output="sos"),
+                           rng.standard_normal(int(SR * seconds)))
+    x = x / np.abs(x).max() * .55
+    side = np.roll(x, 37) * .25
+    return np.column_stack((x + side, x - side))
+
+
+def test_engagement_budget_stops_before_peaks_are_pinned():
+    """Depth budgets alone (p95/max GR) accept "limited everywhere": the 响亮 run
+    that motivated this gate delivered active_fraction 0.96 at 5.09 dB median GR,
+    pinning 84% of 50 ms block peaks to one ceiling value (IQR 0.0047) — heard as
+    clipping even though no sample folds. Engagement is budgeted too."""
+    y, stats = finalize(dense_noise(), loudness="loud")
+    assert stats["target_status"] == "below_target"
+    assert stats["dynamic_budget_limited"]
+    assert stats["limiter"]["active_fraction"] <= stats["limiter_active_budget_fraction"] + 1e-6
+    assert stats["limiter"]["gain_reduction_p50_db"] <= stats["limiter_median_gr_budget_db"] + 1e-6
+    assert _block_peak_iqr(y) > .05
+
+
+def test_depth_budgets_alone_deliver_a_pinned_master(monkeypatch):
+    """Same input with the engagement gate widened off — proves the gate, not the
+    input, is what keeps the peak contour alive."""
+    monkeypatch.setattr(finalizer, "ACTIVE_BUDGET_FRACTION", 1.01)
+    monkeypatch.setattr(finalizer, "MEDIAN_GR_BUDGET_DB", 1e9)
+    y, stats = finalize(dense_noise(), loudness="loud")
+    assert stats["limiter"]["gain_reduction_p95_db"] <= stats["limiter_p95_budget_db"] + 1e-6
+    assert stats["limiter"]["active_fraction"] > .95
+    assert _block_peak_iqr(y) < .01
+
+
+def test_engagement_budget_is_inert_when_the_target_is_reachable():
+    y, stats = finalize(dense_noise(band=6000.0), loudness="loud")
+    assert stats["target_met"] and not stats["dynamic_budget_limited"]
+    assert stats["limiter"]["active_fraction"] < ACTIVE_BUDGET_FRACTION
 
 
 def test_finalize_reuses_loop_measurements_and_matches_full_rescan():

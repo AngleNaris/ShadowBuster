@@ -179,7 +179,7 @@ def test_spatial_unmask_mono_and_swap_safe():
 # ── §16.1/§16.5 引擎版本 ───────────────────────────────────────────────
 
 def test_dsp_engine_version_independent_and_in_cache_identity():
-    assert backend.DSP_ENGINE_VERSION == "dsp-v3-20260930"
+    assert backend.DSP_ENGINE_VERSION == "dsp-v4-20260930"
     assert backend.DSP_ENGINE_VERSION != backend.APP_VERSION
     # 身份键由 run_pipeline 组装；这里验证字段在模块契约中可寻址，
     # 且 audio_format 同级（identity dict 的成员）。

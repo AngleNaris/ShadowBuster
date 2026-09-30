@@ -556,9 +556,11 @@ AUDIO_FORMAT_VERSION = "f32-internal-1"
 # 立体声联动、相对活动门）、饱和 4× 过采样、低频协调授权 u_low、
 # other 轨 200-700Hz 空间去拥挤。v3 起（2026-09-30，审计 P0 批次）：
 # 声场保护只在新引入相位翻转时触发（mono 兼容封顶废弃）、premaster 低切
-# 素材自适应、reshape 同轨 denoise→width 真串联。进入缓存身份（§16.5：
-# 新引擎不与旧缓存混用）。
-DSP_ENGINE_VERSION = "dsp-v3-20260930"
+# 素材自适应、reshape 同轨 denoise→width 真串联。v4 起（2026-09-30）：母带收敛
+# 判据除减益深度外还约束限制器介入频率（active ≤0.70、中位减益 ≤2.0 dB），
+# 目标不可达的素材退回"不持续钳制"的候选并如实标 dynamic_budget，交付母带不再
+# 把块峰值钉死在天花板上。进入缓存身份（§16.5：新引擎不与旧缓存混用）。
+DSP_ENGINE_VERSION = "dsp-v4-20260930"
 
 
 def ffmpeg_convert(src, dst, sr=44100, subtype="FLOAT"):

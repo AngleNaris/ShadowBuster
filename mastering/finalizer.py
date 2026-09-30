@@ -22,6 +22,10 @@ LIMITER_CEILING_DB = -0.5
 # Existing product budgets: p95 attenuation and worst instantaneous attenuation.
 GR_BUDGETS = {"soft": (4.0, 14.0), "dynamic": (4.0, 14.0),
               "normal": (6.0, 18.0), "loud": (8.0, 20.0)}
+# Budget engagement, not just depth: depth alone accepted active_fraction 0.96 at
+# 5.09 dB median GR, pinning 84% of 50 ms block peaks to the ceiling — heard as clipping.
+ACTIVE_BUDGET_FRACTION = 0.70
+MEDIAN_GR_BUDGET_DB = 2.0
 
 
 def true_peak_db(audio):
@@ -114,7 +118,9 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
         actual, _ = integrated_lufs(candidate, sample_rate)
         error = target - actual
         feasible = (stats["gain_reduction_p95_db"] <= p95_budget + 1e-6
-                    and stats["max_gain_reduction_db"] <= peak_budget + 1e-6)
+                    and stats["max_gain_reduction_db"] <= peak_budget + 1e-6
+                    and stats["active_fraction"] <= ACTIVE_BUDGET_FRACTION + 1e-6
+                    and stats["gain_reduction_p50_db"] <= MEDIAN_GR_BUDGET_DB + 1e-6)
         if feasible and (best is None or abs(error) < best[0]):
             best = (abs(error), candidate, stats, drive, trim, actual, peak_before_trim)
         if feasible and abs(error) <= .1:
@@ -146,6 +152,8 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
         "target_lufs": target, "input_lufs": initial, "loudness_method": method,
         "stop_reason": reason, "dynamic_budget_limited": budget_limited,
         "limiter_p95_budget_db": p95_budget, "limiter_peak_budget_db": peak_budget,
+        "limiter_active_budget_fraction": ACTIVE_BUDGET_FRACTION,
+        "limiter_median_gr_budget_db": MEDIAN_GR_BUDGET_DB,
         "limiter_release_ms": release_ms, "limiter": limiter_stats,
         "iterations": attempt + 1, "applied_gain_db": drive, "safety_trim_db": trim,
         "true_peak_ceiling_dbtp": TRUE_PEAK_CEILING_DB,
