@@ -1848,3 +1848,13 @@ html[data-mode="light"] .player { --c-err: #b42332; }
    放文件末尾——与上面各条 .class:focus-visible 同权重（0,2,0），靠源序取胜；
    选中/激活态另有底色与内描边（aria-pressed、is-selected）表达，不需要焦点环。 */
 :root :focus-visible { outline: none; }
+
+/* 播放器按钮激活态：去掉那一圈硬描边（亮/白环），只保留底色 + 外辉光来表达
+   “已激活”。放最后并以更高特异性压过上面各条 border-color / inset 描边与
+   :root button[aria-pressed] 内环；不改变布局（边框宽度仍在，仅透明）。 */
+.player-source[aria-pressed="true"], .player-source.is-selected,
+.player-delta[aria-pressed="true"], #draft-loop[aria-pressed="true"],
+.player-play[data-playing="true"] {
+  border-color: transparent;
+  box-shadow: 0 0 8px rgba(var(--c-accent-rgb), .35);
+}

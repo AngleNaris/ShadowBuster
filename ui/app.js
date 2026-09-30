@@ -54,7 +54,7 @@
     if (api.draftFailed) api.draftFailed.connect(onDraftFailed);
     if (api.draftChunkReady) api.draftChunkReady.connect(raw=>{
       const p=JSON.parse(raw); if(p.session!==draft.id || p.generation!==draft.player.generation)return;
-      if(p.error) { draft.player.stop(); draft.ready=false; cacheState('error','试听缓存读取失败'); playerError(p.error); paintTransport(); return; }
+      if(p.error) { draft.ready=false; cacheState('error','试听缓存读取失败'); playerError(p.error+'；已切到原声继续播放'); switchToNativeOriginal(); return; }
       draft.player.chunk(p);
     });
     if (api.draftProgress) api.draftProgress.connect(onDraftProgress);
@@ -1531,7 +1531,8 @@
 
   async function startProcess() {
     if (draft.busy) { announce("请先完成或取消草稿准备"); return; }
-    stopTransport();
+    // 处理不再打断试听：草稿播放走 WebAudio、处理走后端进程，二者不争用；
+    // 处理完成后若产物变化，参数失效检查会自动把播放切到原声，仍不停止。
     // 缺失提示改为控件红框：无歌曲 → BUSTER 红框并打开文件弹窗；无输出目录 → 输出框红框
     if (!state.files.length) { fileMenu.showPopover();markNeed(fileMenu);return; }
     if (!state.output) { markNeed($("output-path")); return; }
@@ -2454,6 +2455,27 @@ function paintTransport() {
   $('draft-seek').setAttribute('aria-valuetext',`${draftTime(t)}，总长 ${draftTime(transport.duration)}`);
 }
 function stopTransport() { nativeAudio.pause();draft.player.stop();paintTransport(); }
+async function switchToNativeOriginal() {
+  // Hand playback to the raw file via <audio>, independent of the draft cache, so a
+  // cache failure or re-prepare never stops audio: keep position + playing state.
+  const time=playerPosition(), playing=playerPlaying(), token=++transport.token;
+  transport.source='original';
+  draft.player.stop();
+  renderPlayerSources();paintTransport();
+  if(!transport.file)return;
+  nativeAudio.src=fileUrl(transport.file);nativeAudio.volume=getMonitorVolume()/100;
+  try {
+    await new Promise((resolve,reject)=>{
+      const done=()=>{nativeAudio.removeEventListener('loadedmetadata',ok);nativeAudio.removeEventListener('error',fail);};
+      const ok=()=>{done();resolve();};const fail=()=>{done();reject(new Error('原声无法播放，请检查文件'));};
+      nativeAudio.addEventListener('loadedmetadata',ok);nativeAudio.addEventListener('error',fail);
+    });
+    if(token!==transport.token)return;
+    nativeAudio.currentTime=Math.min(time,Math.max(0,(nativeAudio.duration||time)-0.001));
+    if(playing)await nativeAudio.play();
+  } catch(e) {if(token===transport.token)playerError(String(e));}
+  paintTransport();
+}
 function setPlayerLoop() {
   const duration=transport.duration;
   let [a,b]=transport.range;
@@ -2601,7 +2623,8 @@ async function startDraft() {
   if(draft.busy){api.cancel();cacheState('preparing','正在取消准备',cacheFraction);return;}
   if(state.processing||!transport.file){playerError('请先选择歌曲，并等待当前处理完成');return;}
   if(!transport.duration){playerError('正在读取歌曲，请稍后重试');return;}
-  stopTransport();draft.ready=false;draft.busy=true;draft.key=draftKey();draft.id++;
+  if(playerPlaying())switchToNativeOriginal();else draft.player.stop();
+  draft.ready=false;draft.busy=true;draft.key=draftKey();draft.id++;
   cacheState('preparing','正在准备试听缓存');playerError('');renderPlayerSources();paintTransport();
   api.draftPrepare(state.selectedFile,0,transport.duration,collectParams(),draft.id);
 }
@@ -2745,8 +2768,8 @@ let lastDraftParams='';
 setInterval(()=>{
   if(!draft.ready)return;
   if(draft.key!==draftKey()){
-    draft.player.stop();draft.ready=false;cacheState('stale','输入、精度或参考已变化，请重新准备');
-    if(transport.source==='draft')chooseSource('original',false);
+    draft.ready=false;cacheState('stale','输入、精度或参考已变化，请重新准备');
+    if(usesDraftEngine())chooseSource('original',true);else draft.player.stop();
     playerError('输入、精度或参考已变化，请重新准备。');
     renderPlayerSources();paintTransport();return;
   }
