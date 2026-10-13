@@ -20,7 +20,7 @@ from audio_metrics import (quality_report_path, quality_summary, read_quality_re
                            write_quality_report)
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.11"
+APP_VERSION = "1.6.12"
 GPU_ENV_VERSION = "1.6.11"
 
 # ── 处理默认值单一来源（开发规格 v2 §5.2/§12.1，P0-03；ENG-01）──────────

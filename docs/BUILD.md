@@ -27,6 +27,10 @@ v1.6.11 装配修正：Windows/macOS 复制全部 `apollo_scripts/*.py`，避免
 
 冻结外壳不包含 SciPy；正式成品的质量报告由内置音频解释器从 `runtime/audio_metrics.py` 生成，开发态保留直接调用。发布验收应检查质量旁车实际存在，不能只检查 EXE 退出码或 WAV 成品。
 
+v1.6.12 GUI 启动修正：Windows 的 `ShadowBuster.spec` 将构建进程的 PATH 限定为系统和当前 Python 目录，防止 Qt 的系统 `icuuc.dll` 依赖被 Poppler 等工具的同名 DLL 替代。v1.6.11 曾误收 ICU 78（导出 `ucnv_open_78`），而 Qt 需要系统 ICU 的 `ucnv_open`，导致 GUI 启动时报 QtCore DLL 入口缺失；CLI 分支绕过 Qt，不能发现此问题。安装器覆盖升级时清理这两个旧 DLL。GPU 环境继续使用 1.6.11。
+
+构建和安装后的 GUI 必须额外通过 `packaging/verify_gui.ps1`。该检查运行实际冻结 EXE 的 `--gui-smoke-test`，加载主窗口、QtWebEngine 页面及 QWebChannel 桥接，并检查界面标题、DOM、桥接就绪和版本；命令行音频处理成功不等于 GUI 启动通过。检查使用隔离的 WebView 缓存，并恢复用户窗口几何设置。
+
 ## 构建步骤（开发机）
 
 ```powershell
@@ -49,9 +53,9 @@ powershell -File packaging\build_gpu_env.ps1
 
 ## 三层校验（发布前必须全过）
 
-- `build_shell.ps1`：构建前检查外壳 Python 可导入 `PyInstaller` 与 `numpy`；构建后确认 onedir 产物内存在 numpy 目录、原生 `.pyd` 扩展，且 PyInstaller warning 未报告 numpy 缺失。
+- `build_shell.ps1`：构建前检查外壳 Python 可导入 `PyInstaller`、`numpy` 和 Qt GUI 模块；构建后确认 onedir 产物内存在 numpy 目录、原生 `.pyd` 扩展，且 PyInstaller warning 未报告 numpy 缺失，裁剪后实际冻结 GUI 检查通过。
 - `runtime_sync.ps1`：所有第三方依赖统一装入 `runtime\env\Lib\site-packages`，验证 torch/demucs/numpy/soundfile/scipy/librosa/numba/statsmodels/pyloudnorm/joblib/cryptography 及 `look2hear.models`（Lew 真实导入链），并把关键文件 SHA-256 写入 `critical-manifest.sha256`。
-- `install_test.ps1 -Version <ver>`：静默安装到 `packaging\test_install`，并调用安装目录的 `runtime\env\python.exe` 重跑导入探针；安装器退出码为 0 但探针失败时测试仍失败。
+- `install_test.ps1 -Version <ver>`：静默安装到 `packaging\test_install`，验证实际冻结 GUI，再调用安装目录的 `runtime\env\python.exe` 重跑导入探针；安装器退出码为 0 但 GUI 或依赖探针失败时测试仍失败。
 
 修复依赖后必须重新执行三步并重新编译安装器，不能只替换 UI 外壳或复用旧的 `stage` 目录。
 

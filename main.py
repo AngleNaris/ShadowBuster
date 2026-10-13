@@ -1566,6 +1566,11 @@ def _activate_existing_window(server, window):
 
 
 def main():
+    if "--gui-smoke-test" in sys.argv:
+        from gui_smoke import run
+        report = Path(sys.argv[sys.argv.index("--gui-smoke-test") + 1])
+        return run(StudioWindow, report, backend.APP_VERSION)
+
     app = QApplication(sys.argv)
     app.setApplicationName("ShadowBuster")
 

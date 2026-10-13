@@ -3,6 +3,8 @@ param(
     [string]$InstallDir = (Join-Path $PSScriptRoot "test_install")
 )
 
+$ErrorActionPreference = "Stop"
+
 $installer = Join-Path $PSScriptRoot "out\ShadowBuster-Setup-$Version.exe"
 if (-not (Test-Path $installer)) {
     throw "Installer not found: $installer"
@@ -24,6 +26,9 @@ if (Test-Path -LiteralPath $InstallDir) {
 $p = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',$dirArg -WindowStyle Hidden -PassThru -Wait
 Write-Output ('EXIT=' + $p.ExitCode)
 if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+
+$guiReport = Join-Path $PSScriptRoot ("out\installed-gui-" + [Guid]::NewGuid().ToString('N') + '.json')
+& "$PSScriptRoot\verify_gui.ps1" -AppDir $InstallDir -ReportPath $guiReport
 
 $runtimePython = Join-Path $InstallDir "runtime\env\python.exe"
 if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {

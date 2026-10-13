@@ -22,8 +22,8 @@ if (-not $venvPy) {
     throw "找不到外壳构建 Python，请设置 SB_SHELL_PYTHON 或在项目 .venv 中安装 PySide6、PyInstaller、numpy"
 }
 
-& $venvPy -c "import numpy, PyInstaller; print('shell build dependencies OK', numpy.__version__)"
-if ($LASTEXITCODE -ne 0) { throw "外壳构建 Python 缺少 PyInstaller 或 numpy: $venvPy" }
+& $venvPy -c "import numpy, PyInstaller; from PySide6 import QtCore, QtWidgets, QtWebChannel, QtWebEngineCore, QtWebEngineWidgets; print('shell build dependencies OK', numpy.__version__, QtCore.qVersion())"
+if ($LASTEXITCODE -ne 0) { throw "外壳构建 Python 无法导入 PyInstaller、numpy 或 Qt GUI: $venvPy" }
 
 Set-Location $root
 Write-Host "[1/3] PyInstaller 构建外壳 ..."
@@ -60,5 +60,8 @@ if (Test-Path "$bundle\translations") {
         Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host "[3/3] 产物: $root\dist\ShadowBuster\ShadowBuster.exe"
+Write-Host "[3/3] 验证冻结 GUI / WebEngine / 界面加载 ..."
+$guiReport = Join-Path $root ("packaging\out\gui-smoke-" + [Guid]::NewGuid().ToString('N') + '.json')
+& "$PSScriptRoot\verify_gui.ps1" -AppDir "$root\dist\ShadowBuster" -AssetsDir "$root\packaging\stage\runtime" -ReportPath $guiReport
+Write-Host "产物: $root\dist\ShadowBuster\ShadowBuster.exe"
 Write-Host "下一步: 运行 runtime_sync.ps1 装配 AI 运行时，再用 Inno 打安装包。"

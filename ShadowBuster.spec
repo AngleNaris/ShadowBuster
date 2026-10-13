@@ -1,6 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+import sys
 from pathlib import Path
+
+# Qt uses Windows' unversioned ICU API. Native tools on the caller's PATH can
+# provide an incompatible icuuc.dll with version-suffixed exports.
+if sys.platform == "win32":
+    windows = Path(os.environ["SystemRoot"])
+    os.environ["PATH"] = os.pathsep.join(map(str, (
+        windows / "System32", windows, Path(sys.executable).parent, Path(sys.base_prefix),
+    )))
 
 root = Path(SPECPATH).resolve()
 

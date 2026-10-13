@@ -18,7 +18,7 @@
 ; 取消下方 [Languages] 注释。
 ; ══════════════════════════════════════════════════════════════════
 #define MyAppName "ShadowBuster"
-#define MyAppVersion "1.6.11"  ; 与 studio_backend.APP_VERSION 保持一致（tests/test_app_version.py 校验）
+#define MyAppVersion "1.6.12"  ; 与 studio_backend.APP_VERSION 保持一致（tests/test_app_version.py 校验）
 #define MyAppExeName "ShadowBuster.exe"
 
 [Setup]
@@ -55,6 +55,11 @@ Source: "stage\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recurs
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[InstallDelete]
+; v1.6.11 错误收集的 Poppler ICU。覆盖安装也必须清理，避免遮蔽系统 ICU。
+Type: files; Name: "{app}\_internal\icuuc.dll"
+Type: files; Name: "{app}\_internal\icudt78.dll"
 
 [Run]
 ; runasoriginaluser：安装完以普通用户身份启动，避免应用带着管理员令牌运行
