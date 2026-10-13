@@ -20,8 +20,8 @@ from audio_metrics import (quality_report_path, quality_summary, read_quality_re
                            write_quality_report)
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.10"
-GPU_ENV_VERSION = "1.5.0"
+APP_VERSION = "1.6.11"
+GPU_ENV_VERSION = "1.6.11"
 
 # ── 处理默认值单一来源（开发规格 v2 §5.2/§12.1，P0-03；ENG-01）──────────
 # GUI（main.collect_pipeline_kwargs / map_ui_params）、CLI（processing_cli）与
@@ -259,6 +259,21 @@ def _tr(msg):
 
 class PipelineError(Exception):
     pass
+
+
+def _write_pipeline_quality_report(input_wav, output_wav, **kwargs):
+    """Keep SciPy measurements in the audio runtime when the shell is frozen."""
+    if not getattr(sys, "frozen", False):
+        return write_quality_report(input_wav, output_wav, **kwargs)
+    request = {"input_wav": str(input_wav), "output_wav": str(output_wav), **kwargs}
+    code = ("import json,sys; from audio_metrics import write_quality_report; "
+            "print(json.dumps(write_quality_report(**json.load(sys.stdin))))")
+    result = subprocess.run([str(PYTHON), "-c", code], cwd=str(MASTERING_ROOT),
+                            input=json.dumps(request), capture_output=True, text=True,
+                            creationflags=_NO_WINDOW)
+    if result.returncode != 0:
+        raise PipelineError(f"质量报告生成失败: {result.stderr[-1000:]}")
+    return json.loads(result.stdout)
 
 
 # 活跃子进程注册表：窗口关闭 / 全局停止时兜底清树，防止后台残留继续跑
@@ -560,7 +575,7 @@ AUDIO_FORMAT_VERSION = "f32-internal-1"
 # 判据除减益深度外还约束限制器介入频率（active ≤0.70、中位减益 ≤2.0 dB），
 # 目标不可达的素材退回"不持续钳制"的候选并如实标 dynamic_budget，交付母带不再
 # 把块峰值钉死在天花板上。进入缓存身份（§16.5：新引擎不与旧缓存混用）。
-DSP_ENGINE_VERSION = "dsp-v4-20260930"
+DSP_ENGINE_VERSION = "dsp-v5-20261013"
 
 
 def ffmpeg_convert(src, dst, sr=44100, subtype="FLOAT"):
@@ -800,7 +815,8 @@ def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
         progress(0.0, "人声调整")
     stem_dir = Path(stem_dir)
     vocals = stem_dir / "vocals.wav"
-    if balance_mode is None and balance_target_db is None and (gain_db == 0 or not vocals.exists()):
+    if balance_mode is None and balance_target_db is None and gain_db == 0 \
+            and not comp_amount and not air_db:
         shutil.copyfile(in_mix, out_wav)
     elif not vocals.exists():
         shutil.copyfile(in_mix, out_wav)
@@ -828,7 +844,8 @@ def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
 def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=None,
                   progress=None, cancel=None, report_json=None,
                   noise_mode="other", noise_low_hz=8000.0, noise_high_hz=20000.0,
-                  noise_max_attenuation_db=6.0, space_amount=None, stem_scale=1.0):
+                  noise_max_attenuation_db=6.0, space_amount=None, stem_scale=1.0,
+                  working_stems_dir=None):
     """声场重塑（broadband delta-add）：wet 缩放宽度差值，降噪与去拥挤独立授权。
 
     stem_scale 是上游累计峰值缩放，所有源分轨先对齐当前混音电平。
@@ -866,6 +883,15 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
             or not (stems_dir / "drums.wav").exists() \
             or not (stems_dir / "other.wav").exists():
         shutil.copyfile(in_mix, out_wav)
+        if working_stems_dir is not None:
+            target_dir = Path(working_stems_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("vocals", "drums", "bass", "other", "guitar", "piano"):
+                source, target = stems_dir / f"{name}.wav", target_dir / f"{name}.wav"
+                if source.is_file():
+                    shutil.copyfile(source, target)
+                else:
+                    target.unlink(missing_ok=True)
         if report_json is not None:
             # 透传也产出本次运行的"未施加"报告：报告永远与成品同批生成，
             # 绝不给过期 extras 留位（writes_stage_report 缓存契约要求产物在）。
@@ -893,6 +919,8 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
                     "--noise-low-hz", str(noise_low_hz),
                     "--noise-high-hz", str(noise_high_hz),
                     "--noise-max-attenuation-db", str(noise_max_attenuation_db)]
+        if working_stems_dir is not None:
+            cmd += ["--working-stems-dir", str(working_stems_dir)]
         scale = _run_reported(cmd, in_mix, out_wav, report_json, "reshape", cancel)
     if progress:
         progress(1.0, "声场重塑完成")
@@ -1068,6 +1096,7 @@ stage_drums.writes_stage_report = True
 stage_drums.report_input_arg = "rest_wav"
 stage_reshape.writes_stage_report = True
 stage_reshape.report_input_arg = "in_mix"
+stage_reshape.writes_working_stems = True
 stage_hygiene.writes_stage_report = True
 stage_hygiene.report_input_arg = "in_wav"
 
@@ -1617,7 +1646,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                 "code": [(str(p), pipeline_cache.md5(p)) for p in implementation if p.is_file()]}
     cache = pipeline_cache.StageCache(cache_enabled, identity)
 
-    def cached(fn, output_arg, input_args, report_suffix=None):
+    def cached(fn, output_arg, input_args, report_suffix=None, extra_output_args=()):
         if not hasattr(fn, "__name__"):
             return fn
         signature = inspect.signature(fn)
@@ -1631,7 +1660,8 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             if output_arg not in values:
                 return fn(*args, **kwargs)
             inputs = [values[k] for k in input_args if values.get(k) is not None]
-            params = {k: v for k, v in values.items() if k not in input_args + [output_arg, "progress", "cancel", "report_json"]}
+            params = {k: v for k, v in values.items() if k not in input_args +
+                      [output_arg, "progress", "cancel", "report_json"] + list(extra_output_args)}
             if fn.__name__ == "stage_demucs":
                 params["stem_name"] = Path(inputs[0]).stem
             # 母带统计旁车与成品一起入缓存：缓存命中后 run_pipeline 仍能读到
@@ -1639,6 +1669,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             # writes_mastering_report 标记 → 单产物，旧缓存合同不变。统计 dict
             # 不能进缓存 result（数值校验只收有限数值），统计一律经旁车文件传递。
             outputs = [values[output_arg]]
+            outputs += [values[k] for k in extra_output_args if values.get(k) is not None]
             report_cacheable = (report_suffix is not None and
                                 getattr(fn, "writes_mastering_report", None) is True)
             stage_report = None
@@ -1678,7 +1709,8 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                                      cache_enabled=cache_enabled, **kwargs)
     run_bass = cached(stage_bass, "out_wav", ["stem_dir", "in_mix"])
     run_drums = cached(stage_drums, "out_wav", ["stem_dir", "rest_wav"])
-    run_reshape = cached(stage_reshape, "out_wav", ["in_mix", "stems_dir"])
+    run_reshape = cached(stage_reshape, "out_wav", ["in_mix", "stems_dir"],
+                          extra_output_args=("working_stems_dir",))
     run_guitar = cached(stage_guitar, "out_wav", ["stem_dir", "in_mix"])
     run_synth = cached(stage_synth, "out_wav", ["stem_dir", "in_mix"])
     run_vocals = cached(stage_vocals, "out_wav", ["stem_dir", "in_mix", "reference_mix", "reference_vocals"])
@@ -1731,6 +1763,8 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             else:
                 run_demucs(lew_src, stems_out, model=demucs_model, progress=cb(1), cancel=cancel,
                            device=device)
+        consumer_stem_dir = stem_dir
+        working_stems_out = work / "working_stems"
         if "bass" in bypass:
             shutil.copyfile(lew_src, bass_out)
             bass_scale = 1.0
@@ -1781,12 +1815,17 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                                       noise_high_hz=noise_high_hz,
                                       noise_max_attenuation_db=noise_max_attenuation_db)
             reshape_report.unlink(missing_ok=True)
+            export_working = getattr(stage_reshape, "writes_working_stems", None) is True
+            if export_working:
+                reshape_kwargs["working_stems_dir"] = working_stems_out
             reshape_scale = run_reshape(drum_out, stem_dir, shape_out,
                           wet=0.0 if independent_mastering else space_wet,
                           denoise=space_denoise, width_db=space_width_db,
                           space_amount=space_amount, stem_scale=bass_scale * drums_scale,
                           progress=cb(4, 0.0, 0.5), cancel=cancel, report_json=reshape_report,
                           **reshape_kwargs)
+            if export_working:
+                consumer_stem_dir = working_stems_out
             extra = _stage_report_extra(reshape_report, "reshape")
             if extra is not None:
                 stage_extras["reshape"] = extra
@@ -1805,7 +1844,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                 report_path.unlink(missing_ok=True)
                 run_extra = run_guitar if kind == "guitar" else run_synth
                 extra_scale = run_extra(
-                    stem_dir, extra_in, out_wav,
+                    consumer_stem_dir, extra_in, out_wav,
                     progress=cb(4, *span), cancel=cancel,
                     report_json=report_path, stem_scale=stem_scale, **stem_controls[kind])
                 stem_scale *= extra_scale
@@ -1832,7 +1871,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                     run_demucs(original_mix, original_stems, model=demucs_model,
                                cancel=cancel, device=device)
                     original_vocals = original_stems / demucs_model / original_mix.stem / "vocals.wav"
-            run_vocals(stem_dir, extra_in, vocal_out, gain_db=vocal_gain_db,
+            run_vocals(consumer_stem_dir, extra_in, vocal_out, gain_db=vocal_gain_db,
                          balance_target_db=balance_target_db,
                          balance_mode=balance_mode if balance_target_db is None else None,
                          reference_mix=original_mix,
@@ -1917,7 +1956,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
         try:
             import soundfile as _sf
             quality_params["output_subtype"] = _sf.info(str(out_final)).subtype
-            quality_report = write_quality_report(
+            quality_report = _write_pipeline_quality_report(
                 input_wav, out_final, params=quality_params,
                 mastering_stats=mastering_stats,
                 stage_reports=stage_extras or None)

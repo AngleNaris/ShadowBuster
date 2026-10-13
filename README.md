@@ -43,7 +43,7 @@ ShadowBuster 是面向 AI 生成音乐与有损音频的 Windows 修复、增强
   </tr>
   <tr>
     <td valign="top"><b>人声与声场</b><br><sub>调整人声相对位置，控制 Mid / Side 宽度，并压低 other 轨中的稳态高频噪声。</sub></td>
-    <td valign="top"><b>Soren 母带</b><br><sub>执行响度与频谱匹配、Mid / Side 处理、lookahead limiter、真峰值保护和 24-bit dither。</sub></td>
+    <td valign="top"><b>母带定版</b><br><sub>独立引擎处理用户 EQ、参考音色、响度和峰值，采用 lookahead limiter、真峰值保护和 24-bit dither。</sub></td>
     <td valign="top"><b>桌面工作流</b><br><sub>拖放导入，查看阶段进度，随时取消任务，并保存常用参数与界面主题。</sub></td>
   </tr>
 </table>
@@ -57,16 +57,18 @@ Lew 高频重建
 → 鼓增强
 → 人声调整
 → 声场重塑 / 高频降噪
-→ Soren 母带
+→ 母带定版
 ```
 
-各阶段保持清晰边界：Lew 负责恢复频带，Demucs 提供可独立处理的轨道，增强阶段只修改对应分轨，最后再由 Soren 完成整体响度、频谱和峰值定版。处理编排、进度和取消由 `studio_backend.py` 统一管理。
+各阶段保持清晰边界：Lew 负责恢复频带，Demucs 提供可独立处理的轨道，增强阶段只修改对应分轨，最后由母带引擎完成整体音色、响度和峰值定版。处理编排、进度和取消由 `studio_backend.py` 统一管理。
 
-开发版迁移进度（2026-09-19）：无风格、用户 EQ 与用户参考已接入 ShadowBuster 独立母带；用户参考由 Matchering 2.0.6 提供音色方向，应用控制强度、声场、响度与峰值。不提供预置参考；旧预置风格与 Soren 资源的完整移除留到批次 D。已安装版本不受源码修改影响。详见 [迁移计划](docs/analysis/matchering_migration_plan_20260919.md)。
+v1.6.11 包含无风格、用户 EQ 与用户参考的独立母带；用户参考由 Matchering 2.0.6 提供音色方向，应用控制强度、声场、响度与峰值。不提供预置参考；旧风格兼容代码与 Soren 资源仍保留。DSP 音质修复与真实歌曲检查见 [验收报告](docs/analysis/dsp_quality_fixes_20261013.md)，母带迁移见 [迁移计划](docs/analysis/matchering_migration_plan_20260919.md)。
 
 ## 发布与 GPU 环境
 
 CPU 瘦身运行时直接随安装包分发；CUDA 环境改为在“设置 → GPU 环境”中按需下载。GPU 包支持断点续传、取消和 SHA-256 校验，安装到当前用户目录，不需要管理员权限。
+
+v1.6.11 使用 GPU 环境 **1.6.11**，补齐用户参考母带所需的 Matchering/resampy。使用旧 GPU 环境的用户升级应用后，请在“设置 → GPU 环境”安装新版环境；环境未更新时应用可使用内置 CPU 运行时处理。
 
 各版本安装包的大小与 SHA-256 记录在 [`packaging/release-audit/`](packaging/release-audit/) 对应版本的发布说明中。安装包尚未进行代码签名，请从官方 [GitHub Releases](https://github.com/AngleNaris/ShadowBuster/releases) 获取发布信息，并在运行前核对校验值。
 

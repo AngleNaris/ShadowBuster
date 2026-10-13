@@ -23,6 +23,10 @@
 - **运行时必须可重定位**：不用 venv。`runtime_sync.ps1` 用 python-build-standalone 整目录拷贝 + `pip --target` 安装 site-packages，依赖清单见 [`RUNTIME_DEPENDENCIES.md`](RUNTIME_DEPENDENCIES.md)。
 - **离线优先**：Lew 权重（`runtime/Apollo/ckpts/`）、Soren 模型（`runtime/Soren_src/model/`）、demucs 的 htdemucs 权重（`runtime/hf_home/`）全部内置，装完即可离线处理。
 
+v1.6.11 装配修正：Windows/macOS 复制全部 `apollo_scripts/*.py`，避免遗漏 `low_freq_policy.py`、`premaster_hygiene.py` 等依赖；runtime 根同时包含 `audio_worker.py`。运行时与安装后导入检查覆盖 DSP 入口、独立母带、Matchering/resampy。GPU 环境升为 1.6.11，旧 1.5.0 压缩包缺少参考母带依赖，不能继续作为本版的完整 GPU 环境。关键文件清单排除安装后会自动重生成的 `.pyc/.pyo/.nbc/.nbi` 缓存，以便重定位后复核源码、原生库和模型。
+
+冻结外壳不包含 SciPy；正式成品的质量报告由内置音频解释器从 `runtime/audio_metrics.py` 生成，开发态保留直接调用。发布验收应检查质量旁车实际存在，不能只检查 EXE 退出码或 WAV 成品。
+
 ## 构建步骤（开发机）
 
 ```powershell

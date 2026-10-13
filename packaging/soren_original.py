@@ -125,8 +125,15 @@ def ms_to_lr(mid, side):
     right = mid - side
     return np.vstack((left, right))
 
+def _resampling_filter(factor):
+    if factor == 1:
+        return np.ones(1)
+    return signal.firwin(64 * factor + 1, 1 / factor, window=("kaiser", 8.6))
+
+
 def oversample(audio, factor):
-    return signal.resample_poly(audio, factor, 1, axis=-1)
+    return signal.resample_poly(audio, factor, 1, axis=-1,
+                                window=_resampling_filter(factor))
 
 def downsample(audio, factor, sample_rate):
     filtered_audio = improved_anti_aliasing_filter(audio, sample_rate)
@@ -779,7 +786,8 @@ def process_audio(target, reference, step, config, genre_profile=None):
         result = apply_lowpass_filter(result, config)
     if step >= 5:
         result = apply_style_dynamics(result, config, genre_profile)
-    return signal.resample_poly(result, 1, config.oversampling_factor, axis=-1)
+    return signal.resample_poly(result, 1, config.oversampling_factor, axis=-1,
+                                window=_resampling_filter(config.oversampling_factor))
 
 def calculate_true_peak(audio, sample_rate):
     # Upsample by a factor of 4 for true peak calculation

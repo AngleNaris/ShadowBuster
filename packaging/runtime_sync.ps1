@@ -94,7 +94,7 @@ $ffmpeg   = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
 if ($ffmpeg) {
     $ffmpegItem = Get-Item -LiteralPath $ffmpeg -Force
     if ($ffmpegItem.LinkType -and $ffmpegItem.Target) {
-        $ffmpeg = [string]$ffmpegItem.Target[0]
+        $ffmpeg = [string](@($ffmpegItem.Target)[0])
     }
 }
 
@@ -136,9 +136,6 @@ function Assert-SameTree([string]$SourceRoot, [string]$StagedRoot, [string]$Labe
     }
 }
 
-# 从空 stage 重建，避免旧运行时文件混入发布包。
-if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-
 Assert-NonEmptyFile $venvPy "依赖安装 Python"
 Assert-NonEmptyFile "$srcPy\python.exe" "便携 Python"
 Assert-NonEmptyFile "$srcApollo\lew_upscale.py" "Lew 入口"
@@ -159,11 +156,14 @@ Assert-TreeHasNonEmptyFile "$srcSoren\secured_genres" "Soren secured genres"
 if (-not $ffmpeg) { throw "未找到 ffmpeg，请先安装或加入 PATH" }
 Assert-NonEmptyFile $ffmpeg "ffmpeg"
 
+# 输入校验通过后从空 stage 重建，避免旧运行时文件混入发布包。
+if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+
 New-Item -ItemType Directory -Force -Path "$stage\Apollo", "$stage\Soren_src", "$stage\ffmpeg\bin" | Out-Null
 
 Write-Host "[1/5] 拷贝 Apollo 工具链 ..."
 Copy-Item "$srcApollo\lew_upscale.py", "$srcApollo\low_punch.py" "$stage\Apollo\" -ErrorAction SilentlyContinue
-Copy-Item "$appApollo\bass_enhance.py", "$appApollo\drum_enhance.py", "$appApollo\soundstage_reshape.py", "$appApollo\noise_profile.py", "$appApollo\stem_enhance.py", "$appApollo\vocal_adjust.py", "$appApollo\audio_validation.py", "$appApollo\stage_metadata.py", "$appApollo\vocal_config.py" "$stage\Apollo\" -ErrorAction Stop
+Copy-Item "$appApollo\*.py" "$stage\Apollo\" -ErrorAction Stop
 Copy-Item "$srcApollo\look2hear" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyContinue
 
@@ -174,6 +174,7 @@ Copy-Item "$root\audio_metrics.py" "$stage\" -ErrorAction Stop
 # Reference tonal-target cache (audit §9.8) runs in the mastering subprocess; the
 # subprocess import is best-effort, so bundling this enables it, absence stays cold.
 Copy-Item "$root\pipeline_cache.py" "$stage\" -ErrorAction Stop
+Copy-Item "$root\audio_worker.py" "$stage\" -ErrorAction Stop
 
 Write-Host "[2/5] 拷贝 Soren 母带链 ..."
 Copy-Item "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" -ErrorAction Stop
@@ -271,7 +272,7 @@ Get-ChildItem -LiteralPath $hfHome -File -Recurse -Force -ErrorAction Stop |
     Where-Object { $_.LinkType -and $_.Target } |
     ForEach-Object {
         $linkPath = $_.FullName
-        $target = [string]$_.Target[0]
+        $target = [string](@($_.Target)[0])
         if (-not [System.IO.Path]::IsPathRooted($target)) {
             $target = [System.IO.Path]::GetFullPath((Join-Path $_.DirectoryName $target))
         }
@@ -302,7 +303,9 @@ Write-Host "  [5a] 验证运行时依赖与关键文件 ..."
 $requiredImports = @(
     "torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy", "librosa",
     "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography", "look2hear.models",
-    "matchering", "resampy", "mastering.pipeline"
+    "matchering", "resampy", "mastering.pipeline", "audio_worker",
+    "bass_enhance", "drum_enhance", "soundstage_reshape", "noise_profile",
+    "premaster_hygiene", "stem_enhance", "vocal_adjust"
 )
 $importNames = $requiredImports -join ","
 $importProbe = "import importlib,torch,torchaudio; [importlib.import_module(n) for n in '$importNames'.split(',')]; assert torch.__version__ == '$expectTorch', torch.__version__; assert torchaudio.__version__ == '$expectTorch', torchaudio.__version__; print('runtime imports OK', torch.__version__)"
@@ -323,19 +326,15 @@ if (-not (Get-ChildItem -LiteralPath "$site\numpy" -Filter "*.pyd" -File -Recurs
 }
 
 Assert-SameFile "$srcApollo\lew_upscale.py" "$stage\Apollo\lew_upscale.py" "Lew 入口"
-Assert-SameFile "$appApollo\bass_enhance.py" "$stage\Apollo\bass_enhance.py" "BASS 入口"
-Assert-SameFile "$appApollo\drum_enhance.py" "$stage\Apollo\drum_enhance.py" "Drum 入口"
-Assert-SameFile "$appApollo\soundstage_reshape.py" "$stage\Apollo\soundstage_reshape.py" "声场重塑入口"
-Assert-SameFile "$appApollo\noise_profile.py" "$stage\Apollo\noise_profile.py" "高频噪声分析入口"
-Assert-SameFile "$appApollo\stem_enhance.py" "$stage\Apollo\stem_enhance.py" "可选分轨增强入口"
-Assert-SameFile "$appApollo\vocal_adjust.py" "$stage\Apollo\vocal_adjust.py" "人声入口"
-Assert-SameFile "$appApollo\audio_validation.py" "$stage\Apollo\audio_validation.py" "音频校验"
-Assert-SameFile "$appApollo\stage_metadata.py" "$stage\Apollo\stage_metadata.py" "阶段 metadata"
+Get-ChildItem -LiteralPath $appApollo -Filter "*.py" -File | ForEach-Object {
+    Assert-SameFile $_.FullName (Join-Path "$stage\Apollo" $_.Name) "DSP 源码"
+}
 Get-ChildItem -LiteralPath "$root\mastering" -Filter "*.py" -File | ForEach-Object {
     Assert-SameFile $_.FullName (Join-Path "$stage\mastering" $_.Name) "独立母带源码"
 }
 Assert-SameFile "$root\audio_metrics.py" "$stage\audio_metrics.py" "母带测量"
 Assert-SameFile "$root\pipeline_cache.py" "$stage\pipeline_cache.py" "参考音色目标缓存"
+Assert-SameFile "$root\audio_worker.py" "$stage\audio_worker.py" "音频工作进程"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
 Assert-SameTree "$srcApollo\ckpts" "$stage\Apollo\ckpts" "Apollo checkpoint"
 Assert-SameFile "$root\packaging\soren_core.py" "$stage\Soren_src\core_decrypted.py" "Soren 入口"
@@ -351,12 +350,8 @@ Assert-SameFile $ffmpeg "$stage\ffmpeg\bin\ffmpeg.exe" "ffmpeg"
 $manifestPath = "$stage\critical-manifest.sha256"
 $manifestRoots = @(
     "$stage\env\python.exe", "$site\numpy", "$site\numpy.libs",
-    "$stage\mastering", "$stage\audio_metrics.py", "$stage\pipeline_cache.py",
-    "$stage\Apollo\lew_upscale.py", "$stage\Apollo\bass_enhance.py",
-    "$stage\Apollo\drum_enhance.py", "$stage\Apollo\soundstage_reshape.py", "$stage\Apollo\noise_profile.py",
-    "$stage\Apollo\stem_enhance.py",
-    "$stage\Apollo\vocal_adjust.py",
-    "$stage\Apollo\look2hear", "$stage\Apollo\ckpts",
+    "$stage\mastering", "$stage\audio_metrics.py", "$stage\pipeline_cache.py", "$stage\audio_worker.py",
+    "$stage\Apollo",
     "$stage\Soren_src\core_decrypted.py", "$stage\Soren_src\soren_original.py",
     "$stage\Soren_src\test_model.py", "$stage\Soren_src\model",
     "$stage\Soren_src\profiles", "$stage\Soren_src\secured_genres",
@@ -371,7 +366,9 @@ $manifestFiles = foreach ($item in $manifestRoots) {
     }
 }
 $stageFull = (Resolve-Path -LiteralPath $stage).Path.TrimEnd('\')
-$manifestLines = $manifestFiles | Where-Object { $_.Length -gt 0 } | Sort-Object FullName -Unique | ForEach-Object {
+$manifestLines = $manifestFiles | Where-Object {
+    $_.Length -gt 0 -and $_.Extension -notin @(".pyc", ".pyo", ".nbc", ".nbi")
+} | Sort-Object FullName -Unique | ForEach-Object {
     $relative = $_.FullName.Substring($stageFull.Length).TrimStart('\').Replace('\', '/')
     "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $relative
 }

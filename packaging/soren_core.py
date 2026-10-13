@@ -137,8 +137,15 @@ def ms_to_lr(mid, side):
     right = mid - side
     return np.vstack((left, right))
 
+def _resampling_filter(factor):
+    if factor == 1:
+        return np.ones(1)
+    return signal.firwin(64 * factor + 1, 1 / factor, window=("kaiser", 8.6))
+
+
 def oversample(audio, factor):
-    return signal.resample_poly(audio, factor, 1, axis=-1)
+    return signal.resample_poly(audio, factor, 1, axis=-1,
+                                window=_resampling_filter(factor))
 
 def downsample(audio, factor, sample_rate):
     filtered_audio = improved_anti_aliasing_filter(audio, sample_rate)
@@ -869,6 +876,10 @@ def apply_bounded_pre_limiter_gain(result, config, requested_lufs):
     }
     return result, stats
 
+LIMITER_ACTIVE_BUDGET_FRACTION = .70
+LIMITER_MEDIAN_GR_BUDGET_DB = 2.0
+
+
 def process_transparent(target, config, requested_lufs, core):
     target = np.array(target, dtype=np.float64, copy=True)
     if target.ndim != 2 or target.shape[0] != 2 or not target.shape[1]:
@@ -903,14 +914,20 @@ def process_transparent(target, config, requested_lufs, core):
     for attempt in range(18):
         attempts = attempt + 1
         limited, stats = core.linked_lookahead_limiter(up * 10 ** (drive / 20), limiter_config)
-        result = signal.resample_poly(limited, 1, config.oversampling_factor, axis=-1)
+        if stats['max_gain_reduction_db'] == 0:
+            result = target * 10 ** (drive / 20)
+        else:
+            result = signal.resample_poly(limited, 1, config.oversampling_factor, axis=-1,
+                                          window=_resampling_filter(config.oversampling_factor))
         tp = core.calculate_true_peak(result, sr, config.true_peak_oversampling)
         trim = min(0.0, config.true_peak_ceiling_db - 0.02 - tp)
         result *= 10 ** (trim / 20)
         measured = core.calculate_lufs(result, sr)
         signed_error = requested_lufs - measured
         feasible = (stats['gain_reduction_p95_db'] <= p95_budget + 1e-6 and
-                    stats['max_gain_reduction_db'] <= peak_budget + 1e-6)
+                    stats['max_gain_reduction_db'] <= peak_budget + 1e-6 and
+                    stats['active_fraction'] <= LIMITER_ACTIVE_BUDGET_FRACTION + 1e-6 and
+                    stats['gain_reduction_p50_db'] <= LIMITER_MEDIAN_GR_BUDGET_DB + 1e-6)
         if feasible and (best is None or abs(signed_error) < best[0]):
             best = (abs(signed_error), result, stats, trim, drive)
         if feasible and abs(signed_error) <= 0.1:
@@ -954,6 +971,8 @@ def process_transparent(target, config, requested_lufs, core):
         'stop_reason': 'target_met' if met else stop_reason,
         'dynamic_budget_limited': bool(budget_limited and not met),
         'limiter_p95_budget_db': float(p95_budget), 'limiter_peak_budget_db': float(peak_budget),
+        'limiter_active_budget_fraction': LIMITER_ACTIVE_BUDGET_FRACTION,
+        'limiter_median_gr_budget_db': LIMITER_MEDIAN_GR_BUDGET_DB,
         'limiter_release_ms': float(limiter_config.limiter_release_ms),
         'applied_gain_db': float(drive), 'safety_trim_db': float(trim),
         'true_peak_dbtp': float(tp), 'limiter': stats, 'iterations': attempts,
@@ -1015,7 +1034,7 @@ def process_original_styled(target, reference, step, config, genre_profile):
     style_stats = getattr(original_config, 'last_mastering_stats', {})
     result = process_transparent(result, config, requested_lufs, sys.modules[__name__])
     config.last_mastering_stats.update({
-        "style_mode": "styled", "engine": "soren_bounded_v2",
+        "style_mode": "styled", "engine": "soren_bounded_v3",
         "style_blend": strength, "style_strength": strength,
         "strength_semantics": "processing_amount", "style_processing": style_stats,
         "loudness_option": config.loudness_option,
@@ -1295,7 +1314,8 @@ def calculate_true_peak(audio, sample_rate, oversampling=4):
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     if peak == 0.0:
         return float("-inf")
-    upsampled = signal.resample_poly(audio, oversampling, 1, axis=-1)
+    upsampled = signal.resample_poly(audio, oversampling, 1, axis=-1,
+                                     window=_resampling_filter(oversampling))
     true_peak = float(np.max(np.abs(upsampled)))
     return 20 * np.log10(max(true_peak, np.finfo(np.float64).tiny))
 

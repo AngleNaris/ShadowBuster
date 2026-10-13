@@ -118,10 +118,7 @@ cp "$SB_APOLLO/lew_upscale.py" "$STAGE/Apollo/"
 if [[ -f "$REPO_ROOT/packaging/macos/lew_upscale.py" ]]; then
     cp "$REPO_ROOT/packaging/macos/lew_upscale.py" "$STAGE/Apollo/lew_upscale.py"
 fi
-cp "$APP_APOLLO/bass_enhance.py" "$APP_APOLLO/drum_enhance.py" \
-   "$APP_APOLLO/soundstage_reshape.py" "$APP_APOLLO/vocal_adjust.py" \
-   "$APP_APOLLO/audio_validation.py" "$APP_APOLLO/stage_metadata.py" \
-   "$APP_APOLLO/vocal_config.py" "$STAGE/Apollo/"
+cp "$APP_APOLLO/"*.py "$STAGE/Apollo/"
 cp -R "$SB_APOLLO/look2hear" "$STAGE/Apollo/look2hear"
 cp -R "$SB_APOLLO/ckpts" "$STAGE/Apollo/ckpts"
 mkdir -p "$STAGE/mastering"
@@ -130,6 +127,7 @@ cp "$REPO_ROOT/audio_metrics.py" "$STAGE/"
 # Reference tonal-target cache (audit §9.8): subprocess import is best-effort, so
 # bundling enables it in the packaged mastering runtime; absence stays on cold path.
 cp "$REPO_ROOT/pipeline_cache.py" "$STAGE/"
+cp "$REPO_ROOT/audio_worker.py" "$STAGE/"
 
 log "[2/5] 拷贝 Soren 母带链"
 cp "$REPO_ROOT/packaging/soren_core.py" "$STAGE/Soren_src/core_decrypted.py"
@@ -187,11 +185,14 @@ TORCH_HOME="$STAGE/torch_home" HF_HOME="$STAGE/hf_home" HF_HUB_OFFLINE=1 \
     || fail "Demucs 六轨离线模型加载失败"
 
 log "[5a] 验证关键依赖可导入"
-PYTHONPATH="$STAGE/Apollo:$STAGE/Soren_src" "$STAGE/env/bin/python" - <<'EOF' || fail "关键依赖 import 验证失败"
+PYTHONPATH="$STAGE:$STAGE/Apollo:$STAGE/Soren_src" "$STAGE/env/bin/python" - <<'EOF' || fail "关键依赖 import 验证失败"
 import importlib
 for name in ("torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy",
              "librosa", "numba", "statsmodels", "pyloudnorm", "joblib",
-             "cryptography", "look2hear.models"):
+             "cryptography", "look2hear.models", "matchering", "resampy",
+             "mastering.pipeline", "audio_worker", "bass_enhance", "drum_enhance",
+             "soundstage_reshape", "noise_profile", "premaster_hygiene",
+             "stem_enhance", "vocal_adjust"):
     importlib.import_module(name)
 print("runtime imports OK", end=" ")
 import torch
@@ -203,8 +204,9 @@ MANIFEST="$STAGE/critical-manifest.sha256"
 : > "$MANIFEST"
 stage_full="$(cd "$STAGE" && pwd -P)"
 find "$STAGE/env/lib/python3.12/site-packages/numpy" "$STAGE/Apollo" "$STAGE/Soren_src" \
+     "$STAGE/mastering" "$STAGE/audio_metrics.py" "$STAGE/pipeline_cache.py" "$STAGE/audio_worker.py" \
      "$STAGE/ffmpeg" "$STAGE/torch_home" "$STAGE/hf_home" \
-     -type f -size +0c 2>/dev/null | sort | while read -r f; do
+     -type f -size +0c ! -name '*.pyc' ! -name '*.pyo' ! -name '*.nbc' ! -name '*.nbi' 2>/dev/null | sort | while read -r f; do
     rel="${f#"$stage_full"/}"
     printf '%s  %s\n' "$(shasum -a 256 "$f" | cut -d' ' -f1)" "$rel" >> "$MANIFEST"
 done

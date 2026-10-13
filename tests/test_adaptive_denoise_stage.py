@@ -64,7 +64,7 @@ def test_adaptive_all_covers_available_six_stems_and_preserves_residual(tmp_path
         return x * .99
 
     monkeypatch.setattr(shape, 'adaptive_denoise', clean)
-    monkeypatch.setattr(shape, 'constrain_noise_delta', lambda mix, delta, *a: (delta, {'applied': True}))
+    monkeypatch.setattr(shape, 'constrain_noise_delta', lambda mix, delta, *a: (delta, {'applied': True, 'admitted_delta_gain': 1.0}))
     y, report = invoke(shape, monkeypatch, stems, source, tmp_path / 'out.wav',
                        '--noise-mode', 'adaptive_all', '--other-denoise-amount', '.5')
     expected = sf.read(source, always_2d=True)[0] + sum(x * .99 - x for x in calls)
@@ -84,7 +84,7 @@ def test_adaptive_vocal_stem_gets_halved_cap(tmp_path, monkeypatch):
         return x * .99
 
     monkeypatch.setattr(shape, 'adaptive_denoise', clean)
-    monkeypatch.setattr(shape, 'constrain_noise_delta', lambda mix, delta, *a: (delta, {'applied': True}))
+    monkeypatch.setattr(shape, 'constrain_noise_delta', lambda mix, delta, *a: (delta, {'applied': True, 'admitted_delta_gain': 1.0}))
     invoke(shape, monkeypatch, stems, source, tmp_path / 'out.wav',
            '--noise-mode', 'adaptive_all', '--other-denoise-amount', '.5',
            '--noise-max-attenuation-db', '6')
@@ -141,7 +141,7 @@ def test_adaptive_width_delta_computed_on_denoised_stem(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shape, 'adaptive_denoise', remove_hiss)
     monkeypatch.setattr(shape, 'constrain_noise_delta',
-                        lambda mix_, delta, *a: (delta, {'applied': True}))
+                        lambda mix_, delta, *a: (delta, {'applied': True, 'admitted_delta_gain': 1.0}))
     y, _ = invoke(shape, monkeypatch, stems, source, tmp_path / 'out.wav',
                   '--wet', '1', '--noise-mode', 'adaptive_all',
                   '--other-denoise-amount', '.5')

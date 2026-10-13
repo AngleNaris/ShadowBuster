@@ -21,7 +21,7 @@ if ($env:LOCALAPPDATA) {
 if (Test-Path -LiteralPath $InstallDir) {
     Remove-Item -LiteralPath $InstallDir -Recurse -Force
 }
-$p = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',$dirArg -PassThru -Wait
+$p = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',$dirArg -WindowStyle Hidden -PassThru -Wait
 Write-Output ('EXIT=' + $p.ExitCode)
 if ($p.ExitCode -ne 0) { exit $p.ExitCode }
 
@@ -33,7 +33,7 @@ if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
 $probe = @"
 import importlib
 import numpy
-required = ('torch', 'torchaudio', 'demucs', 'numpy', 'soundfile', 'scipy', 'librosa', 'numba', 'statsmodels', 'pyloudnorm', 'joblib', 'cryptography', 'look2hear')
+required = ('torch', 'torchaudio', 'demucs', 'numpy', 'soundfile', 'scipy', 'librosa', 'numba', 'statsmodels', 'pyloudnorm', 'joblib', 'cryptography', 'look2hear.models', 'matchering', 'resampy', 'mastering.pipeline', 'audio_worker', 'bass_enhance', 'drum_enhance', 'soundstage_reshape', 'noise_profile', 'premaster_hygiene', 'stem_enhance', 'vocal_adjust')
 for name in required:
     importlib.import_module(name)
 assert numpy.__version__ == '2.5.2', numpy.__version__
@@ -42,6 +42,7 @@ print('installed runtime imports OK', numpy.__version__)
 $previousPythonPath = $env:PYTHONPATH
 $previousNoUserSite = $env:PYTHONNOUSERSITE
 $modulePaths = @(
+    (Join-Path $InstallDir "runtime"),
     (Join-Path $InstallDir "runtime\Apollo"),
     (Join-Path $InstallDir "runtime\Soren_src")
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }

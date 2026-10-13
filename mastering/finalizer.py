@@ -14,7 +14,7 @@ import soundfile as sf
 from numba import njit
 from scipy import ndimage, signal
 
-from audio_metrics import integrated_lufs
+from audio_metrics import integrated_lufs, oversampling_filter
 from . import ENGINE_VERSION, LOUDNESS_TARGETS, TRUE_PEAK_CEILING_DB
 
 OVERSAMPLING = 4
@@ -30,7 +30,7 @@ MEDIAN_GR_BUDGET_DB = 2.0
 
 def true_peak_db(audio):
     up = signal.resample_poly(audio, OVERSAMPLING, 1, axis=0,
-                              window=("kaiser", 8.6), padtype="line")
+                              window=oversampling_filter(OVERSAMPLING), padtype="line")
     peak = max(float(np.max(np.abs(audio))), float(np.max(np.abs(up))))
     return 20 * math.log10(peak) if peak > 0 else float("-inf")
 
@@ -89,7 +89,8 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
     target = LOUDNESS_TARGETS[loudness]
     release_ms = 80.0 if loudness == "loud" else 150.0
     p95_budget, peak_budget = GR_BUDGETS[loudness]
-    up = signal.resample_poly(data, OVERSAMPLING, 1, axis=0, window=("kaiser", 8.6))
+    up = signal.resample_poly(data, OVERSAMPLING, 1, axis=0,
+                              window=oversampling_filter(OVERSAMPLING))
     peak_db = 20 * math.log10(float(np.max(np.abs(up))))
     # Start with a guaranteed uncompressed candidate, then search from the
     # original samples. An infeasible trial never becomes another trial's input.
@@ -108,7 +109,7 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
             candidate = data * 10 ** (drive / 20)
         else:
             candidate = signal.resample_poly(limited, 1, OVERSAMPLING, axis=0,
-                                             window=("kaiser", 8.6))[:len(data)]
+                                             window=oversampling_filter(OVERSAMPLING))[:len(data)]
         # 审计 P1-3：本次迭代对候选的整曲真峰扫描只此一次——trim 由它决定，
         # 胜出后真峰严格平移 trim dB（标量增益），LUFS 就是下面算出的 actual，
         # 收尾复用二者，不再对 result 重跑整曲 LUFS + 4× 重采样。

@@ -93,10 +93,10 @@ def _response_db(coefficients, probes_hz, sample_rate, *, sos=False,
             for hz, value in zip(frequencies, response)}
 
 
-def _frame_envelope_db(mono, sample_rate, sos):
-    """带通后按帧取 RMS 并转 dB（100ms 帧 / 50ms 跳）。"""
-    pad = min(max(0, len(mono) - 1), int(round(0.5 * sample_rate)))
-    filtered = signal.sosfiltfilt(sos, mono, padlen=pad)
+def _frame_envelope_db(audio, sample_rate, sos):
+    """带通后按帧汇总声道功率（100ms 帧 / 50ms 跳），反相能量不会抵消。"""
+    pad = min(max(0, len(audio) - 1), int(round(0.5 * sample_rate)))
+    filtered = signal.sosfiltfilt(sos, audio, padlen=pad, axis=0)
     frame = max(1, int(round(LOW_CUT_FRAME_SECONDS * sample_rate)))
     hop = max(1, int(round(LOW_CUT_HOP_SECONDS * sample_rate)))
     starts = range(0, max(0, len(filtered) - frame + 1), hop)
@@ -110,18 +110,17 @@ def _frame_envelope_db(mono, sample_rate, sos):
 def analyze_low_band(audio, sample_rate, requested_hz):
     """次声带（10Hz–请求值）相对基频带（请求值–4×请求值）的音乐性证据。"""
     data = np.asarray(audio, dtype=np.float64)
-    mono = data.mean(axis=1) if data.ndim == 2 else data
     nyquist = sample_rate / 2.0 - 1.0
     sub_sos = signal.butter(2, [10.0, min(float(requested_hz), nyquist)],
                             btype="bandpass", fs=sample_rate, output="sos")
     ref_sos = signal.butter(2, [min(float(requested_hz), nyquist),
                                 min(4.0 * float(requested_hz), nyquist)],
                             btype="bandpass", fs=sample_rate, output="sos")
-    sub_db = _frame_envelope_db(mono, sample_rate, sub_sos)
-    ref_db = _frame_envelope_db(mono, sample_rate, ref_sos)
-    pad = min(max(0, len(mono) - 1), int(round(0.5 * sample_rate)))
-    sub_full = signal.sosfiltfilt(sub_sos, mono, padlen=pad)
-    ref_full = signal.sosfiltfilt(ref_sos, mono, padlen=pad)
+    sub_db = _frame_envelope_db(data, sample_rate, sub_sos)
+    ref_db = _frame_envelope_db(data, sample_rate, ref_sos)
+    pad = min(max(0, len(data) - 1), int(round(0.5 * sample_rate)))
+    sub_full = signal.sosfiltfilt(sub_sos, data, padlen=pad, axis=0)
+    ref_full = signal.sosfiltfilt(ref_sos, data, padlen=pad, axis=0)
     sub_energy = float(np.mean(sub_full ** 2))
     ref_energy = float(np.mean(ref_full ** 2))
     analysis = {
@@ -132,7 +131,7 @@ def analyze_low_band(audio, sample_rate, requested_hz):
         "silent_leak_db": None,
         "active_frames": 0,
         "silent_frames": 0,
-        "duration_seconds": float(len(mono) / sample_rate),
+        "duration_seconds": float(len(data) / sample_rate),
     }
     if ref_db.size < LOW_CUT_MIN_ACTIVE_FRAMES:
         return analysis

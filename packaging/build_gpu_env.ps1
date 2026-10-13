@@ -36,7 +36,7 @@ if (-not (Test-Path -LiteralPath "$src\Lib\site-packages\numpy\__init__.py" -Pat
 if (-not (Get-ChildItem -LiteralPath "$src\Lib\site-packages\numpy" -Filter "*.pyd" -File -Recurse -ErrorAction SilentlyContinue)) {
     throw "GPU 环境缺少 numpy 原生扩展: $src"
 }
-$probe = "import importlib,torch,torchaudio; [importlib.import_module(n) for n in 'torch,torchaudio,demucs,numpy,soundfile,scipy,librosa,numba,statsmodels,pyloudnorm,joblib,cryptography'.split(',')]; assert torch.__version__ == '2.7.1+cu128', torch.__version__; assert torchaudio.__version__ == '2.7.1+cu128', torchaudio.__version__; print('GPU runtime preflight OK', torch.__version__)"
+$probe = "import importlib,torch,torchaudio; [importlib.import_module(n) for n in 'torch,torchaudio,demucs,numpy,soundfile,scipy,librosa,numba,statsmodels,pyloudnorm,joblib,cryptography,matchering,resampy'.split(',')]; assert torch.__version__ == '2.7.1+cu128', torch.__version__; assert torchaudio.__version__ == '2.7.1+cu128', torchaudio.__version__; print('GPU runtime preflight OK', torch.__version__)"
 $oldPath = $env:PYTHONPATH
 $env:PYTHONPATH = "$root\packaging\stage\runtime_gpu\Apollo;$root\packaging\stage\runtime_gpu\Soren_src"
 try {

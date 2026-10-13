@@ -34,7 +34,7 @@ SWAP_RETRIES = 6
 SWAP_RETRY_DELAY = 0.5
 RUNTIME_IMPORTS = (
     "torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy", "librosa",
-    "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography",
+    "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography", "matchering", "resampy",
 )
 
 

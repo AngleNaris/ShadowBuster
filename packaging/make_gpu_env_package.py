@@ -33,6 +33,8 @@ def required_zip_entries(zpath):
     required = {
         "python.exe": "便携 Python",
         "Lib/site-packages/numpy/__init__.py": "numpy",
+        "Lib/site-packages/matchering/__init__.py": "matchering",
+        "Lib/site-packages/resampy/__init__.py": "resampy",
     }
     for name, label in required.items():
         if name not in names:

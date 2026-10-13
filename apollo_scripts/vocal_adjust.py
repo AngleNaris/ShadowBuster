@@ -46,17 +46,22 @@ def _mid(audio):
 def mid_rms_windows(audio, sr, frame_seconds=FRAME_SECONDS, hop_seconds=HOP_SECONDS):
     """Include the final partial window without inventing a negative start index."""
     x = _mid(_audio(audio, "audio"))
+    return _power_rms_windows(x * x, sr, frame_seconds, hop_seconds)
+
+
+def _power_rms_windows(sample_power, sr, frame_seconds=FRAME_SECONDS,
+                       hop_seconds=HOP_SECONDS):
     sr = _rate(sr)
     finite_range(frame_seconds, "frame_seconds", 0.001, 1)
     finite_range(hop_seconds, "hop_seconds", 0.001, frame_seconds)
     frame = max(1, round(sr * frame_seconds))
     hop = max(1, round(sr * hop_seconds))
-    starts = np.arange(0, max(1, len(x) - frame + 1), hop)
-    last = max(0, len(x) - frame)
+    starts = np.arange(0, max(1, len(sample_power) - frame + 1), hop)
+    last = max(0, len(sample_power) - frame)
     if starts[-1] != last:
         starts = np.append(starts, last)
-    ends = np.minimum(starts + frame, len(x))
-    power = np.r_[0.0, np.cumsum(x * x)]
+    ends = np.minimum(starts + frame, len(sample_power))
+    power = np.r_[0.0, np.cumsum(sample_power)]
     rms = np.sqrt(np.maximum(0, (power[ends] - power[starts]) / (ends - starts)))
     return (starts + ends) / (2 * sr), rms
 
@@ -174,7 +179,7 @@ def apply_vocal_compression(vocals, sr, amount, report=None):
         if report is not None:
             report.update({"applied": False, "amount": 0.0})
         return v
-    centers, rms = mid_rms_windows(v, sr)
+    centers, rms = _power_rms_windows(np.mean(v * v, axis=1), sr)
     level_db = 20 * np.log10(np.maximum(rms, 1e-9))
     active = rms > 1e-6
     if not active.any():
@@ -346,6 +351,9 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
         v = apply_vocal_air(v, sr, air_value, report=air_report)
     if comp_amount > 0 or air_value > 0:
         extra_delta = v - raw_v * scale
+    # The current vocal and accompaniment estimates must describe the same
+    # signal. Otherwise the removed vocal energy is mistaken for accompaniment.
+    working_mix = mix if extra_delta is None else mix + extra_delta
     metrics = None
     auto_metrics = None
     sample_db = np.full(len(mix), user)
@@ -364,7 +372,7 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
             rv = _audio(raw_v if reference_vocals is None else reference_vocals, "reference-vocals")
             validate_audio_pair(mix, rm, sr)
             validate_audio_pair(rm, rv, sr)
-        auto_metrics = vocal_activity_metrics(mix, v, sr, frame_seconds, hop_seconds)
+        auto_metrics = vocal_activity_metrics(working_mix, v, sr, frame_seconds, hop_seconds)
         centers, valid = auto_metrics["centers"], auto_metrics["ratio_valid"]
         ratio = auto_metrics["ratio_db"]
         if original_mode:
@@ -382,14 +390,14 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
         limited = valid & (abs(desired_gain - fixed_gain) > 1e-8)
         sample_db.fill(fixed_gain)
         vocal_delta = v * np.expm1(fixed_gain*np.log(10)/20)
-        eq_delta, eq_report = _masking_eq(mix - v, v, sr, auto_metrics,
+        eq_delta, eq_report = _masking_eq(working_mix - v, v, sr, auto_metrics,
                                          frame_seconds, hop_seconds)
         delta = vocal_delta + eq_delta
     elif reference_mix is not None:
         finite_range(user, "Mid target dB", -6, 6)
         metrics = reference_mid_prominence_metrics(
             reference_mix, raw_v if reference_vocals is None else reference_vocals,
-            sr, mix, v, frame_seconds, hop_seconds)
+            sr, working_mix, v, frame_seconds, hop_seconds)
         valid = metrics["valid"]
         correction = np.zeros(len(valid))
         correction[valid] = (metrics["reference_ratio_db"][valid]
@@ -413,10 +421,8 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
     else:
         # Standalone callers without a reference retain the legacy full-stem gain.
         delta = v * np.expm1(user * np.log(10) / 20)
-    if extra_delta is not None:
-        delta = delta + extra_delta
     out = mix.copy() if (user == 0 and auto_metrics is None and extra_delta is None) \
-        else mix + delta
+        else working_mix + delta
     if not np.isfinite(out).all():
         raise ValueError("non-finite control output")
     if not return_report:
@@ -432,7 +438,7 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
               "before": _spatial(mix), "after": _spatial(out)}
     if auto_metrics is not None:
         estimated_v = v + vocal_delta
-        estimated_a = mix - v + eq_delta
+        estimated_a = working_mix - v + eq_delta
         _, after_vr = mid_rms_windows(estimated_v, sr, frame_seconds, hop_seconds)
         _, after_ar = mid_rms_windows(estimated_a, sr, frame_seconds, hop_seconds)
         measured = 20 * np.log10(np.maximum(after_vr, 1e-12) / np.maximum(after_ar, 1e-12))
@@ -464,7 +470,7 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
                       median_output_ratio_db=float(np.median(measured[valid])) if valid.any() else None,
                       median_target_error_db=float(np.median(measured[valid]) - target_db - user) if valid.any() else None)
     if metrics is not None:
-        v_out = v + (out - mix)
+        v_out = v + (out - working_mix)
         measured = reference_mid_prominence_metrics(reference_mix,
             raw_v if reference_vocals is None else reference_vocals, sr, out, v_out,
             frame_seconds, hop_seconds)

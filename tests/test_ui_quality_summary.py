@@ -207,7 +207,10 @@ def test_playhead_spans_timeline_and_triangle_is_concentric():
 def test_keyboard_focus_draws_no_outline_anywhere():
     # 键盘操作不在任何元素上留外框：文件末尾一条 :root :focus-visible 关掉全站描边
     # （与上面各条 .class:focus-visible 同权重，靠源序取胜），播放器里那条 box-shadow 焦点环也撤掉。
-    assert CSS.rstrip().endswith(":root :focus-visible { outline: none; }")
+    reset = ":root :focus-visible { outline: none; }"
+    assert reset in CSS
+    # Later button styles are allowed when they do not override the reset.
+    assert "outline:" not in CSS.rsplit(reset, 1)[1]
     assert ".player :focus-visible" not in CSS
     # 两处非焦点描边必须留着：停止键的红色悬停描边、激活频段的画布描边
     assert "outline: 1.5px solid var(--c-err);" in CSS

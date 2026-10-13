@@ -186,6 +186,7 @@ def test_genres_differ_in_linked_dynamics():
     for genre in ('Pop', 'Orchestral', 'EDM'):
         cfg = original.Config()
         cfg.oversampling_factor = 1
+        np.testing.assert_array_equal(original.oversample(audio, 1), audio)
         out = original.apply_style_dynamics(audio, cfg, {'genre': genre})
         stats.append(cfg.last_mastering_stats['dynamics'])
         assert stats[-1]['max_gain_reduction_db'] <= stats[-1]['budget_db'] + 1e-6
@@ -203,10 +204,20 @@ def test_loud_target_and_dynamic_budget():
     profile = {'lufs': -9.199554764198626}
     out = core.process_audio(audio, None, 5, cfg, profile)
     assert core.loudness_target_lufs(profile, 'loud') == pytest.approx(-6.6995547642)
-    assert abs(core.calculate_lufs(out, 44100) + 6.6995547642) <= .2
-    assert cfg.last_mastering_stats['target_status'] == 'met'
+    stats = cfg.last_mastering_stats
+    assert stats['target_lufs'] == pytest.approx(-6.6995547642)
+    assert stats['target_status'] == 'below_target' and stats['dynamic_budget_limited']
+    assert stats['limiter']['active_fraction'] <= .70 + 1e-6
+    assert stats['limiter']['gain_reduction_p50_db'] <= 2 + 1e-6
     assert cfg.last_mastering_stats['limiter_release_ms'] == 80.0
     assert cfg.limiter_release_ms == 150.0
+    # Reachable targets still converge without compression; the new budget
+    # only changes material that would otherwise remain continuously limited.
+    t = np.arange(44100 * 2) / 44100
+    reachable = np.vstack([.1 * np.sin(2 * np.pi * 997 * t)] * 2)
+    safe = core.process_audio(reachable, None, 5, cfg, profile)
+    assert cfg.last_mastering_stats['target_met']
+    assert abs(core.calculate_lufs(safe, 44100) + 6.6995547642) <= .2
     cfg.limiter_p95_budget_db = .1
     cfg.limiter_peak_budget_db = .2
     out = core.process_audio(audio, None, 5, cfg, profile)
@@ -218,14 +229,19 @@ def test_loud_target_and_dynamic_budget():
 
 
 def test_quiet_input_uses_relative_not_absolute_drive_limit():
-    audio = music() * .01
-    cfg = core.Config()
-    cfg.style_mode = 'off'
-    cfg.loudness_option = 'loud'
-    out = core.process_audio(audio, None, 5, cfg, {'lufs': -9.2})
-    assert cfg.last_mastering_stats['applied_gain_db'] > 30
-    assert cfg.last_mastering_stats['target_met']
-    assert abs(core.calculate_lufs(out, 44100) + 6.7) < .2
+    results = []
+    for scale in (1, .01):
+        cfg = core.Config()
+        cfg.style_mode = 'off'
+        cfg.loudness_option = 'loud'
+        out = core.process_audio(music() * scale, None, 5, cfg, {'lufs': -9.2})
+        results.append((core.calculate_lufs(out, 44100), cfg.last_mastering_stats))
+    normal, quiet = results
+    assert quiet[1]['applied_gain_db'] > 30
+    assert quiet[1]['applied_gain_db'] - normal[1]['applied_gain_db'] == pytest.approx(40, abs=.02)
+    assert quiet[0] == pytest.approx(normal[0], abs=.02)
+    assert quiet[1]['target_status'] == normal[1]['target_status']
+    assert quiet[1]['limiter']['active_fraction'] <= .70 + 1e-6
 
 
 def test_stage_soren_passes_style_blend(monkeypatch, tmp_path):

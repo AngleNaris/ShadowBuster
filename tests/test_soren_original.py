@@ -44,7 +44,7 @@ def test_styled_uses_bounded_engine_then_shared_loudness(monkeypatch):
     np.random.seed(123)
     actual = core.process_audio(audio, reference.copy(), 5, config)
     np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=0)
-    assert config.last_mastering_stats['engine'] == 'soren_bounded_v2'
+    assert config.last_mastering_stats['engine'] == 'soren_bounded_v3'
     assert config.last_mastering_stats['input_protection']['applied_gain_db'] == gain
     assert audio[0, 1200] == 1.8
 

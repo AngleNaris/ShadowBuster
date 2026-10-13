@@ -10,6 +10,7 @@ import json
 import math
 import os
 import tempfile
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -49,20 +50,33 @@ def _finite_or_none(value: Any) -> float | None:
 
 def _k_weight(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     sig = _require_signal()
-    # BS.1770 K-weighting: high shelf followed by RLB high pass.
-    shelf_b, shelf_a = sig.bilinear(
-        [1.53512485958697,
-         2 * math.pi * 1681.974450955533 * 1.69065929318241,
-         (2 * math.pi * 1681.974450955533) ** 2],
-        [1.0,
-         2 * math.pi * 1681.974450955533 * 1.69065929318241,
-         (2 * math.pi * 1681.974450955533) ** 2], fs=sample_rate)
-    high_b, high_a = sig.bilinear(
-        [1.0, 0.0, 0.0],
-        [1.0, 2 * math.pi * 38.13547087602444,
-         (2 * math.pi * 38.13547087602444) ** 2], fs=sample_rate)
-    weighted = sig.lfilter(shelf_b, shelf_a, audio, axis=0)
-    return sig.lfilter(high_b, high_a, weighted, axis=0)
+    # Same digital K-weighting design as pyloudnorm's default meter: +4 dB
+    # shelf at 1500 Hz, then 38 Hz high-pass (Q=.5). Digital coefficients must
+    # not be reused as an analog prototype for a second bilinear transform.
+    a = 10 ** (4.0 / 40)
+    w = 2 * math.pi * 1500 / sample_rate
+    c, s = math.cos(w), math.sin(w)
+    beta = 2 * math.sqrt(a) * s / math.sqrt(2)
+    b = np.array([a * (a + 1 + (a - 1) * c + beta),
+                  -2 * a * (a - 1 + (a + 1) * c),
+                  a * (a + 1 + (a - 1) * c - beta)])
+    d = np.array([a + 1 - (a - 1) * c + beta,
+                  2 * (a - 1 - (a + 1) * c), a + 1 - (a - 1) * c - beta])
+    shelf = np.r_[b / d[0], d / d[0]]
+    w = 2 * math.pi * 38 / sample_rate
+    c, alpha = math.cos(w), math.sin(w)
+    b = np.array([(1 + c) / 2, -(1 + c), (1 + c) / 2])
+    d = np.array([1 + alpha, -2 * c, 1 - alpha])
+    return sig.sosfilt([shelf, np.r_[b / d[0], d / d[0]]], audio, axis=0)
+
+
+@lru_cache(maxsize=4)
+def oversampling_filter(factor=4):
+    """Odd, zero-delay-compensated FIR; 4x round trip is flat through 20 kHz."""
+    if factor == 1:
+        return np.ones(1)
+    return _require_signal().firwin(64 * factor + 1, 1 / factor,
+                                    window=("kaiser", 8.6))
 
 
 def _block_loudness(audio: np.ndarray, sample_rate: int,
@@ -74,14 +88,13 @@ def _block_loudness(audio: np.ndarray, sample_rate: int,
     block = max(1, int(round(block_seconds * sample_rate)))
     hop = max(1, int(round(hop_seconds * sample_rate)))
     if len(weighted) < block:
-        starts = (0,)
+        starts = np.array([0])
         block = len(weighted)
     else:
-        starts = range(0, len(weighted) - block + 1, hop)
-    energies = np.asarray([
-        float(np.mean(np.sum(weighted[start:start + block] ** 2, axis=1)))
-        for start in starts
-    ], dtype=np.float64)
+        starts = np.arange(0, len(weighted) - block + 1, hop)
+    # Prefix sums keep the 10 Hz short-term measurement linear in song length.
+    power = np.r_[0.0, np.cumsum(np.sum(weighted ** 2, axis=1))]
+    energies = (power[starts + block] - power[starts]) / block
     return -0.691 + 10.0 * np.log10(np.maximum(energies, 1e-300))
 
 
@@ -112,8 +125,9 @@ def _loudness_range(short_term: np.ndarray) -> float | None:
     finite = short_term[np.isfinite(short_term) & (short_term > -70.0)]
     if finite.size < 2:
         return None
-    # EBU-style robust range: gate 10 LU below the mean, then take 10/95 percentiles.
-    gated = finite[finite >= np.mean(finite) - 10.0]
+    # EBU Tech 3342: relative gate 20 LU below the absolute-gated energy mean.
+    mean_loudness = 10 * np.log10(np.mean(10 ** (finite / 10)))
+    gated = finite[finite >= mean_loudness - 20.0]
     if gated.size < 2:
         gated = finite
     return float(np.percentile(gated, 95) - np.percentile(gated, 10))
@@ -220,10 +234,10 @@ def measure_audio(audio: np.ndarray, sample_rate: int) -> dict[str, Any]:
     loudness, loudness_backend = integrated_lufs(data, sample_rate)
     sample_peak = float(np.max(np.abs(data)))
     oversampled = _require_signal().resample_poly(data, 4, 1, axis=0,
-                                       window=("kaiser", 8.6), padtype="line")
+                                       window=oversampling_filter(), padtype="line")
     true_peak = max(sample_peak, float(np.max(np.abs(oversampled))))
     rms = float(np.sqrt(np.mean(data ** 2)))
-    short_term = _block_loudness(data, sample_rate, 3.0, 1.0)
+    short_term = _block_loudness(data, sample_rate, 3.0, .100)
     momentary = _block_loudness(data, sample_rate, 0.400, 0.100)
 
     stereo_corr = None

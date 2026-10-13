@@ -11,6 +11,7 @@
 #       --stems-dir <htdemucs 输出下含 drums/other 的目录> \
 #       [--wet 0.6] [--other-denoise-amount 0.2]
 import argparse
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -237,7 +238,7 @@ def drum_width_envelope(stem, sr):
     return ndimage.uniform_filter1d(gain, max(1, int(sr * .003)), mode='nearest')
 
 
-def constrain_width_delta(mix, delta, sr, growth_db=6.0):
+def constrain_width_delta(mix, delta, sr, growth_db=6.0, stem_deltas=None):
     """Bound added Side against the final mix in overlapping time/frequency windows.
 
     growth_db is the user-authorized Side energy growth (10**(growth_db/10)),
@@ -256,6 +257,9 @@ def constrain_width_delta(mix, delta, sr, growth_db=6.0):
     report = {'bands': [], 'analysis': '4096 Hann / 75% overlap',
               'authorized_growth_db': float(growth_db)}
     if n < 32 or not np.any(delta):
+        if stem_deltas is not None:
+            for name, part in stem_deltas.items():
+                stem_deltas[name] = np.zeros_like(part)
         return np.zeros_like(delta), report
     size = min(4096, n)
     overlap = size * 3 // 4
@@ -297,6 +301,16 @@ def constrain_width_delta(mix, delta, sr, growth_db=6.0):
     _, restored = signal.istft(d * gain, sr, nperseg=size,
                                noverlap=overlap, input_onesided=True, boundary=True)
     restored = restored[:n]
+    # The same linear STFT mask distributes the accepted width back to its
+    # source stems. Their sum remains the exact delta admitted to the mix.
+    if stem_deltas is not None:
+        for name, part in stem_deltas.items():
+            part_side = (part[:, 0] - part[:, 1]) * .5
+            spectrum = stft(part_side)[2] * highpass[:, None] * gain
+            _, value = signal.istft(spectrum, sr, nperseg=size, noverlap=overlap,
+                                     input_onesided=True, boundary=True)
+            value = value[:n]
+            stem_deltas[name] = np.column_stack((value, -value))
     return np.column_stack((restored, -restored)), report
 
 
@@ -491,6 +505,8 @@ def main():
     ap.add_argument("--noise-high-hz", type=float, default=20000.0)
     ap.add_argument("--noise-max-attenuation-db", type=float, default=6.0)
     ap.add_argument("--stem-scale", type=float, default=1.0, help="累计上游混音缩放")
+    ap.add_argument("--working-stems-dir", type=Path,
+                    help="保存本阶段处理后的工作分轨，供后续同轨处理串联使用")
     ap.add_argument("--report-json", type=Path, default=None)
     args = ap.parse_args()
 
@@ -567,9 +583,11 @@ def main():
     # 去拥挤后的 other 作为降噪输入（unmask → denoise → width 同轨串联）。
     # 残差设计不变：最终仍是 mix += Σ(各 delta)，Demucs 解释不了的残差保留。
     working_stems = {}
+    stem_width_deltas = {} if args.working_stems_dir is not None else None
     if other_stem_processed is not None and unmask_report.get("applied"):
         working_stems["other"] = other_stem_processed
     if args.noise_mode == "adaptive_all":
+        denoise_inputs = {}
         for name in ("vocals", "drums", "bass", "other", "guitar", "piano"):
             path = stem_dir / f"{name}.wav"
             if not path.is_file():
@@ -595,11 +613,17 @@ def main():
                                        args.noise_low_hz, args.noise_high_hz,
                                        cap, report=stats)
             denoise_delta += cleaned - base_stem
+            denoise_inputs[name] = base_stem
             working_stems[name] = cleaned
             noise_report["stems"][name] = stats
         denoise_delta, noise_report["mix_budget"] = constrain_noise_delta(
             out, denoise_delta, sr, args.noise_low_hz, args.noise_high_hz,
             args.noise_max_attenuation_db * args.other_denoise_amount)
+        admitted = noise_report["mix_budget"]["admitted_delta_gain"]
+        if admitted != 1.0:
+            for name, original in denoise_inputs.items():
+                working_stems[name] = original + admitted * (working_stems[name] - original)
+        del denoise_inputs
         noise_report["applied"] = noise_report["mix_budget"]["applied"]
     # wet=0 宽度整块旁路（审计 P1-1，2026-09-30）：不加载 stem、不做
     # reshape / 鼓包络 / delta 低频保护，width_delta 恒为零。只保留 legacy
@@ -619,6 +643,8 @@ def main():
             raise SystemExit(str(exc))
         stem = stem * args.stem_scale
         working = working_stems.get(name, stem)
+        if stem_width_deltas is not None:
+            working_stems.setdefault(name, working)
         if wet > 0:
             if args.mode == "dynamic" and db > 0:
                 reshaped = _dynamic_side_shelf(working, sr, fc, db)
@@ -629,6 +655,8 @@ def main():
                 delta *= drum_width_envelope(working, sr)[:, None]
             delta = _protect_widen_delta(delta, sr)
             width_delta += delta
+            if stem_width_deltas is not None:
+                stem_width_deltas[name] = delta
             processed = working + delta
         else:
             processed = working
@@ -636,6 +664,8 @@ def main():
             cleaned = _spectral_denoise(processed, sr, args.other_denoise_fc,
                                        args.other_denoise_amount)
             denoise_delta += cleaned - processed
+            if stem_width_deltas is not None:
+                working_stems[name] = working + (cleaned - processed)
             print(f"  other: ≥{args.other_denoise_fc:.0f}Hz 噪声地板降噪 {args.other_denoise_amount*100:.0f}%")
         if wet > 0:
             if args.mode == "dynamic" and db > 0:
@@ -652,8 +682,13 @@ def main():
     # 自动减半；dynamic: side shelf 提升量），用户请求本身就是预算。
     growth_db = max((db if args.mode == "dynamic" and db > 0 else gain)
                     for db, _fc, gain in params.values())
-    accepted, budget = constrain_width_delta(base, width_delta, sr, growth_db=growth_db)
+    width_options = {"stem_deltas": stem_width_deltas} if stem_width_deltas is not None else {}
+    accepted, budget = constrain_width_delta(base, width_delta, sr,
+                                             growth_db=growth_db, **width_options)
     out = base + accepted
+    if stem_width_deltas is not None:
+        for name, delta in stem_width_deltas.items():
+            working_stems[name] = working_stems[name] + delta
     print(f"  自适应宽度预算: {budget}")
     if wet != 1.0:
         print(f"  声场干湿比 wet={wet:.2f} (0=不拓宽, 1=全量)")
@@ -668,6 +703,20 @@ def main():
         out *= scale
         print(f"  全局峰值缩放: {20*np.log10(scale):+.2f}dB（静态缩放，不改变同一 mix 的相对比例；不是自动 limiter）")
     sf.write(args.out_wav, out.astype(np.float32), sr, subtype="FLOAT")
+    if args.working_stems_dir is not None:
+        args.working_stems_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("vocals", "drums", "bass", "other", "guitar", "piano"):
+            source = stem_dir / f"{name}.wav"
+            target = args.working_stems_dir / source.name
+            if not source.is_file():
+                target.unlink(missing_ok=True)
+            elif name not in working_stems or args.stem_scale == 0:
+                shutil.copyfile(source, target)
+            else:
+                # Keep the source stem's units: the backend passes the cumulative
+                # global scale (including this stage's trim) to each consumer.
+                value = working_stems[name] / args.stem_scale
+                sf.write(target, value.astype(np.float32), sr, subtype="FLOAT")
     if args.report_json:
         write_report(args.report_json, stage="reshape", scale=float(scale) if peak > 0.999 else 1.0,
                      input_path=args.in_mix, output_path=args.out_wav,
