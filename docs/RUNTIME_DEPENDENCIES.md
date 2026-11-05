@@ -1,5 +1,7 @@
 # ShadowBuster 运行时依赖清单
 
+v1.6.14 的 pedalboard 0.9.26 安装在内置 CPU 运行时中，打包态母带固定使用该解释器；GPU 环境版本继续为 1.6.11，仍用于 AI/分轨计算。旧 GPU 环境本身没有该包不影响母带，无需修改既有 CUDA 环境。
+
 本文记录随安装包分发的 runtime（CPU torch）内全部 Python 依赖：哪些是推理链直接 import 的硬依赖（必须显式 pin），哪些仅为传递依赖，哪些训练侧依赖已在 v1.6.5 工作区整理中移除。依赖唯一声明点是 `packaging/runtime_sync.ps1`。
 
 2026-09-19 迁移增量：无风格终段改为 `mastering/`，直接使用 numpy、scipy、soundfile、numba 与共享 `audio_metrics`（优先 pyloudnorm 测量）。用户参考新增固定依赖 matchering==2.0.6 / resampy==0.4.3，已装入开发音频解释器。

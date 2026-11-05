@@ -38,11 +38,17 @@ if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
 $probe = @"
 import importlib
 import numpy
-required = ('torch', 'torchaudio', 'demucs', 'numpy', 'soundfile', 'scipy', 'librosa', 'numba', 'statsmodels', 'pyloudnorm', 'joblib', 'cryptography', 'look2hear.models', 'matchering', 'resampy', 'pedalboard', 'mastering.pipeline', 'audio_worker', 'bass_enhance', 'drum_enhance', 'soundstage_reshape', 'noise_profile', 'premaster_hygiene', 'stem_enhance', 'vocal_adjust')
+required = ('torch', 'torchaudio', 'demucs', 'numpy', 'soundfile', 'scipy', 'librosa', 'numba', 'statsmodels', 'pyloudnorm', 'joblib', 'cryptography', 'look2hear.models', 'matchering', 'resampy', 'pedalboard', 'mastering.pipeline', 'audio_worker', 'bass_enhance', 'drum_enhance', 'soundstage_reshape', 'ambience_width', 'noise_profile', 'premaster_hygiene', 'stem_enhance', 'vocal_adjust')
 for name in required:
     importlib.import_module(name)
 assert numpy.__version__ == '2.5.2', numpy.__version__
 print('installed runtime imports OK', numpy.__version__)
+from mastering.density import _compressor
+plugin = _compressor(2.3, 2.0, 100.0)
+audio = numpy.zeros((2, 4096), dtype=numpy.float32)
+processed = plugin.process(audio, 44100)
+assert processed.shape == audio.shape and numpy.isfinite(processed).all()
+print('installed ZL Compressor VST3 probe OK')
 "@
 $previousPythonPath = $env:PYTHONPATH
 $previousNoUserSite = $env:PYTHONNOUSERSITE
