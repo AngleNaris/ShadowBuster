@@ -265,6 +265,7 @@ def collect_pipeline_kwargs(params):
         style_mode=params.get("style_mode", d["style_mode"]),
         style_blend=float(params.get("style_blend", d["style_blend"])),
         loudness=params.get("loudness", d["loudness"]),
+        density=params.get("density", d["density"]),
         eq_profile=params.get("eq", d["eq_profile"]),
         reference=params.get("reference") or None,
         device=backend.auto_device(),

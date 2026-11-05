@@ -23,7 +23,14 @@ try {
         $proc.Kill()
         throw '冻结 GUI 检查超时（Qt 导入失败也会被此检查捕获）'
     }
-    if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $report)) { throw "冻结 GUI 检查失败(exit=$($proc.ExitCode))，日志：$report.stderr.log" }
+    # GUI 子系统的进程经 Start-Process 重定向启动后，ExitCode 可能取不到（空值，
+    # 见 1.6.13 构建）。报告只在冒烟测试真正跑完后才写出，缺失即失败；能取到
+    # 退出码时仍要求为 0，避免忽略退出阶段的崩溃。
+    $exit = $proc.ExitCode
+    if (-not (Test-Path -LiteralPath $report)) {
+        throw "冻结 GUI 检查失败（未生成报告），日志：$report.stderr.log"
+    }
+    if ($null -ne $exit -and $exit -ne 0) { throw "冻结 GUI 检查失败(exit=$exit)，日志：$report.stderr.log" }
     $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
     if ($result.status -ne 'pass' -or $result.bridge_version -ne $result.version) { throw "GUI/桥接检查失败：$report" }
     $result | ConvertTo-Json -Depth 4

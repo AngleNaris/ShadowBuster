@@ -2,7 +2,9 @@
 
 本文记录随安装包分发的 runtime（CPU torch）内全部 Python 依赖：哪些是推理链直接 import 的硬依赖（必须显式 pin），哪些仅为传递依赖，哪些训练侧依赖已在 v1.6.5 工作区整理中移除。依赖唯一声明点是 `packaging/runtime_sync.ps1`。
 
-2026-09-19 迁移增量：无风格终段改为 `mastering/`，直接使用 numpy、scipy、soundfile、numba 与共享 `audio_metrics`（优先 pyloudnorm 测量）。用户参考新增固定依赖 matchering==2.0.6 / resampy==0.4.3，已装入开发音频解释器。用户 EQ 同样独立；旧预置风格清理前，Soren 依赖暂不删除。Matchering 依赖 statsmodels，不能随 Soren 一并盲删。
+2026-09-19 迁移增量：无风格终段改为 `mastering/`，直接使用 numpy、scipy、soundfile、numba 与共享 `audio_metrics`（优先 pyloudnorm 测量）。用户参考新增固定依赖 matchering==2.0.6 / resampy==0.4.3，已装入开发音频解释器。
+
+2026-11-05：母带密度段改为宿主 ZL Compressor 0.6.1（AGPL-3.0）VST3，新增 pedalboard==0.9.26（GPL-3.0）。插件二进制不入库：`python tools/fetch_plugins.py` 按固定 URL + SHA-256 下载 MSI、`msiexec /a` 解包到仓库 `plugins/`（gitignore），`runtime_sync.ps1` 复制为 `runtime/plugins/` 并校验。用户 EQ 同样独立；旧预置风格清理前，Soren 依赖暂不删除。Matchering 依赖 statsmodels，不能随 Soren 一并盲删。
 
 ## 推理链与直接依赖
 

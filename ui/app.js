@@ -12,6 +12,7 @@
     output: "",
     reference: "",
     eq: "Neutral",
+    draftLocked: false,
     startTime: 0,
     fi: 0, ftotal: 0, si: 0, frac: 0,
     currentFileIndex: -1,
@@ -447,11 +448,15 @@
 
     let dragging = false;
     faderEl.addEventListener("pointerdown", (e) => {
+      if (faderEl.getAttribute("aria-disabled") === "true") return;
       dragging = true;
       faderEl.setPointerCapture(e.pointerId);
       setFromClientX(e.clientX);
     });
-    faderEl.addEventListener("pointermove", (e) => { if (dragging) setFromClientX(e.clientX); });
+    faderEl.addEventListener("pointermove", (e) => {
+      if (!dragging || faderEl.getAttribute("aria-disabled") === "true") return;
+      setFromClientX(e.clientX);
+    });
     const end = () => { dragging = false; };
     faderEl.addEventListener("pointerup", end);
     faderEl.addEventListener("pointercancel", end);
@@ -463,6 +468,7 @@
       render();
     }, { passive: false });
     faderEl.addEventListener("keydown", (e) => {
+      if (faderEl.getAttribute("aria-disabled") === "true") return;
       const delta = e.key === "ArrowUp" || e.key === "ArrowRight" ? step
                   : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -step : 0;
       if (delta) {
@@ -708,11 +714,15 @@
 
     let dragging = false;
     meterEl.addEventListener("pointerdown", (e) => {
+      if (meterEl.getAttribute("aria-disabled") === "true") return;
       dragging = true;
       meterEl.setPointerCapture(e.pointerId);
       setFromClientX(e.clientX);
     });
-    meterEl.addEventListener("pointermove", (e) => { if (dragging) setFromClientX(e.clientX); });
+    meterEl.addEventListener("pointermove", (e) => {
+      if (!dragging || meterEl.getAttribute("aria-disabled") === "true") return;
+      setFromClientX(e.clientX);
+    });
     const end = () => { dragging = false; };
     meterEl.addEventListener("pointerup", end);
     meterEl.addEventListener("pointercancel", end);
@@ -724,6 +734,7 @@
       render();
     }, { passive: false });
     meterEl.addEventListener("keydown", (e) => {
+      if (meterEl.getAttribute("aria-disabled") === "true") return;
       const d = e.key === "ArrowRight" || e.key === "ArrowUp" ? step
               : e.key === "ArrowLeft" || e.key === "ArrowDown" ? -step : 0;
       if (d) { e.preventDefault(); value = snapToStep(value + d, min, max, step); render(); }
@@ -759,6 +770,12 @@
   const getGuitar = bindKnob($("knob-guitar"), $("val-guitar"), (v) => Math.round(v * 100) + "%", "guitar");
 
   /* ─── 面板 bypass 开关：关闭 = 该面板对应阶段全部跳过，状态持久化 ─── */
+  const RACK_STAGES = {
+    lew: ["lew", "vocals"],
+    bass: ["bass", "drums"],
+    space: ["reshape"],
+    soren: ["soren"],
+  };
   const BYPASS_CONTROLS = {
     "bp-lew": ["lew", "vocals"],
     "bp-bass-drums": ["bass", "drums"],
@@ -791,6 +808,7 @@
         saveValue("bypass_" + stage, next ? "1" : "0");
       });
       render();
+      paintParamAvailability();
     });
   });
   function activeBypassList() {
@@ -804,6 +822,42 @@
       saveValue("bypass_" + stage, bypassState[stage] ? "1" : "0");
     });
     bypassPainters.forEach((paint) => paint());
+    paintParamAvailability();
+  }
+
+  /* ─── 参数可用性：面板旁路 / 依赖未满足 → 统一变淡并禁止操作 ─── */
+  function rackEnabled(name) {
+    return RACK_STAGES[name].every((stage) => bypassState[stage]);
+  }
+  function paintParamAvailability() {
+    const panelOn = {};
+    Object.keys(RACK_STAGES).forEach((name) => {
+      panelOn[name] = rackEnabled(name);
+      const body = document.querySelector(`.rack[data-rack="${name}"] .rack-body`);
+      if (!body) return;
+      const off = !panelOn[name];
+      body.classList.toggle("is-disabled", off);
+      body.inert = off;
+      body.querySelectorAll('[role="slider"], [role="button"], button').forEach((el) => {
+        el.setAttribute("aria-disabled", String(off));
+        if (el.tagName === "BUTTON") el.disabled = off;
+      });
+    });
+
+    // 草稿锁定只作用于质量档与参考选择；参考卡同时服从母带面板旁路。
+    $("knob-quality").setAttribute("aria-disabled",
+      String(!panelOn.lew || state.draftLocked));
+    const refOff = !panelOn.soren || state.draftLocked;
+    $("ref-card").inert = refOff;
+    $("ref-card").setAttribute("aria-disabled", String(refOff));
+
+    // 风格强度以参考音频为前提；面板旁路时由整块变淡接管，避免叠加两次。
+    const noRef = !state.reference;
+    const blendField = $("fader-blend").closest(".field");
+    blendField.classList.toggle("is-disabled", noRef && panelOn.soren);
+    blendField.title = noRef ? "选择参考音频后可用" : "";
+    $("fader-blend").inert = noRef;
+    $("fader-blend").setAttribute("aria-disabled", String(!panelOn.soren || noRef));
   }
 
 
@@ -943,6 +997,21 @@
   const getBlend = bindFader($("fader-blend"), $("val-blend"),
     (v) => Math.round(v * 100) + "%", "style_blend");
 
+  /* ─── 密度分段：多频段压缩（ZL Compressor），默认轻 ─── */
+  state.density = loadValue("density", "light");
+  const densityBtns = document.querySelectorAll(".seg-btn[data-density]");
+  function paintDensity() {
+    densityBtns.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.density === state.density)));
+  }
+  densityBtns.forEach((btn) => btn.addEventListener("click", () => {
+    state.density = btn.dataset.density;
+    saveValue("density", state.density);
+    paintDensity();
+  }));
+  paintDensity();
+  const getDensity = () => state.density;
+  function setDensity(v) { state.density = String(v); saveValue("density", state.density); paintDensity(); }
+
   /* ─── EQ 分段 ─── */
   state.eq = loadValue("eq", "Neutral");
   const eqBtns = document.querySelectorAll(".seg-btn[data-eq]");
@@ -970,7 +1039,7 @@
     quality: getQuality, guidance: getGuidance, sub: getSub, sat: getSat,
     punch: getPunch, trans: getTrans, vocal: getVocal, guitar: getGuitar,
     space: getSpace, denoise: getDenoise, space_width: getWidth,
-    style_blend: getBlend, loudness: getLoudness, eq: () => state.eq,
+    style_blend: getBlend, loudness: getLoudness, density: getDensity, eq: () => state.eq,
     bypass: activeBypassList,
   };
   const PRESET_SETTERS = {
@@ -978,7 +1047,7 @@
     sat: getSat.set, punch: getPunch.set, trans: getTrans.set,
     vocal: getVocal.set, guitar: getGuitar.set, space: getSpace.set,
     denoise: getDenoise.set, space_width: getWidth.set,
-    style_blend: getBlend.set, loudness: setLoudness, eq: setEq,
+    style_blend: getBlend.set, loudness: setLoudness, density: setDensity, eq: setEq,
     bypass: setBypassList,
   };
   function readSlots() {
@@ -1283,6 +1352,7 @@
   $("output-path").value = state.output;
   state.reference = loadValue("reference", "");
   $("ref-path").value = state.reference;
+  paintParamAvailability();
 
   async function chooseOutput() {
     if (state.processing) return;
@@ -1295,10 +1365,12 @@
     }
   }
   async function chooseReference() {
-    if (state.processing || $('ref-card').inert) return;
+    if (state.processing || $('ref-card').inert ||
+        $('ref-card').getAttribute('aria-disabled') === 'true') return;
     const path = await api.selectReference();
     if (path) {
       state.reference = path; $("ref-path").value = path; saveValue("reference", path);
+      paintParamAvailability();
     }
   }
   $("output-card").addEventListener("click", chooseOutput);
@@ -1317,9 +1389,12 @@
     const hit = document.elementFromPoint(x, y);
     const card = hit && (hit.closest("#output-card") || hit.closest("#ref-card"));
     if (card === $("ref-card")) {
-      if(card.inert)return;
+      if(card.inert || card.getAttribute('aria-disabled')==='true')return;
       const audio = paths.find(isAudio);
-      if (audio) { state.reference = audio; $("ref-path").value = audio; saveValue("reference", audio); }
+      if (audio) {
+        state.reference = audio; $("ref-path").value = audio; saveValue("reference", audio);
+        paintParamAvailability();
+      }
       return;
     }
     if (card === $("output-card")) {
@@ -1525,7 +1600,7 @@
       genre: "",
       style_mode: state.reference ? "styled" : (state.eq === "Neutral" ? "off" : "eq_only"),
       style_blend: getBlend(),
-      loudness: getLoudness(), eq: state.eq,
+      loudness: getLoudness(), density: getDensity(), eq: state.eq,
     };
   }
 
@@ -1586,7 +1661,7 @@
     space: {
       title: "声场 · 怎么调",
       html:
-        "<h3>宽度</h3><p>设置现有立体声背景可增加的最大宽度。低频和明显的鼓点起音会受到保护，所以<b>不是整曲均匀变宽</b>；声音散了就调低。</p>" +
+        "<h3>宽度</h3><p>为吉他、键盘及其他伴奏中<b>偏窄、挤在中间的部分</b>增加空间感。已有较宽或偏向一侧的部分减少处理；鼓、贝斯和人声不参与拓宽。声音散了就调低。</p>" +
         "<h3>声场</h3><p>控制空间处理的融入程度：既缩放宽度变化，也包含对持续拥挤的伴奏背景做<b>小幅自动整理</b>（只在实际发生堆积时动作，上限很小）。0% 时两者都关闭；<b>高频降噪独立生效</b>。</p>" +
         "<h3>高频降噪</h3><p>减轻背景里的沙沙声：只对<b>确认是稳定嘶声</b>的部分做小幅度处理，所以<b>没有嘶声的歌几乎不会有变化</b>；细节变少就调低，不是越高越好。</p>" +
         "<h3>面板开关</h3><p>关闭后，<b>展开效果、自动整理和降噪都停用</b>，原来的设置会保留。</p>" +
@@ -1596,9 +1671,10 @@
       title: "母带 · 怎么调",
       html:
         "<h3>参考音频</h3><p>拖入音频或点击选择一首<b>你想接近的歌</b>，音色方向会以参考为准；<b>响度仍由你选的响度档决定</b>，不会被参考的音量带走。不选参考就是无风格母带。</p>" +
-        "<h3>响度</h3><p>轻柔更舒缓，标准适合日常，响亮更满、更响。<b>更响不等于更好听</b>。</p>" +
-        "<h3>EQ 风格</h3><p><b>平直</b>：少改音色；<b>温暖</b>：更厚；<b>明亮</b>：更亮；<b>融合</b>：尝试更融合的整体音色。</p>" +
         "<h3>风格强度</h3><p>控制参考母带的处理力度，主要改变压缩、瞬态与密度，<b>需要先选参考音频</b>；它不是干湿混合，调低不会把两条不同相位的波形相加，音色和声场只做有限修正。拿不准就保持默认。</p>" +
+        "<h3>EQ 风格</h3><p><b>平直</b>：少改音色；<b>温暖</b>：更厚；<b>明亮</b>：更亮；<b>融合</b>：尝试更融合的整体音色。</p>" +
+        "<h3>密度</h3><p>多频段压缩，让鼓和低频更有弹性、乐器更抱团；<b>主歌和副歌的起伏会保留</b>。<b>轻</b>适合大多数歌，<b>标准</b>更紧更满，<b>关</b>保持原样。会稍微收敛明亮 EQ 的高频。</p>" +
+        "<h3>响度</h3><p>轻柔更舒缓，标准适合日常，响亮更满、更响。<b>更响不等于更好听</b>。</p>" +
         "<h3>怎么选</h3><p><b>先保持默认，再按喜好微调</b>。关闭面板可跳过这一步。</p>",
     },
   };
@@ -2441,10 +2517,9 @@ function paintTransport() {
   $('draft-loop').disabled=!transport.duration;
   if(!state.processing)processBtn.disabled=draft.busy;
   const locked=draft.busy||transport.source==='draft';
-  $('knob-quality').setAttribute('aria-disabled',String(locked));
-  $('ref-card').inert=locked;
-  $('ref-card').setAttribute('aria-disabled',String(locked));
+  state.draftLocked=locked;
   $('preset-card').inert=locked;
+  paintParamAvailability();
   $('player-start').disabled=!transport.duration;
   $('draft-seek').disabled=!transport.duration || (transport.source==='draft'&&!draft.ready);
   $('draft-seek').max=transport.duration||1;
@@ -2869,10 +2944,10 @@ function attachRpTip(canvas) {
   });
 }
 
-/* ── 频谱曲线：对数频率轴 + 非线性纵轴 + 滚轮缩放 / 拖拽平移 / 双击复位 ──
-   左侧低频天然陡峭，固定全频段视野会吃掉中高频差异；缩放后纵轴只按可见频段
-   重新划段，远离核心区的两端按 1/8 倍率压缩，局部差异被放大到整个坐标系。 */
-const rpZoom = { f0: 20, f1: 20000 };
+/* ── 频谱曲线：对数频率轴 + 非线性纵轴，固定全频段 20 Hz–20 kHz ──
+   缩放交互已移除：视野是唯一读图口径，用户不必先学会「当前看的是哪一段」；
+   左侧低频天然陡峭，纵轴按可见采样划分核心区，两端以 1/8 倍率折进窄带。 */
+const RP_F_MIN = 20, RP_F_MAX = 20000;
 const FLOOR_DB = -96;   // 压缩段下限，与后端 -90 dB 动态范围留余量
 /* 内边距与横轴刻度由骨架和实图共用：两套数值一旦不同，数据到达的瞬间整幅会跳位 */
 const rpPlotPad = (dpr) => ({ padL: 36 * dpr, padR: 12 * dpr, padT: 8 * dpr, padB: 18 * dpr });
@@ -2882,7 +2957,7 @@ function rpFreqTicks(ctx, X, dpr, h, faint) {
   ctx.textAlign = "center";
   let lastX = -Infinity;
   for (const f of RP_FREQ_TICKS) {
-    if (f < rpZoom.f0 || f > rpZoom.f1) continue;
+    if (f < RP_F_MIN || f > RP_F_MAX) continue;
     const x = X(f);
     if (x - lastX < 34 * dpr) continue;
     lastX = x;
@@ -2896,8 +2971,8 @@ function drawFreqSkeleton(ctx, w, h, dpr) {
   const { padL, padR, padT, padB } = rpPlotPad(dpr);
   const plotW = w - padL - padR, plotH = h - padT - padB;
   if (plotW <= 0 || plotH <= 0) return;
-  const fMin = Math.log10(rpZoom.f0), fMax = Math.log10(rpZoom.f1);
-  const X = (f) => padL + ((Math.log10(Math.max(rpZoom.f0, Math.min(rpZoom.f1, f))) - fMin) / (fMax - fMin)) * plotW;
+  const fMin = Math.log10(RP_F_MIN), fMax = Math.log10(RP_F_MAX);
+  const X = (f) => padL + ((Math.log10(Math.max(RP_F_MIN, Math.min(RP_F_MAX, f))) - fMin) / (fMax - fMin)) * plotW;
   const light = document.documentElement.dataset.mode === "light";
   const faint = cssVar("--c-text-faint", "#6b6378");
   ctx.font = `${10.5 * dpr}px sans-serif`;
@@ -2936,18 +3011,18 @@ function drawSpectrumChart(canvas, anim) {
   const plot = shown
     ? curves.map((c) => (c.base || c.db.length !== shown.length ? c : { ...c, db: shown }))
     : curves;
-  const fMin = Math.log10(rpZoom.f0), fMax = Math.log10(rpZoom.f1);
+  const fMin = Math.log10(RP_F_MIN), fMax = Math.log10(RP_F_MAX);
   const { padL, padR, padT, padB } = rpPlotPad(dpr);
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
-  const X = (f) => padL + ((Math.log10(Math.max(rpZoom.f0, Math.min(rpZoom.f1, f))) - fMin) / (fMax - fMin)) * plotW;
+  const X = (f) => padL + ((Math.log10(Math.max(RP_F_MIN, Math.min(RP_F_MAX, f))) - fMin) / (fMax - fMin)) * plotW;
   /* 纵轴非线性：全曲低频滚降动辄 −90 dB，与可听段等比例会把曲线压成一条平线。
      按可见采样的百分位划出「核心区」，两端离群段以 1/8 倍率折进窄带，
      于是每格 dB 的高度不相等——差异读得出来，代价是轴必须标出分段边界。 */
   const vis = [];
   plot.forEach((c) => centers.forEach((f, k) => {
     const v = c.db[k];
-    if (Number.isFinite(v) && f >= rpZoom.f0 && f <= rpZoom.f1) vis.push(v);
+    if (Number.isFinite(v) && f >= RP_F_MIN && f <= RP_F_MAX) vis.push(v);
   }));
   const TAIL = 8;
   let coreHi = -20, coreLo = -40, hi = 0, lo = -90;
@@ -3016,7 +3091,7 @@ function drawSpectrumChart(canvas, anim) {
     const pts = [];
     centers.forEach((f, k) => {
       const a = base.db[k], b = after.db[k];
-      if (Number.isFinite(a) && Number.isFinite(b) && f >= rpZoom.f0 && f <= rpZoom.f1)
+      if (Number.isFinite(a) && Number.isFinite(b) && f >= RP_F_MIN && f <= RP_F_MAX)
         pts.push([X(f), Y(a), Y(b), b - a]);
     });
     for (let i = 1; i < pts.length; i++) {
@@ -3047,8 +3122,8 @@ function drawSpectrumChart(canvas, anim) {
     const pts = [];
     centers.forEach((f, k) => {
       const v = c.db[k];
-      // 视野外的频点记 null 而非钳到画布边缘，否则会画出两端假的垂直线
-      if (!Number.isFinite(v) || f < rpZoom.f0 || f > rpZoom.f1) { pts.push(null); return; }
+      // 定义域外的频点记 null 而非钳到画布边缘，否则会画出两端假的垂直线
+      if (!Number.isFinite(v) || f < RP_F_MIN || f > RP_F_MAX) { pts.push(null); return; }
       const bv = c.base || !base ? null : base.db[k];
       pts.push([X(f), Y(v), Number.isFinite(bv) ? v - bv : 0]);
     });
@@ -3074,81 +3149,8 @@ function drawSpectrumChart(canvas, anim) {
   });
   if (rpPending) rpPending.outDb = target ? target.slice() : null;
 }
-/* 缩放/平移交互：只绑定一次；hover 提示也在此时挂载 */
-(() => {
-  const canvas = $("rp-spectrum");
-  if (!canvas) return;
-  const L0 = Math.log(20), L1 = Math.log(20000);
-  /* 最小跨度 2.5 倍 ≈ 4 个 1/3 倍频程中心；再窄就只剩一两个点，
-     曲线退化成一截竖线，缩放反而让人误判成渲染故障。 */
-  const MIN_SPAN = Math.log(2.5);
-  let zoomAnim = null;
-  /* 对数域内先定跨度、再平移窗口回域内：钳位只移动中心、不改变跨度。
-     旧写法逐端钳位会让锚点偏向的一侧反复吃掉跨度，放大后缩不回全域。 */
-  const setView = (c0, c1, instant) => {
-    const span = Math.min(L1 - L0, Math.max(MIN_SPAN, c1 - c0));
-    const mid = Math.min(L1 - span / 2, Math.max(L0 + span / 2, (c0 + c1) / 2));
-    const to = { f0: mid - span / 2, f1: mid + span / 2 };
-    if (instant) {
-      if (zoomAnim) { cancelAnimationFrame(zoomAnim); zoomAnim = null; }
-      rpZoom.f0 = Math.exp(to.f0); rpZoom.f1 = Math.exp(to.f1);
-      drawSpectrumChart(canvas);
-      return;
-    }
-    /* 视野突变会让曲线整片跳动；用一小段缓动把频率与纵轴量程一起推过去，
-       读得出「是视野变了」而不是「图坏了」。再次操作时从当前动画位置取向。 */
-    const from = { f0: Math.log(rpZoom.f0), f1: Math.log(rpZoom.f1) };
-    if (Math.abs(from.f0 - to.f0) < 1e-4 && Math.abs(from.f1 - to.f1) < 1e-4) return;
-    const t0 = performance.now(), dur = 190;
-    if (zoomAnim) cancelAnimationFrame(zoomAnim);
-    const step = (now) => {
-      const u = Math.min(1, (now - t0) / dur);
-      const e = 1 - Math.pow(1 - u, 3);
-      rpZoom.f0 = Math.exp(from.f0 + (to.f0 - from.f0) * e);
-      rpZoom.f1 = Math.exp(from.f1 + (to.f1 - from.f1) * e);
-      drawSpectrumChart(canvas);
-      zoomAnim = u < 1 ? requestAnimationFrame(step) : null;
-    };
-    zoomAnim = requestAnimationFrame(step);
-  };
-  const fAt = (e) => {
-    const rect = canvas.getBoundingClientRect();
-    // 绘图内边距以 CSS 像素为基准（绘制时才乘 dpr），这里与 rect 同单位
-    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left - 36) / Math.max(1, rect.width - 48)));
-    const a = Math.log(rpZoom.f0), b = Math.log(rpZoom.f1);
-    return Math.exp(a + (b - a) * frac);   // 按当前视野反解，不能用固定全域
-  };
-  canvas.addEventListener("wheel", (e) => {
-    if ($("pane-report").hidden) return;
-    e.preventDefault();
-    const anchor = Math.log(Math.min(20000, Math.max(20, fAt(e))));
-    const k = e.deltaY > 0 ? 1.25 : 1 / 1.25;
-    setView(anchor + (Math.log(rpZoom.f0) - anchor) * k,
-            anchor + (Math.log(rpZoom.f1) - anchor) * k);
-  }, { passive: false });
-  let panning = false, panX = 0;
-  canvas.addEventListener("pointerdown", (e) => {
-    panning = true; panX = e.clientX;
-    canvas.setPointerCapture(e.pointerId);
-    canvas.style.cursor = "grabbing";
-  });
-  canvas.addEventListener("pointermove", (e) => {
-    if (!panning) {
-      canvas.style.cursor = "grab";
-      return;
-    }
-    const rect = canvas.getBoundingClientRect();
-    const dLog = ((e.clientX - panX) / Math.max(1, rect.width - 48))
-      * (Math.log(rpZoom.f1) - Math.log(rpZoom.f0));
-    panX = e.clientX;
-    setView(Math.log(rpZoom.f0) - dLog, Math.log(rpZoom.f1) - dLog, true);
-  });
-  const end = () => { panning = false; canvas.style.cursor = "grab"; };
-  canvas.addEventListener("pointerup", end);
-  canvas.addEventListener("pointercancel", end);
-  canvas.addEventListener("dblclick", () => setView(L0, L1));
-  attachRpTip(canvas);
-})();
+/* 曲线固定为全频段 20 Hz–20 kHz 视野：缩放/平移交互已移除，只保留 hover 读数 */
+attachRpTip($("rp-spectrum"));
 
 /* ── 报告数据配对：原始（首个有报告的选中版本的 input.metrics）+ 其 output ── */
 function rpNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -3173,63 +3175,9 @@ function rpPair() {
   const ver = (rp.versions.find((v) => v.path === rp.sel) || {}).version;
   return { inM: (rep.input && rep.input.metrics) || null, outM, ver, path: rp.sel };
 }
-/* 1/3 倍频程相对能量（响度无关）→ 指定频段能量变化 dB */
-function rpBandDelta(lo, hi) {
-  const { centers, curves } = reportCurves();
-  const base = curves.find((c) => c.base), after = curves.find((c) => !c.base);
-  if (!centers || !base || !after) return null;
-  let si = 0, so = 0;
-  for (let k = 0; k < centers.length; k++) {
-    const f = centers[k];
-    if (f < lo || f >= hi) continue;
-    const a = base.db[k], b = after.db[k];
-    if (Number.isFinite(a) && Number.isFinite(b)) { si += Math.pow(10, a / 10); so += Math.pow(10, b / 10); }
-  }
-  return si > 0 && so > 0 ? 10 * Math.log10(so / si) : null;
-}
-
-/* ── 处理摘要 KPI ── */
-const RP_KPI_ICONS = {
-  bass: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h2l2-6 3 15 3-11 2 6h6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  air: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 14c4 0 4-6 8-6s4 6 8 6" stroke-linecap="round"/><circle cx="12" cy="17.5" r="1.4" fill="currentColor" stroke="none"/></svg>',
-  dyn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18V6M9 18V9M14 18v-6M19 18V4" stroke-linecap="round"/></svg>',
-  wide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M6 8l-3 4 3 4M18 8l3 4-3 4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-};
 function rpDuration(sec) {
   const s = Math.max(0, Math.round(Number(sec) || 0));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
-function renderHead() {
-  const name = $("rp-name"), chips = $("rp-mchips"), time = $("rp-time");
-  if (!name || !chips) return;
-  const pair = rpPair();
-  const rep = pair && rp.reports.get(pair.path);
-  const fmt = (rep && rep.meta && rep.meta.output_format) || null;
-  name.textContent = pair ? stemOf(pair.path) : "未选择成品";
-  const meta = (rep && rep.meta) || {};
-  const items = [];
-  if (fmt) {
-    items.push(fmt.format || "WAV");
-    items.push(`${(fmt.sample_rate / 1000).toFixed(1)} kHz`);
-    if (fmt.bit_depth) items.push(`${fmt.bit_depth} bit`);
-    items.push(fmt.channels === 1 ? "单声" : "立体声");
-    items.push(rpDuration(fmt.duration_seconds));
-  }
-  chips.innerHTML = "";
-  items.forEach((text) => {
-    const c = document.createElement("span");
-    c.className = "rp-mchip";
-    c.textContent = text;
-    chips.appendChild(c);
-  });
-  if (!items.length) {
-    const c = document.createElement("span");
-    c.className = "rp-mchip";
-    c.textContent = pair ? "该成品无格式信息（报告版本较早）" : "处理完成后显示";
-    chips.appendChild(c);
-  }
-  const gen = String(meta.generated_at || "");
-  time.textContent = gen.length >= 16 ? `${gen.slice(0, 10)} ${gen.slice(11, 16)}` : "—";
 }
 /* ── 报告动效：数字与图形都只是数据的一次快照 ──
    reveal（从别的页切进来）：数字从 0 长到显示值，画布按左右顺序画出来；
@@ -3295,59 +3243,6 @@ function rpSpecFade(apply, ms = 240) {
   const done = () => { if (rpSpecSnap === snap) rpSpecSnap = null; snap.remove(); };
   anim.finished.then(done, done);
 }
-function renderSummary() {
-  const wrap = $("rp-summary");
-  if (!wrap) return;
-  wrap.innerHTML = "";
-  const pair = rpPair();
-  const lra = pair && pair.inM && rpNum(pair.outM.lra_lu) != null && rpNum(pair.inM.lra_lu) != null
-    ? pair.outM.lra_lu - pair.inM.lra_lu : null;
-  let wide = null;
-  const rpSigned = (v, dp) => (v == null ? "—"
-    : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(dp));
-  /* 宽度按中/高频各自 S/M 比（dB）等权平均后再取前后差：
-     能量加权的总宽几乎只跟中频走（中频能量远高于高频），高频的实际
-     拓宽被中频吃掉；低频则被刻意 mono 化，计入只会永远读出变窄。 */
-  const smDb = (m, key) => rpBandSmDb(m, key);
-  if (pair) {
-    const parts = ["mid", "high"].map((k) => {
-      const a = smDb(pair.inM, k), b = smDb(pair.outM, k);
-      return a == null || b == null ? null : b - a;
-    }).filter((v) => v != null);
-    wide = parts.length ? parts.reduce((s, v) => s + v, 0) / parts.length : null;
-  }
-  const cards = [
-    { ic: "bass", label: "低频能量", sub: "20–250 Hz 变化", v: rpBandDelta(20, 250), unit: "dB", dp: 1 },
-    { ic: "air", label: "空气感能量", sub: "3–8 kHz 变化", v: rpBandDelta(3000, 8000), unit: "dB", dp: 1 },
-    { ic: "dyn", label: "动态范围", sub: "LRA 变化", v: lra, unit: "LU", dp: 1, eps: 0.05 },
-    { ic: "wide", label: "立体声宽度", sub: "中/高频 S/M 变化", v: wide, unit: "dB", dp: 2, eps: 0.05 },
-  ];
-  cards.forEach((c) => {
-    const el = document.createElement("div");
-    const eps = c.eps == null ? 0.05 : c.eps;
-    const dir = c.v == null ? "flat" : c.v > eps ? "up" : c.v < -eps ? "down" : "flat";
-    el.className = "rp-kpi " + dir;
-    /* 方向不另印箭头：数字自带正负号，颜色已经表态，右侧再挂一只三角只是噪声 */
-    const val = rpSigned(c.v, c.dp);
-    el.innerHTML =
-      `<span class="rp-kpi-ic">${RP_KPI_ICONS[c.ic]}</span>` +
-      `<span class="rp-kpi-txt"><span class="rp-kpi-label">${c.label}</span>` +
-      `<span class="rp-kpi-sub">${c.sub}</span></span>` +
-      `<span class="rp-kpi-val"><span class="rp-kpi-num">${val}</span>` +
-      `<span class="rp-kpi-unit">${c.v == null ? "" : c.unit}</span></span>`;
-    wrap.appendChild(el);
-  });
-  const nums = [...wrap.querySelectorAll(".rp-kpi-num")];
-  const prevK = rpShown && rpShown.kpi;
-  rpHook((u, reveal) => {
-    cards.forEach((c, i) => {
-      const from = reveal ? 0 : (prevK ? prevK[i] : null);
-      nums[i].textContent = rpSigned(rpLerp(from, c.v, u), c.dp);
-    });
-  });
-  if (rpPending) rpPending.kpi = cards.map((c) => c.v);
-}
-
 /* ── 响度与动态：哑铃行（每行用该属性的常用总量程） ── */
 const RP_DYN = [
   { label: "响度", sub: "LUFS", key: "integrated_lufs", dp: 1, ref: [-20, -6],
@@ -3710,7 +3605,7 @@ function rpThemeColors() {
     boost: sep(co), cut: cutHex,
     base,
   };
-  /* DOM 侧（KPI 箭头）与画布必须同源取色，否则主题一换画布跟着变、箭头仍是写死的绿/蓝。 */
+  /* DOM 侧（哑铃读数 / 钻石底部读数）与画布必须同源取色，否则主题一换画布跟着变、读数还是旧色。 */
   const key = out.boost + "|" + out.cut;
   if (key !== RP_PUB_KEY) {
     RP_PUB_KEY = key;
@@ -3792,25 +3687,17 @@ function rpSpecPair() {
   };
   return { inSpec: get(inPath), outSpec: get(pair && pair.path) };
 }
-function drawSpecBitmap(canvas, off, fHi, duration, note, anim) {
+function drawSpecBitmap(canvas, off, fHi, duration, note) {
   const dpr = window.devicePixelRatio || 1;
   const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
   if (!w || !h) return;
-  rpClipAt(canvas, anim && anim.reveal != null ? anim.reveal : 1);
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = cssVar("--c-bg", "#121014");
   ctx.fillRect(0, 0, w, h);
   if (off) {
     ctx.imageSmoothingEnabled = true;
-    /* 换成品版本：先把上一版铺满，再按进度叠新版，读得出整幅频谱在换手 */
-    const prev = anim && anim.fadeFrom && anim.fadeFrom !== off ? anim.fadeFrom : null;
-    if (prev) {
-      ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, w, h);
-      ctx.globalAlpha = anim.u;
-    }
     ctx.drawImage(off, 0, 0, off.width, off.height, 0, 0, w, h);
-    ctx.globalAlpha = 1;
     drawFreqScale(ctx, w, h, dpr, fHi);
     if (duration > 0 && w > 200 * dpr) {
       ctx.save();
@@ -3854,37 +3741,8 @@ function renderSpectral() {
     }
   }
   drawSpecBitmap(canvas, off, fHi, dur, note);
-  /* 重放钩子只在真正要动画时改画法，静态重绘（缩放、换主题）仍走上面的终态 */
-  const prevOff = rpShown && rpShown.specOff;
-  rpHook((u, reveal) => {
-    drawSpecBitmap(canvas, off, fHi, dur, note, reveal
-      ? { reveal: u }
-      : (prevOff && prevOff !== off ? { fadeFrom: prevOff, u } : null));
-  });
-  if (rpPending) rpPending.specOff = off;
-  else if (rpShown) rpShown.specOff = off;   // 静态重绘也要记下「屏幕上是什么」
-}
-/* 图例：色块 + 说明 */
-function fillLegend(id, items) {
-  const el = $(id);
-  if (!el) return;
-  el.innerHTML = "";
-  items.forEach(([text, color]) => {
-    const item = document.createElement("span");
-    item.className = "rp-legend-item";
-    if (color) {
-      const sw = document.createElement("span");
-      sw.className = "rp-swatch";
-      sw.style.background = color;
-      item.appendChild(sw);
-    }
-    item.appendChild(document.createTextNode(text));
-    el.appendChild(item);
-  });
-}
-function renderReportLegend() {
-  const t = rpThemeColors();
-  fillLegend("rp-legend", [["原始", t.before], ["处理后 / 衰减", t.after], ["提升", t.boost]]);
+  /* 这里不登记重放钩子：位图异步到达，入场重放帧会在真图已画好之后
+     用登记时的旧画面（多半是占位提示）把它盖回去。本区只保留淡入淡出。 */
 }
 document.querySelectorAll("#rp-spec-tabs .rp-spec-tab").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -3902,13 +3760,13 @@ async function renderReport(mode) {
   DELTA_LUT = buildDeltaLut(rpThemeColors());
   rpHooks = [];
   rpPending = {};                        // 渲染器据此登记重放钩子，并写下本帧数据
-  renderHead();
-  renderSummary();
   drawSpectrumChart($("rp-spectrum"));
   renderDynamics();
   renderStereoFans();
-  renderSpectral();
-  renderReportLegend();
+  /* 频谱变化区只做淡入淡出：换版本时新位图一次画好、旧画面以快照淡出；
+     其余面板仍由重放钩子做数值/几何动画（入场裁剪、换版本插值）。 */
+  if (mode === "morph") rpSpecFade(() => renderSpectral(), 240);
+  else renderSpectral();
   rpShown = rpPending;
   rpPending = null;
   /* 各图先按终态画好（ resize / 换主题等静态重绘就走这条路），

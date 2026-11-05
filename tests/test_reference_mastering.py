@@ -109,9 +109,12 @@ def test_global_eq_changes_final_audio_in_every_reference_case(tmp_path, monkeyp
     outputs = {}
     for profile in ('Neutral', 'Bright'):
         dst = tmp_path/(profile + '.wav')
+        # density off isolates the EQ/reference wiring: the density compressor
+        # downstream of the EQ partially absorbs a high shelf by design.
         stats = pipeline.master_file(src, dst, 'soft', eq_profile=profile,
                                     reference=None if reference_case == 'off' else 'provided',
-                                    strength=0 if reference_case == 'zero' else .5)
+                                    strength=0 if reference_case == 'zero' else .5,
+                                    density='off')
         outputs[profile], _ = sf.read(dst)
         assert stats['eq_profile'] == profile
         expected_status = {'off': 'disabled', 'zero': 'disabled',
@@ -283,6 +286,8 @@ def test_actual_reference_subprocess_has_no_soren_dependency(tmp_path, monkeypat
         repo = Path(__file__).resolve().parents[1]
         shutil.copytree(repo / 'mastering', runtime / 'mastering', ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copyfile(repo / 'audio_metrics.py', runtime / 'audio_metrics.py')
+        # runtime_sync.ps1 stages the density VST3 plugins next to mastering/.
+        shutil.copytree(repo / 'plugins', runtime / 'plugins')
         monkeypatch.setattr(backend, 'MASTERING_ROOT', runtime)
     monkeypatch.setattr(backend, '_ensure_dev_runtime', lambda: pytest.fail('Soren requested'))
     monkeypatch.setattr(backend, 'PYTHON', Path(sys.executable))
@@ -317,7 +322,7 @@ def test_user_eq_frequency_response_and_channel_symmetry(profile):
 
 
 @pytest.mark.parametrize('reference_mode', [False, True])
-def test_pipeline_splits_repairs_from_final_width(tmp_path, monkeypatch, reference_mode):
+def test_pipeline_keeps_accompaniment_width_before_reference(tmp_path, monkeypatch, reference_mode):
     src = write(tmp_path/'source.wav', audio())
     ref = write(tmp_path/'ref.wav', audio()*.7) if reference_mode else None
     monkeypatch.setattr(backend, '_ensure_dev_runtime', lambda: pytest.fail('Soren requested'))
@@ -335,9 +340,9 @@ def test_pipeline_splits_repairs_from_final_width(tmp_path, monkeypatch, referen
     backend.run_pipeline(src, tmp_path/'out', reference=ref,
         style_mode='styled' if ref else 'off', space_wet=.7, space_width_db=5, space_denoise=.3,
         bypass=['lew', 'bass', 'drums', 'vocals'], cache_enabled=False)
-    assert seen['repair']['wet'] == 0
+    assert seen['repair']['wet'] == .7
     assert seen['repair']['space_amount'] == .7 and seen['repair']['denoise'] == .3
-    assert seen['master']['final_space_wet'] == .7 and seen['master']['final_width_db'] == 5
+    assert 'final_space_wet' not in seen['master'] and 'final_width_db' not in seen['master']
     if reference_mode:
         assert seen['master']['match_source'] == src
         assert seen['master']['upstream_delta_path'] is None

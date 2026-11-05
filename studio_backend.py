@@ -20,7 +20,7 @@ from audio_metrics import (quality_report_path, quality_summary, read_quality_re
                            write_quality_report)
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.12"
+APP_VERSION = "1.6.13"
 GPU_ENV_VERSION = "1.6.11"
 
 # ── 处理默认值单一来源（开发规格 v2 §5.2/§12.1，P0-03；ENG-01）──────────
@@ -47,6 +47,8 @@ DEFAULTS = {
     "quality": 1,
     "genre": "Pop",
     "loudness": "normal",
+    # 母带密度压缩（mastering/density.py，ZL Compressor）：off | light | standard
+    "density": "light",
     "eq_profile": "Neutral",
     "style_mode": "styled",
     "style_blend": 0.85,
@@ -194,6 +196,16 @@ PYTHON, APOLLO_DIR, SOREN_DIR, ASSETS = _resolve_runtime()
 DSP_DIR = (APOLLO_DIR if ASSETS is not None or getattr(sys, "frozen", False)
            else Path(os.environ.get("SB_DSP", DEV_DSP)))
 MASTERING_ROOT = Path(ASSETS) if ASSETS is not None else Path(__file__).parent
+
+
+def _mastering_python():
+    """母带只用 numpy/scipy/pedalboard，不需要 CUDA：打包态固定用安装包内置运行时，
+    避免可选下载的 GPU 环境（只替换 PYTHON）缺少母带依赖（如 pedalboard）。"""
+    if ASSETS is not None:
+        bundled = Path(ASSETS) / "env" / ("python.exe" if os.name == "nt" else "bin/python")
+        if bundled.is_file():
+            return bundled
+    return PYTHON
 
 
 def auto_device():
@@ -574,8 +586,10 @@ AUDIO_FORMAT_VERSION = "f32-internal-1"
 # 素材自适应、reshape 同轨 denoise→width 真串联。v4 起（2026-09-30）：母带收敛
 # 判据除减益深度外还约束限制器介入频率（active ≤0.70、中位减益 ≤2.0 dB），
 # 目标不可达的素材退回"不持续钳制"的候选并如实标 dynamic_budget，交付母带不再
-# 把块峰值钉死在天花板上。进入缓存身份（§16.5：新引擎不与旧缓存混用）。
-DSP_ENGINE_VERSION = "dsp-v5-20261013"
+# 把块峰值钉死在天花板上。v6 起（2026-11-04）：介入预算同时约束最差 10 s 窗口，
+# 限制器 10 ms 预读 + 10 ms 线性起始斜坡，真峰天花板 −1.0 dBTP，抖动固定种子。
+# 进入缓存身份（§16.5：新引擎不与旧缓存混用）。
+DSP_ENGINE_VERSION = "dsp-v7-20261105"
 
 
 def ffmpeg_convert(src, dst, sr=44100, subtype="FLOAT"):
@@ -846,13 +860,13 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
                   noise_mode="other", noise_low_hz=8000.0, noise_high_hz=20000.0,
                   noise_max_attenuation_db=6.0, space_amount=None, stem_scale=1.0,
                   working_stems_dir=None):
-    """声场重塑（broadband delta-add）：wet 缩放宽度差值，降噪与去拥挤独立授权。
+    """窄伴奏空间生成：仅 other/guitar/piano；降噪与去拥挤独立授权。
 
     stem_scale 是上游累计峰值缩放，所有源分轨先对齐当前混音电平。
 
-    width_db 为增长授权（2026-09-28 语义修订：other 轨 side 增益 dB，drums 自动
-    取一半；该请求本身授权新增 Side 的能量增长，DSP 内仅保留单声道兼容的占比
-    上限），wet 决定向该宽度目标混合的比例。wet≤0 且 denoise≤0，或缺少
+    width_db 控制空间生成强度，wet 缩放增量；局部已有较宽/偏置的内容不生成。
+    本阶段完成伴奏宽度，最终母带不再对全混音重复拓宽。
+    wet≤0 且 denoise≤0，或缺少
     drums/other stems 时直接透传（位级不变）。denoise>0 时即使 wet=0 也会运行，
     以允许单独使用高频降噪。
     wet 同时作为声场强度授权（--space-amount，规格 §7.4）：wet>0 时 other 轨
@@ -909,7 +923,7 @@ def stage_reshape(in_mix, stems_dir, out_wav, wet=None, denoise=None, width_db=N
         cmd = [PYTHON, str(DSP_DIR / "soundstage_reshape.py"),
                "--in-mix", str(in_mix), "--out-wav", str(out_wav),
                "--stems-dir", str(stems_dir),
-               "--mode", "broadband", "--wet", str(wet),
+               "--mode", "adaptive", "--wet", str(wet),
                "--side-gain-db", str(width_db),
                "--space-amount", str(space_amount), "--stem-scale", str(stem_scale)]
         if denoise > 0:
@@ -1169,7 +1183,8 @@ def _emit_mastering_log(report_cb, mastered_path):
 
 def stage_mastering(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
                     *, reference=None, match_source=None, strength=.85,
-                    eq_profile="Neutral", lowpass_cutoff=None, space_wet=0.0, width_db=0.0):
+                    eq_profile="Neutral", lowpass_cutoff=None, space_wet=0.0, width_db=0.0,
+                    density="light"):
     """Independent finalizer and optional protected reference matching."""
     from mastering import LOUDNESS_TARGETS
     if loudness not in LOUDNESS_TARGETS:
@@ -1179,8 +1194,8 @@ def stage_mastering(input_wav, out_wav, loudness="normal", progress=None, cancel
         progress(0.0, label)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(MASTERING_ROOT)
-    cmd = [PYTHON, "-m", "mastering", str(Path(input_wav).resolve()),
-           str(Path(out_wav).resolve()), "--loudness", loudness]
+    cmd = [_mastering_python(), "-m", "mastering", str(Path(input_wav).resolve()),
+           str(Path(out_wav).resolve()), "--loudness", loudness, "--density", density]
     if reference:
         cmd += ["--reference", str(Path(reference).resolve()), "--strength", str(strength)]
         if match_source:
@@ -1207,12 +1222,12 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
                 progress=None, cancel=None, style_mode="styled",
                 upstream_delta_path=None, upstream_delta_hash=None,
                 style_blend=0.85, match_source=None,
-                final_space_wet=0.0, final_width_db=0.0):
+                final_space_wet=0.0, final_width_db=0.0, density="light"):
     if style_mode not in ("styled", "off", "eq_only"):
         raise ValueError(f"Unknown Soren style mode: {style_mode}")
     reference_active = style_mode == "styled" and bool(reference)
     if style_mode in ("off", "eq_only") or reference_active:
-        options = {}
+        options = {"density": density}
         if reference_active:
             options.update(reference=reference, match_source=match_source, strength=style_blend)
         # User EQ is global; off disables reference/style matching only.
@@ -1458,7 +1473,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                  bass_gain_db=0.0, bass_auto_clarity=False, sidechain_amount=0.0,
                  sidechain_attack_ms=5.0, sidechain_release_ms=150.0,
                  sidechain_max_duck_db=6.0, clarity_auth=None, vocal_gain_db=None,
-                 genre=None, loudness=None,
+                 genre=None, loudness=None, density=None,
                  eq_profile=None, reference=None, quality=None, guidance=None,
                  device="cuda", progress=None, cancel=None, work_dir=None,
                  lowpass_cutoff=None, space_wet=None, space_denoise=None,
@@ -1482,6 +1497,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     vocal_gain_db = DEFAULTS["vocal_gain_db"] if vocal_gain_db is None else vocal_gain_db
     genre = DEFAULTS["genre"] if genre is None else genre
     loudness = DEFAULTS["loudness"] if loudness is None else loudness
+    density = DEFAULTS["density"] if density is None else density
     eq_profile = DEFAULTS["eq_profile"] if eq_profile is None else eq_profile
     quality = DEFAULTS["quality"] if quality is None else quality
     guidance = DEFAULTS["guidance"] if guidance is None else guidance
@@ -1819,7 +1835,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             if export_working:
                 reshape_kwargs["working_stems_dir"] = working_stems_out
             reshape_scale = run_reshape(drum_out, stem_dir, shape_out,
-                          wet=0.0 if independent_mastering else space_wet,
+                          wet=space_wet,
                           denoise=space_denoise, width_db=space_width_db,
                           space_amount=space_amount, stem_scale=bass_scale * drums_scale,
                           progress=cb(4, 0.0, 0.5), cancel=cancel, report_json=reshape_report,
@@ -1913,9 +1929,9 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             mastering_options = {}
             if reference_active:
                 mastering_options["match_source"] = input_wav
-            if independent_mastering and "reshape" not in bypass:
-                mastering_options.update(final_space_wet=space_wet, final_width_db=space_width_db)
-            run_soren(premaster, mastered, genre=genre, loudness=loudness,
+            # Accompaniment width is already in the repaired working stems.
+            # Shared reference tone may follow; never widen the whole mix again.
+            run_soren(premaster, mastered, genre=genre, loudness=loudness, density=density,
                         eq_profile=eq_profile, reference=reference,
                         lowpass_cutoff=lowpass_cutoff, progress=cb(5, 0.08, 0.92),
                         cancel=cancel, style_mode=style_mode,
@@ -1936,7 +1952,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
         else:
             final_report.unlink(missing_ok=True)
         quality_params = {
-            "genre": genre, "loudness": loudness, "eq_profile": eq_profile,
+            "genre": genre, "loudness": loudness, "density": density, "eq_profile": eq_profile,
             "style_mode": style_mode, "style_blend": style_blend,
             "bypass": sorted(bypass), "quality_level": quality, "guidance": guidance,
             # 请求值（母带旁路时为 0 也不会执行本阶段，实际响应见 stages.hygiene）

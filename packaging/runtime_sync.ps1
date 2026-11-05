@@ -142,6 +142,7 @@ Assert-NonEmptyFile "$srcApollo\lew_upscale.py" "Lew 入口"
 Assert-NonEmptyFile "$appApollo\bass_enhance.py" "BASS 入口"
 Assert-NonEmptyFile "$appApollo\drum_enhance.py" "Drum 入口"
 Assert-NonEmptyFile "$appApollo\soundstage_reshape.py" "声场重塑入口"
+Assert-NonEmptyFile "$appApollo\ambience_width.py" "窄伴奏空间生成"
 Assert-NonEmptyFile "$appApollo\noise_profile.py" "高频噪声分析入口"
 Assert-NonEmptyFile "$appApollo\stem_enhance.py" "可选分轨增强入口"
 Assert-NonEmptyFile "$appApollo\vocal_adjust.py" "人声入口"
@@ -171,6 +172,11 @@ Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyCont
 New-Item -ItemType Directory -Force -Path "$stage\mastering" | Out-Null
 Copy-Item "$root\mastering\*.py" "$stage\mastering\" -ErrorAction Stop
 Copy-Item "$root\audio_metrics.py" "$stage\" -ErrorAction Stop
+# Density stage hosts ZL Compressor (AGPL-3.0) via pedalboard; fetched by tools/fetch_plugins.py.
+if (-not (Test-Path -LiteralPath "$root\plugins\ZL Compressor.vst3" -PathType Container)) {
+    throw "缺少 plugins\ZL Compressor.vst3，请先运行 python tools\fetch_plugins.py"
+}
+Copy-Item "$root\plugins" "$stage\" -Recurse -Force -ErrorAction Stop
 # Reference tonal-target cache (audit §9.8) runs in the mastering subprocess; the
 # subprocess import is best-effort, so bundling this enables it, absence stays cold.
 Copy-Item "$root\pipeline_cache.py" "$stage\" -ErrorAction Stop
@@ -198,7 +204,7 @@ if ($LASTEXITCODE -ne 0) { throw "torch $expectTorch 安装失败(exit=$LASTEXIT
     "torch==$expectTorch" "torchaudio==$expectTorch" `
     numpy==2.5.2 soundfile==0.14.0 scipy==1.18.0 librosa==1.0.0 `
     numba==0.67.0 llvmlite==0.49.0 statsmodels==0.14.6 pyloudnorm==0.2.0 `
-    matchering==2.0.6 resampy==0.4.3 `
+    matchering==2.0.6 resampy==0.4.3 pedalboard==0.9.26 `
     joblib==1.5.3 cryptography==50.0.0 setuptools==78.1.0 `
     demucs==4.1.0 einops==0.8.2 julius==0.2.8 lameenc==1.8.4 tqdm==4.70.0 `
     huggingface_hub==0.36.2 soxr==1.1.0 `
@@ -303,8 +309,8 @@ Write-Host "  [5a] 验证运行时依赖与关键文件 ..."
 $requiredImports = @(
     "torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy", "librosa",
     "numba", "statsmodels", "pyloudnorm", "joblib", "cryptography", "look2hear.models",
-    "matchering", "resampy", "mastering.pipeline", "audio_worker",
-    "bass_enhance", "drum_enhance", "soundstage_reshape", "noise_profile",
+    "matchering", "resampy", "pedalboard", "mastering.pipeline", "audio_worker",
+    "bass_enhance", "drum_enhance", "soundstage_reshape", "ambience_width", "noise_profile",
     "premaster_hygiene", "stem_enhance", "vocal_adjust"
 )
 $importNames = $requiredImports -join ","
@@ -333,6 +339,7 @@ Get-ChildItem -LiteralPath "$root\mastering" -Filter "*.py" -File | ForEach-Obje
     Assert-SameFile $_.FullName (Join-Path "$stage\mastering" $_.Name) "独立母带源码"
 }
 Assert-SameFile "$root\audio_metrics.py" "$stage\audio_metrics.py" "母带测量"
+Assert-SameTree "$root\plugins" "$stage\plugins" "VST3 插件"
 Assert-SameFile "$root\pipeline_cache.py" "$stage\pipeline_cache.py" "参考音色目标缓存"
 Assert-SameFile "$root\audio_worker.py" "$stage\audio_worker.py" "音频工作进程"
 Assert-SameTree "$srcApollo\look2hear" "$stage\Apollo\look2hear" "look2hear 源码"
@@ -350,7 +357,7 @@ Assert-SameFile $ffmpeg "$stage\ffmpeg\bin\ffmpeg.exe" "ffmpeg"
 $manifestPath = "$stage\critical-manifest.sha256"
 $manifestRoots = @(
     "$stage\env\python.exe", "$site\numpy", "$site\numpy.libs",
-    "$stage\mastering", "$stage\audio_metrics.py", "$stage\pipeline_cache.py", "$stage\audio_worker.py",
+    "$stage\mastering", "$stage\plugins", "$stage\audio_metrics.py", "$stage\pipeline_cache.py", "$stage\audio_worker.py",
     "$stage\Apollo",
     "$stage\Soren_src\core_decrypted.py", "$stage\Soren_src\soren_original.py",
     "$stage\Soren_src\test_model.py", "$stage\Soren_src\model",

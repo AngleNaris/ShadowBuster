@@ -5,9 +5,10 @@
   2. 预览播放器：上下频谱同缩放（同一时间轴），选段外压暗，选段顶部拖饼整体移动，
      点击任一频谱直接切轨并定位；无参数/指标文字列表；
   3. 预览渲染走后端缓存（同片段同参数直接命中），已完成文件可切换输出版本对比；
-  4. 报告：无冗余文字面板，用处理摘要 KPI / 频率响应曲线（含 Δ 差异曲线）/ 响度哑铃行 /
+  4. 报告：无冗余文字面板，直接用频率响应曲线（含 Δ 差异曲线）/ 响度哑铃行 /
      3 频段声场钻石图 / 原始·处理后·变化(Δ) 频谱图做前后直观对比，支持多版本勾选；
-     每张图的含义只写在右上角图例，图下不留说明；量程按被比较的取值动态定标；
+     文件名 / 格式 / 图例 / 分析时间行与四张 KPI 卡整块退役，报告页从曲线网格开始；
+     图下不留说明；量程按被比较的取值动态定标；
   5. 成品命名：重复处理自动 _v2/_v3，绝不静默覆盖；
   6. WebView 存储与预览产物集中在缓存目录。
 """
@@ -239,20 +240,21 @@ def test_source_pills_and_play_button_states():
 
 def test_report_contract():
     pane = report_pane_html()
-    for anchor in ('id="rp-summary"',
-                   'id="rp-spectrum"', 'id="rp-dyn"', 'id="rp-fans"',
-                   'id="rp-spec"', 'id="rp-spec-tabs"',
-                   # 全站一份色块图例，放在分析时间区域
-                   'id="rp-legend"'):
+    for anchor in ('id="rp-spectrum"', 'id="rp-dyn"', 'id="rp-fans"',
+                   'id="rp-spec"', 'id="rp-spec-tabs"'):
         assert anchor in pane
     assert 'id="rp-chips"' not in pane
     # 冗余文字面板全部退役：文件行 / 指标卡 / 频段条 / 配置行 / 约束列表 /
-    # 重复版本徽标 / 处理链行 / 英文副标题 / 缩放徽标 / 图下说明段
+    # 重复版本徽标 / 处理链行 / 英文副标题 / 缩放徽标 / 图下说明段 /
+    # 成品元信息行（文件名·格式胶囊·图例·分析时间）与四张 KPI 卡
     for stale in ('id="rp-file-label"', 'id="rp-cards"', 'id="rp-bands"',
                   'id="rp-width"', 'id="rp-config"', 'id="rp-constraints"',
                   'id="rp-badge"', 'id="rp-chain"', 'id="rp-freq-zoom"',
                   'id="rp-spec-note"', "rp-hint", "rp-cap-en", "rp-zoom",
                   "rp-spec-note",
+                  'id="rp-head"', 'id="rp-summary"', 'id="rp-legend"',
+                  'id="rp-name"', 'id="rp-mchips"', 'id="rp-time"',
+                  "rp-mchip", "rp-kpi", "rp-swatch", "rp-legend-item",
                   # 每卡各自的图例并入工具栏那一份
                   'id="rp-freq-legend"', 'id="rp-dyn-legend"',
                   'id="rp-stereo-legend"', 'id="rp-spec-legend"',
@@ -263,13 +265,17 @@ def test_report_contract():
         assert stale not in pane
     module = APP[APP.index("/* ── 报告画布 hover 提示"):]
     assert "function drawSpectrumChart(canvas, anim)" in module
-    assert "function renderSummary()" in module
+    # 顶部信息行与摘要 KPI 整块退役：不渲染、不登记重放，也不再回读报告 meta
+    assert "function renderSummary()" not in module and "function renderHead()" not in module
+    assert "rp-summary" not in module and "rpPending.kpi" not in module
     assert "function renderDynamics()" in module
     assert "function renderStereoFans()" in module
     assert "function drawFieldDiamond(canvas" in module
     assert "function renderSpectral()" in module
-    assert "function drawSpecBitmap(canvas, off, fHi, duration, note, anim)" in module
-    assert "function renderReportLegend()" in module
+    # 频谱位图一次性画终态，不再带动画参数（本区只保留淡入淡出）
+    assert "function drawSpecBitmap(canvas, off, fHi, duration, note)" in module
+    assert "duration, note, anim)" not in module
+    assert "function renderReportLegend()" not in module and "function fillLegend(" not in module
     assert "function drawGroupedBars" not in module
     assert "function drawStereoChart" not in module
     assert "function renderReportSpecs" not in module
@@ -277,14 +283,13 @@ def test_report_contract():
     assert "function reportCurves()" in APP
     # 曲线数据来自 compare（1/3 倍频程 input_db/output_db）
     assert "cmp.input_db" in APP and "cmp.output_db" in APP
-    # 摘要/差异条按频段聚合 compare 能量，而非整曲聚合指标
-    assert "function rpBandDelta(lo, hi)" in module
+    # 摘要 KPI 退役后不再按频段聚合 compare 能量：这段逻辑随卡片一起删除，
+    # 不许以「给别处用」的名义留下（唯一消费者已不存在）
+    assert "function rpBandDelta(lo, hi)" not in module
+    assert '["mid", "high"].map' not in module
     # 分频段宽度来自后端新增的 band_widths（整曲 S/M 被低频主导，会误判变窄）
     assert "function rpBandWidth(m, key)" in module
     assert '"band_widths": _band_widths(data, sample_rate)' in METRICS
-    # 总宽度 KPI 剔除低频：取中/高频各自 S/M 比（dB）等权平均。能量加权的
-    # >250Hz 总宽只跟中频走，高频的实际拓宽会被吃掉
-    assert "const smDb = (m, key)" in module and '["mid", "high"].map' in module
     assert "wide_gt250" not in module
     # 分频段 S/M 电平比（dB）是听感宽度的直接读数，宽度比 sideE/(midE+sideE)
     # 只是它的非线性压缩：同一件事 0.03→0.02 只有 −1.4 dB，写成 −23% 会把
@@ -314,36 +319,28 @@ def test_report_contract():
     assert 'ensureSep(c, bg, ink, 2.6)' not in module   # 参照面是面板，不是页面底色
     assert "ensureSep(c, panel, ink, 2.6)" in module
     assert 'cssVar("--c-panel"' in module
-    # DOM 侧（KPI 读数）与画布同源：推导色回写 CSS 变量，否则主题一换读数仍是写死的绿/蓝
+    # DOM 侧（哑铃读数 / 钻石底部读数）与画布同源：推导色回写 CSS 变量，
+    # 否则主题一换画布跟着变、读数仍是旧色
     assert 'setProperty("--rp-boost"' in module and 'setProperty("--rp-cut"' in module
     assert "var(--rp-boost)" in CSS and "var(--rp-cut)" in CSS
-    assert ".rp-kpi.up .rp-kpi-arrow { color: var(--c-ok); }" not in CSS
-    # 方向只由读数颜色表态：数字右侧不再挂 ▲/▼（正负号已经说清方向），
-    # 图标是定位用的，跟标签同为中性色，不跟着数值变红变绿
+    # 摘要 KPI 的整套 DOM 颜色规则随卡片删除；方向色改由哑铃行 / 钻石读数承担
+    for gone in (".rp-kpi", ".rp-kpi-num", ".rp-kpi-ic", ".rp-kpi-label",
+                 ".rp-kpi-sub", ".rp-kpi-val", ".rp-kpi-unit"):
+        assert gone not in CSS
     assert "rp-kpi-arrow" not in module and "rp-kpi-arrow" not in CSS
-    assert ".rp-kpi.up .rp-kpi-num { color: var(--rp-boost); }" in CSS
-    assert ".rp-kpi.down .rp-kpi-num { color: var(--rp-cut); }" in CSS
-    assert ".rp-kpi-ic { width: 24px; height: 24px; flex: none; color: var(--c-text-dim); }" in CSS
-    assert ".rp-kpi-num { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }" in CSS
     # 报告配色全来自 CSS 变量，切换主题后必须重绘
     assert 'document.addEventListener("sb-theme"' in module
     # 版本改单选：不再支持同时对比多版
     assert "const rp = { versions: [], sel: null, reports: new Map() };" in APP
     assert "rp.selected" not in APP
-    # 曲线可缩放：滚轮/拖拽/双击复位；缩放一律经 setView 对称钳位
-    # （旧 clampZoom 在定义域两端非对称压缩跨度，视野被单向拖走后缩不回去）
-    assert "const rpZoom = { f0: 20, f1: 20000 };" in module
-    assert 'canvas.addEventListener("wheel"' in module
-    assert 'canvas.addEventListener("dblclick"' in module
-    assert "const setView = (c0, c1, instant)" in module
+    # 曲线视野固定为全频段 20 Hz–20 kHz：缩放/平移/双击复位交互已移除，
+    # 视野不再是「用户要先学会看哪一段」的隐藏状态，映射口径只剩这组常量
+    assert "const RP_F_MIN = 20, RP_F_MAX = 20000;" in module
+    assert "rpZoom" not in module and "setView" not in module and "zoomAnim" not in module
     assert "clampZoom" not in module
-    # 缩放锚点按当前视野反解（固定 20–20000 映射会让视野单向漂移）
-    assert "Math.exp(a + (b - a) * frac)" in module
-    # 视野变化有缓动，拖拽平移保持跟手
-    assert "zoomAnim = requestAnimationFrame(step)" in module
-    assert "Math.log(rpZoom.f1) - dLog, true)" in module
-    # 缩放态不再挂徽标（视野变化本身可读，提示反而占位）
-    # 视野外的频点记 null 而非钳到画布边缘（钳位会在两端画出假垂直线）
+    assert 'canvas.addEventListener("wheel"' not in module
+    assert 'canvas.addEventListener("dblclick"' not in module
+    # 定义域外的频点记 null 而非钳到画布边缘（钳位会在两端画出假垂直线）
     assert "pts.push(null); return;" in module
     assert "if (!p || !q || (keep && !keep(i))) continue;" in module
     # 一律实线（原始不再画虚线）；处理后高出原始的段落再叠一遍对比色
@@ -383,13 +380,10 @@ def test_report_contract():
     assert "const dup = marks0.some(" in module
     # 默认量程取成品母带的常见区间，典型值落在轨道中段
     assert "ref: [-20, -6]" in module and "ref: [0, 12]" in module and "ref: [6, 18]" in module
-    # 层级：卡片主标题白，卡内小标题（KPI 名 / 动态行名 / 频段名）灰；KPI 数字按方向取色
+    # 层级：卡片主标题白，卡内小标题（动态行名 / 频段名）灰
     assert ".rp-cap-zh { font-size: 12.5px; font-weight: 700; letter-spacing: 0.5px; color: var(--c-text)" in CSS
-    assert ".rp-kpi-label { font-size: 12px; font-weight: 600; color: var(--c-text-dim)" in CSS
     assert ".rp-dyn-label b { font-size: 11.5px; font-weight: 600; color: var(--c-text-dim)" in CSS
     assert ".rp-fan-hd b { font-size: 11px; font-weight: 600; color: var(--c-text-dim)" in CSS
-    assert ".rp-kpi-num { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }" in CSS
-    assert ".rp-kpi.down .rp-kpi-num" in CSS and ".rp-kpi.flat .rp-kpi-num" in CSS
     # 钻石图：角度域按本频段取值取档（画布内不再印那一排角度文字）
     assert "const RP_FAN_DOMAINS = [15, 20, 25, 30, 40, 45];" in module
     assert "function rpHalfAngle(wd)" in module
@@ -430,8 +424,8 @@ def test_report_contract():
     # 色标整块退役（渐变条、数字刻度、竖排单位），频谱图自己承担读数
     assert "rp-cbar" not in module and "renderCbar" not in module
     assert ".rp-cbar" not in CSS
-    # 四张卡各自的色块图例合并为工具栏右侧一份
-    assert 'fillLegend("rp-legend", [["原始", t.before], ["处理后 / 衰减", t.after], ["提升", t.boost]])' in module
+    # 色块图例随顶部信息行一起退役：每张卡的含义写在卡片标题上，不再单列图例
+    assert 'fillLegend("rp-legend"' not in module
     assert "renderSpecLegend" not in module and "renderInlineLegends" not in module
     # 图例不再承载状态提示，频谱画布自己说明为什么是空的
     assert "前后频谱网格不一致，无法逐格求差" in module and "处理完成后可见逐格变化" in module
@@ -445,11 +439,13 @@ def test_report_contract():
     assert 'renderReport("morph")' in APP
     assert "async function renderReport(mode)" in module
     assert "rpShown = rpPending;" in module and "if (mode) rpRunAnim(mode);" in module
-    # 每个渲染器各自登记重放：KPI 数字、哑铃圆点、钻石张角、曲线、频谱位图
-    assert module.count("rpHook((u, reveal) =>") == 5
-    assert "rpPending.kpi" in module and "rpPending.dyn" in module
+    # 每个渲染器各自登记重放：哑铃圆点、钻石张角、曲线（摘要 KPI 退役后少一处）。
+    # 频谱位图不登记：位图异步到达，重放帧会用登记时的旧画面（占位提示）
+    # 盖掉已画好的真图——首入报告页看到「处理完成后可见逐格变化」即此故
+    assert module.count("rpHook((u, reveal) =>") == 3
+    assert "rpPending.kpi" not in module and "rpPending.dyn" in module
     assert "rpPending.bands" in module and "rpPending.outDb" in module
-    assert "rpPending.specOff" in module
+    assert "rpPending.specOff" not in module and "rpShown.specOff" not in module
     # 钻石动画期间角度档位锁死在最终档，否则框线会边长边换档地跳
     assert "const domDeg = fixedDom ||" in module
     # 空态一律画骨架而不是漂浮文案；骨架与实图共用内边距与横轴刻度，数据到达不跳位
@@ -466,19 +462,23 @@ def test_report_contract():
     assert "if (pair) rpHook((u, reveal) =>" in module     # 骨架行没有圆点可插值
     # 频谱变化：没有位图也先画频率标尺
     assert "drawFreqScale(ctx, w, h, dpr, fHi);\n    ctx.fillStyle" in module
-    # 换频谱视图（原始/处理后/变化）整幅渐变：拍下当前画面盖在新画面上淡出，
-    # 不做左右擦除。载荷晚到走同一条路，两种入口动画一致。
+    # 频谱变化区只保留淡入淡出：换视图 / 换版本 / 载荷晚到都是「快照淡出」，
+    # 不做左右擦除、不在画布里叠旧位图；入场重放也不作用于本区
     assert "function rpSpecFade(apply, ms = 240)" in module
     assert "rpWipe" not in module
     assert "rpSpecFade(() => renderSpectral(), 240)" in module
     assert "rpSpecFade(() => renderSpectral(), 260)" in APP
+    assert 'if (mode === "morph") rpSpecFade(() => renderSpectral(), 240);' in module
+    assert "else renderSpectral();" in module
+    bmp = module.split("function drawSpecBitmap")[1].split("function renderSpectral")[0]
+    assert "rpClipAt" not in bmp and "fadeFrom" not in bmp and "globalAlpha" not in bmp
     assert ".rp-spec-wrap { position: relative; display: flex;" in CSS
     # 重放必须有收尾兜底：窗口被遮挡时 rAF 可以整段不推进，否则报告停在起点
     assert "let rpGuard = 0;" in module
     assert "rpGuard = setTimeout(finish, ms + 250);" in module
     assert "clearTimeout(rpGuard);" in module
     # 报告页最外层框移除（预览页仍保留面板框），左右内缩一并归零才对齐队列面板
-    assert "#pane-report.pane-view { border: none; background: none; padding: var(--s-3) 0; }" in CSS
+    assert "#pane-report.pane-view { border: none; background: none; padding: var(--s-1) 0 var(--s-3); }" in CSS
     # 视图切换按钮原先靠左侧图例顶到右边，图例走后要自己 margin-left:auto
     assert ".rp-spec-tabs { display: inline-flex; margin-left: auto" in CSS
     assert 'block.className = "rp-fan " + dir' in module
@@ -488,16 +488,16 @@ def test_report_contract():
     assert ".rp-fan canvas { width: 100%; flex: 1 1 0;" in CSS
     # 说明文案统一后补，图例先只留色块
     assert "只反映频谱平衡" not in module
-    # KPI 名称必须名副其实：读数就是该频段能量变化，不是「清理」
-    assert 'label: "低频能量"' in module and 'label: "空气感能量"' in module
+    # 摘要 KPI 的四个标签随卡片退役；也不许换个名字把同一条频段读数塞回别处
+    assert 'label: "低频能量"' not in module and 'label: "空气感能量"' not in module
     assert "低频清理" not in module and "人声空气感" not in module
     # 指标 hover 提示（含义 + 数值）
     assert "function attachRpTip(canvas)" in module
     assert "立体声相关性" in module
     # 版本号一律大写 V
     assert re.search(r'`v\$\{', APP) is None
-    # 标题不重复版本号：播放器统一选择成品版本
-    assert "name.textContent = pair ? stemOf(pair.path)" in module
+    # 报告页不再有标题行（`renderHead` 已随信息行删除），版本号只出现在版本胶囊上
+    assert "name.textContent = pair ? stemOf(pair.path)" not in module
     assert "`V${pair.ver}" not in APP
     # 跨会话数据：报告从输出目录读取（只读选中的那一版）
     assert 'api.reportLoad(path + ".quality.json")' in APP

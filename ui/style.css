@@ -377,8 +377,11 @@ body {
 .rack-body { padding: var(--s-4); display: flex; gap: var(--s-5); justify-content: center; align-items: center; flex: 1; }
 .rack-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); align-items: center; }
 .rack-fields .field:nth-child(3) { grid-column: 1 / -1; }
-/* 母带面板固定两行：第三格（EQ 风格）不再通栏，与第四格（风格强度）各占一半 */
-.rack[data-rack="soren"] .rack-fields .field:nth-child(3) { grid-column: auto; }
+/* 母带面板固定两行：参考 | 风格强度 各半；EQ | 密度 | 响度 按按键数 4:3:4 分（22 栅格 = 11+11 / 8+6+8） */
+.rack[data-rack="soren"] .rack-fields { grid-template-columns: repeat(22, minmax(0, 1fr)); }
+.rack[data-rack="soren"] .rack-fields .field { grid-column: span 11; }
+.rack[data-rack="soren"] .rack-fields .field:nth-child(n+3) { grid-column: span 8; }
+.rack[data-rack="soren"] .rack-fields .field:nth-child(4) { grid-column: span 6; }
 .rack[data-rack="space"], .rack[data-rack="soren"] { min-height: 188px; }
 .rack[data-rack="space"] .rack-body, .rack[data-rack="soren"] .rack-body { min-height: 142px; }
 
@@ -663,7 +666,7 @@ html[data-mode="light"] { --hardware-face: radial-gradient(circle at 50% 32%, #f
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 12px rgba(var(--c-accent-rgb), 0.45);
 }
 .seg-btn:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -1px; z-index: 1; }
-/* ═══ 母带面板：参考音频 / 响度 / EQ 风格 / 风格强度，与左侧声场行位对齐 ═══
+/* ═══ 母带面板：参考音频 / 风格强度 / EQ 风格 / 响度，与左侧声场行位对齐 ═══
    声场行节奏：fader-wrap = meta 14 + gap 8 + fader 36 = 58，两行间隔 18。
    母带镜像同一节奏：field = label 14 + gap 8 + 控件 36 = 58，行距 18，
    内容 58+18+58 = 134 与声场推子列完全一致，控件行逐像素对齐。═══ */
@@ -1175,6 +1178,7 @@ html[data-mode="light"] .set-btn--danger { color: #d43a3c; border-color: rgba(21
 
 /* 两列分段选择（外观模式） */
 .seg.cols-2 { grid-template-columns: repeat(2, 1fr); min-width: 132px; }
+.seg.cols-3 { grid-template-columns: repeat(3, 1fr); }
 
 /* 浅色模式：旋钮深色金属面反色（滚花/弧线/刻度随变量与覆盖项适配） */
 html[data-mode="light"] .knob {
@@ -1311,12 +1315,20 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
   .rack-bypass--hardware .bp-dot::after { transition: none; }
 }
 
-/* 旁路关闭：整面板熄灭主题色高亮并整体变暗（开关本身保持清晰，参数仍可预调） */
-.rack[data-bypassed="1"] .rack-body {
-  opacity: 0.5;
+/* ═══ 统一失效态：面板旁路 / 参数依赖未满足（如未选参考音频）═══
+   整块变淡并停止接收输入；rack 头部的旁路开关不在变淡范围内，始终可点。 */
+.is-disabled {
+  opacity: 0.45;
   filter: saturate(0.25) brightness(0.82);
   transition: opacity var(--dur) var(--ease), filter var(--dur) var(--ease);
 }
+/* 容器已整体变淡时，内部控件不再叠加一次透明度 */
+.is-disabled [aria-disabled="true"] { opacity: 1; }
+.is-disabled .knob,
+.is-disabled .fader,
+.is-disabled .width-meter,
+.is-disabled .seg-btn,
+.is-disabled .file-card { cursor: not-allowed; }
 
 /* ═══════════════ 顶栏改版：LOGO 左对齐 + 右侧连体视图段控 ═══════════════
    三枚 TAB 共用一个完整外框；选中态由滑动指示块（tab-glider）承载，
@@ -1432,10 +1444,11 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
   min-width: 0;
 }
 .pane-body { display: flex; flex-direction: column; gap: var(--s-4); min-width: 0; }
-/* 报告页去掉最外层框：卡片/摘要各自都有面板底，外面再套一层就是双重边框。
-   左右内缩一并归零，让报告各块与上方队列面板的外边线对齐；上下留一点气，
-   否则版本胶囊会贴着队列按钮，看起来像队列的下一行。 */
-#pane-report.pane-view { border: none; background: none; padding: var(--s-3) 0; }
+/* 报告页去掉最外层框：卡片各自都有面板底，外面再套一层就是双重边框。
+   左右内缩一并归零，让报告各块与上方播放器/队列面板的外边线对齐。
+   顶部只补 4px：内容区已有 8px 行距，合计 12px 与 .rp-grid 的卡片间距一致，
+   播放器到第一张图的间隔不再比图与图之间宽。底部留 10px 气口。 */
+#pane-report.pane-view { border: none; background: none; padding: var(--s-1) 0 var(--s-3); }
 
 /* ═══════════════ 频谱预览（DAW 式）与报告图表 ═══════════════ */
 .spec-panel { border: var(--border); background: var(--c-panel); }
@@ -1498,53 +1511,6 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
   box-shadow: 0 0 10px rgba(var(--c-accent-rgb), 0.35);
 }
 .rp-chip:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: 1px; }
-.rp-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--c-text-dim); }
-.rp-swatch { width: 14px; height: 3px; flex: none; }
-
-/* ═══ 成品元信息行：文件名/格式胶囊 + 分析时间 ═══ */
-.rp-head {
-  display: flex; align-items: center; gap: var(--s-4);
-  padding: var(--s-3) var(--s-4); border: var(--border);
-  background: var(--panel-tex), var(--panel-tex-2), var(--c-panel);
-  box-shadow: var(--inset-well);
-}
-.rp-head-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.rp-name { font-size: 14px; font-weight: 700; letter-spacing: 0.3px; color: var(--c-text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rp-mchips { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
-.rp-mchip { font-family: var(--mono); font-size: 10.5px; color: var(--c-text-dim); }
-.rp-mchip + .rp-mchip::before { content: "│"; margin-right: var(--s-2); color: var(--c-border); }
-.rp-head-side { margin-left: auto; display: flex; flex-direction: column; gap: 3px; flex: none; text-align: right; }
-.rp-mrow { display: flex; gap: var(--s-2); justify-content: flex-end; align-items: baseline; }
-.rp-mkey { font-size: 10.5px; color: var(--c-text-faint); letter-spacing: 0.5px; }
-.rp-mval { font-family: var(--mono); font-size: 11px; color: var(--c-text-dim); }
-@media (max-width: 900px) {
-  .rp-head { flex-wrap: wrap; }
-  .rp-head-side { margin-left: 0; text-align: left; width: 100%; }
-  .rp-mrow { justify-content: flex-start; }
-}
-
-/* ═══ 处理摘要 KPI ═══ */
-.rp-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-3); }
-@media (max-width: 900px) { .rp-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.rp-kpi {
-  display: flex; align-items: center; gap: var(--s-3);
-  padding: var(--s-3) var(--s-4); border: var(--border);
-  background: var(--panel-tex), var(--panel-tex-2), var(--c-panel);
-  box-shadow: var(--inset-well);
-}
-.rp-kpi-ic { width: 24px; height: 24px; flex: none; color: var(--c-text-dim); }
-.rp-kpi-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.rp-kpi-label { font-size: 12px; font-weight: 600; color: var(--c-text-dim); white-space: nowrap; }
-.rp-kpi-sub { font-size: 10px; color: var(--c-text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rp-kpi-val { margin-left: auto; display: flex; align-items: baseline; gap: 4px; flex: none; }
-.rp-kpi-num { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.rp-kpi-unit { font-size: 10.5px; color: var(--c-text-dim); }
-/* 方向只由读数颜色表态：图标与数值单位一样是中性色，不跟着方向变色
-   （推导色由 app.js 回写为 CSS 变量）。 */
-.rp-kpi.up .rp-kpi-num { color: var(--rp-boost); }
-.rp-kpi.down .rp-kpi-num { color: var(--rp-cut); }
-.rp-kpi.flat .rp-kpi-num { color: var(--c-text-dim); }
 
 /* ═══ 图表面板网格：2×2 ═══ */
 .rp-grid {
@@ -1564,8 +1530,6 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
 }
 .rp-fig figcaption { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-3); flex: 0 0 auto; }
 .rp-cap-zh { font-size: 12.5px; font-weight: 700; letter-spacing: 0.5px; color: var(--c-text); }
-.rp-legend-inline { margin-left: auto; display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s-2) var(--s-3); align-items: center; }
-.rp-legend-inline .rp-legend-item { font-size: 10.5px; white-space: nowrap; }
 .rp-fig canvas { display: block; width: 100%; max-width: 100%; }
 .rp-fig--freq canvas { height: 264px; }
 

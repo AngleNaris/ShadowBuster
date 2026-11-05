@@ -61,7 +61,7 @@ class StageReshapeTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--wet") + 1], "0.0")
         self.assertEqual(cmd[cmd.index("--other-denoise-amount") + 1], "0.2")
 
-    def test_invokes_soundstage_with_broadband_and_wet(self):
+    def test_invokes_soundstage_with_adaptive_accompaniment_and_wet(self):
         src = _write_wav(self.root / "in.wav")
         dst = self.root / "out.wav"
         stems = self.root
@@ -72,7 +72,7 @@ class StageReshapeTests(unittest.TestCase):
         cmd = self.calls[-1]
         self.assertTrue(any(c.endswith("soundstage_reshape.py") for c in cmd))
         self.assertEqual(cmd[cmd.index("--stems-dir") + 1], str(stems))
-        self.assertEqual(cmd[cmd.index("--mode") + 1], "broadband")
+        self.assertEqual(cmd[cmd.index("--mode") + 1], "adaptive")
         self.assertEqual(cmd[cmd.index("--wet") + 1], "0.6")
         self.assertEqual(cmd[cmd.index("--side-gain-db") + 1], "6.0")
         self.assertIn("--other-denoise-amount", cmd)

@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from . import LOUDNESS_TARGETS
+from .density import DENSITY_MODES
 from .pipeline import master_file
 
 
@@ -20,6 +21,8 @@ def main():
     parser.add_argument("--lowpass-cutoff", type=float)
     parser.add_argument("--space-wet", type=float, default=0.0)
     parser.add_argument("--width-db", type=float, default=0.0)
+    parser.add_argument("--density", choices=DENSITY_MODES, default="light",
+                        help="Section-relative multiband density compression before the limiter.")
     parser.add_argument("--no-reference-cache", action="store_true",
                         help="Disable the content-addressed reference tonal target cache.")
     args = parser.parse_args()
@@ -41,7 +44,7 @@ def main():
     stats = master_file(args.input, args.output, args.loudness,
         reference=args.reference, match_source=args.match_source,
         strength=args.strength, eq_profile=args.eq_profile,
-        lowpass=args.lowpass_cutoff, space_wet=args.space_wet, width_db=args.width_db,
+        lowpass=args.lowpass_cutoff, space_wet=args.space_wet, width_db=args.width_db, density=args.density,
         reference_cache=reference_cache, reference_cache_artifact=reference_cache_artifact)
     print(f"LUFS {stats['actual_lufs']:.2f}; TP {stats['true_peak_dbtp']:.2f} dBTP", flush=True)
     print("MASTERING_PROGRESS 100", flush=True)

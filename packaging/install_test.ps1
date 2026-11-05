@@ -38,7 +38,7 @@ if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
 $probe = @"
 import importlib
 import numpy
-required = ('torch', 'torchaudio', 'demucs', 'numpy', 'soundfile', 'scipy', 'librosa', 'numba', 'statsmodels', 'pyloudnorm', 'joblib', 'cryptography', 'look2hear.models', 'matchering', 'resampy', 'mastering.pipeline', 'audio_worker', 'bass_enhance', 'drum_enhance', 'soundstage_reshape', 'noise_profile', 'premaster_hygiene', 'stem_enhance', 'vocal_adjust')
+required = ('torch', 'torchaudio', 'demucs', 'numpy', 'soundfile', 'scipy', 'librosa', 'numba', 'statsmodels', 'pyloudnorm', 'joblib', 'cryptography', 'look2hear.models', 'matchering', 'resampy', 'pedalboard', 'mastering.pipeline', 'audio_worker', 'bass_enhance', 'drum_enhance', 'soundstage_reshape', 'noise_profile', 'premaster_hygiene', 'stem_enhance', 'vocal_adjust')
 for name in required:
     importlib.import_module(name)
 assert numpy.__version__ == '2.5.2', numpy.__version__

@@ -131,7 +131,7 @@ def test_gui_routes_reference_and_eq_and_loudness():
     assert 'id="ref-card"' not in html.split('data-rack="soren"')[0]
     assert 'state.eq === "Neutral" ? "off" : "eq_only"' in js
     assert 'style_mode: state.reference ? "styled" : (state.eq === "Neutral" ? "off" : "eq_only")' in js
-    assert 'loudness: getLoudness(), eq: state.eq' in js
+    assert 'loudness: getLoudness(), density: getDensity(), eq: state.eq' in js
     # 默认值自 v1.6.10 起来自 backend.DEFAULTS 单一来源（ENG-01）；
     # 不传参时仍解析为 'styled'（tests/test_default_source.py 校验）。
     main=(ROOT/'main.py').read_text(encoding='utf-8')

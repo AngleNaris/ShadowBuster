@@ -139,8 +139,7 @@ def test_zero_amount_is_exact_identity():
 
 def test_saturation_wet_dry_phase_aligned():
     """干湿零相位对齐：中等电平正弦通过后仍是以同频单音为主的零延迟
-    波形（有延迟/色散会在相关系数上暴露）。tanh 的增益抬升（归一化
-    tanh(d)/d≈0.87 的倒数）体现为幅度比值，不影响相位。"""
+    波形（有延迟/色散会在相关系数上暴露）。饱和曲率不引入相对延迟。"""
     x = _steady_sine(80.0, 1.0, 0.5)
     y = bass.saturation_wet(x, drive=1.6)
     seg = slice(int(0.2 * SR), int(0.9 * SR))     # 稳态区
@@ -177,11 +176,30 @@ def test_saturation_oversampling_suppresses_aliasing():
 
 
 def test_saturation_drive_low_limit_is_identity():
-    """drive→0：soft_clip(x·d)/tanh(d) → x（增益归一化在 d→0 时精确抵消；
+    """drive→0：tanh(x·d)/d → x（小信号增益归一；
     resample_poly 往返的滤波器瞬态/数值精度限制误差 ~4e-4）。"""
     x = _steady_sine(80.0, 0.5, 0.7)
     y = bass.saturation_wet(x, drive=1e-4)
     np.testing.assert_allclose(y, x, atol=1e-3)
+
+
+def test_saturation_does_not_boost_a_weak_fundamental():
+    """A weak bass note must not acquire the old implicit +1.72 dB boost."""
+    x = _steady_sine(60, 2, .01)
+    out = bass.enhance_bass_stem(
+        x, SR, sub_db=0, punch_db=0, sat=.3, trans=0,
+        sat_budget_gain=1, activity_gate=np.ones(len(x)))
+    section = slice(SR // 2, -SR // 2)
+    gain_db = 10 * np.log10(np.mean(out[section] ** 2) / np.mean(x[section] ** 2))
+    assert abs(gain_db) < .02
+
+
+def test_saturation_keeps_harmonic_character_after_gain_calibration():
+    x = _steady_sine(60, 2, .6)
+    y = bass.saturation_wet(x, drive=1.6)[SR // 2:-SR // 2]
+    t = np.arange(len(y)) / SR
+    harmonic = lambda hz: 2 * abs(np.mean(y * np.exp(-2j * np.pi * hz * t)))
+    assert harmonic(180) / harmonic(60) > .01
 
 
 def test_saturation_chunking_matches_monolithic():

@@ -69,6 +69,30 @@ def test_linked_limiter_preserves_channel_ratio_and_peak():
     assert stats["max_gain_reduction_db"] > 0
 
 
+def test_adaptive_release_restores_the_tail_after_an_isolated_peak():
+    x = np.full((SR, 2), .01)
+    x[SR // 2] = 2
+    fixed, _ = linked_limiter(x, SR, 150, release_mode="fixed")
+    adaptive, stats = linked_limiter(x, SR, 150)
+    tail = slice(round(.55 * SR), round(.65 * SR))
+    assert np.mean(adaptive[tail]) > np.mean(fixed[tail]) * 1.10
+    assert np.max(abs(adaptive)) <= 10 ** (finalizer.LIMITER_CEILING_DB / 20) + 1e-12
+    assert stats["release_mode"] == "adaptive"
+
+
+def test_adaptive_release_remembers_sustained_reduction():
+    x = np.full((SR * 2, 2), .01)
+    isolated = x.copy()
+    isolated[SR] = 2
+    sustained = x.copy()
+    sustained[SR // 2:SR + 1] = 2
+    a, _ = linked_limiter(isolated, SR, 150)
+    b, _ = linked_limiter(sustained, SR, 150)
+    tail = slice(SR + round(.08 * SR), SR + round(.15 * SR))
+    assert np.mean(b[tail]) < np.mean(a[tail]) * .90
+    np.testing.assert_allclose(a[:, 0], a[:, 1], atol=0)
+
+
 def test_dynamic_budget_allows_below_target():
     x = music(2) * .005
     x[::11025] += .95
@@ -125,9 +149,47 @@ def test_depth_budgets_alone_deliver_a_pinned_master(monkeypatch):
 
 
 def test_engagement_budget_is_inert_when_the_target_is_reachable():
-    y, stats = finalize(dense_noise(band=6000.0), loudness="loud")
+    # 响亮 sits at the budget edge (active ≈ .70) since the −1.0 dBTP ceiling.
+    y, stats = finalize(dense_noise(band=6000.0), loudness="normal")
     assert stats["target_met"] and not stats["dynamic_budget_limited"]
     assert stats["limiter"]["active_fraction"] < ACTIVE_BUDGET_FRACTION
+
+
+def quiet_intro_dense_chorus():
+    """30 s near-silent intro + 12 s dense chorus: the whole-song averages stay under
+    budget while the chorus alone would be limited on every sample (2026-11-04)."""
+    chorus = dense_noise(seconds=12.0)
+    return np.vstack((music(30.0) * .2, chorus))
+
+
+def test_local_engagement_budget_protects_a_short_dense_section():
+    y, stats = finalize(quiet_intro_dense_chorus(), loudness="loud")
+    limiter = stats["limiter"]
+    assert stats["dynamic_budget_limited"]
+    assert limiter["local_active_fraction"] <= ACTIVE_BUDGET_FRACTION + 1e-6
+    assert limiter["local_gain_reduction_p50_db"] <= stats["limiter_median_gr_budget_db"] + 1e-6
+    assert _block_peak_iqr(y[SR * 31:]) > .05
+
+
+def test_whole_song_budget_alone_pins_the_dense_section(monkeypatch):
+    """Same input with the local windows disabled: the song average passes while the
+    chorus is pinned — proves the window, not the input, keeps the chorus alive."""
+    monkeypatch.setattr(finalizer, "_local_engagement", lambda reduction, sr: (0.0, 0.0))
+    y, stats = finalize(quiet_intro_dense_chorus(), loudness="loud")
+    assert stats["limiter"]["active_fraction"] <= ACTIVE_BUDGET_FRACTION + 1e-6
+    assert _block_peak_iqr(y[SR * 31:]) < .01
+
+
+def test_limiter_attack_is_a_ramp_not_a_step():
+    """An isolated peak is approached over 2 * ATTACK_RAMP_MS, not within 1 ms."""
+    x = np.full((SR, 2), 1e-3)
+    x[SR // 2] = 2.0
+    y, _ = linked_limiter(x, SR, 150)
+    gain = y[:SR // 2, 0] / x[:SR // 2, 0]
+    required = 10 ** (finalizer.LIMITER_CEILING_DB / 20) / 2.0
+    ramp = np.count_nonzero((gain < .999) & (gain > required * 1.001))
+    assert ramp >= SR * 2 * finalizer.ATTACK_RAMP_MS / 1000 * .9
+    assert np.max(abs(y)) <= 10 ** (finalizer.LIMITER_CEILING_DB / 20) + 1e-12
 
 
 def test_finalize_reuses_loop_measurements_and_matches_full_rescan():
@@ -202,7 +264,8 @@ def test_off_pipeline_cache_and_report_without_soren(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "SOREN_DIR", tmp_path / "no-soren")
     monkeypatch.setattr(backend, "APOLLO_DIR", tmp_path / "no-models")
     calls = []
-    def local_stage(input_wav, out_wav, loudness="normal", progress=None, cancel=None):
+    def local_stage(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
+                    density="light"):
         calls.append(1)
         return master_file(input_wav, out_wav, loudness)
     monkeypatch.setattr(backend, "stage_mastering", local_stage)
@@ -282,7 +345,8 @@ def test_master_file_refuses_source_overwrite(tmp_path):
 @pytest.mark.parametrize("rate", [44100, 48000, 88200, 96000])
 def test_pipeline_resamples_before_independent_mastering(tmp_path, monkeypatch, rate):
     monkeypatch.setattr(backend, "_ensure_dev_runtime", lambda: pytest.fail("Soren requested"))
-    def local_stage(input_wav, out_wav, loudness="normal", progress=None, cancel=None):
+    def local_stage(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
+                    density="light"):
         return master_file(input_wav, out_wav, loudness)
     monkeypatch.setattr(backend, "stage_mastering", local_stage)
     src = tmp_path / "input.wav"

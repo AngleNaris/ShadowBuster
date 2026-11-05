@@ -1,0 +1,53 @@
+{
+  "date": "2026-11-05",
+  "sample_rate": 44100,
+  "scope": "Synthetic stage-level probes; not full-chain musical quality or preference tests",
+  "width": {
+    "seconds": 8,
+    "mid_frequency_hz": 997,
+    "side_frequency_hz": 2111,
+    "mid_peak": 0.15,
+    "side_mid_amplitude_ratios": [0.1, 0.8],
+    "ratio_change_seconds": 7,
+    "local_measurement_seconds": [7.1, 7.9],
+    "wet": 0.6,
+    "width_db": 6,
+    "input_whole_corr": 0.8369690011481046,
+    "output_whole_corr": 0.630799911982074,
+    "input_last_section_corr": 0.21952628578885064,
+    "output_last_section_corr": -0.24027607942883675,
+    "accepted_delta_gain": 0.5971573889813276,
+    "phase_guard_triggered": false
+  },
+  "mono_width": {
+    "wet": 1,
+    "width_db": 12,
+    "max_delta": 0,
+    "reason": "no_existing_side"
+  },
+  "saturation": {
+    "frequency_hz": 60,
+    "seconds": 3,
+    "measurement_trim_each_edge_seconds": 0.5,
+    "sub_db": 0,
+    "punch_db": 0,
+    "trans": 0,
+    "sat": 0.3,
+    "drive": 1.6,
+    "sat_budget_gain": 1,
+    "activity_gate": "fixed unity to isolate saturation",
+    "harmonic_orders_measured": [3, 5, 7, 9],
+    "results": [
+      {
+        "input_peak": 0.01,
+        "fundamental_gain_db": 1.7200103261853834,
+        "odd_harmonics_relative_db": -101.01705571824169
+      },
+      {
+        "input_peak": 0.3,
+        "fundamental_gain_db": 1.5240042107206775,
+        "odd_harmonics_relative_db": -42.68010482533597
+      }
+    ]
+  }
+}

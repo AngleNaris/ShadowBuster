@@ -77,8 +77,8 @@ except ImportError:  # 无 numba 的运行时：回退纯 Python（逐位等价�
 
 
 def soft_clip(x, drive):
-    """tanh 软限幅产生温和谐波"""
-    return np.tanh(x * drive) / np.tanh(drive)
+    """Unit small-signal gain: drive changes curvature, not a hidden bass boost."""
+    return np.tanh(x * drive) / drive
 
 
 # ── 饱和 4× 过采样（开发规格 v2 §6.6；DSP-14）───────────────────────────
@@ -95,7 +95,7 @@ def saturation_wet(lp, drive=1.6, factor=SAT_OVERSAMPLE_FACTOR,
                    chunk=SAT_CHUNK_SAMPLES):
     """4× 过采样 tanh 饱和湿路径（输入应为已限带信号）。
 
-    drive→0 时 soft_clip(x·d)/tanh(d) → x，可用作干湿对齐的自检。
+    drive→0 时 tanh(x·d)/d → x，可用作干湿对齐的自检。
     0% 混合由调用方处理（sat=0 不调用本函数即逐样本恒等）。
     """
     x = np.asarray(lp, dtype=np.float64)

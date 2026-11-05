@@ -13,8 +13,8 @@ for(let i=0;i<n;i++)for(let c=0;c<2;c++){
   buffers.original[2*i+c]=buffers.mix[2*i+c];
 }
 const data={buffers,frames:n,sampleRate:sr,gain:1,curve:[[630,2],[4000,-2]]};
-function render(params,original=false){
-  const dsp=new DraftDSP(data);dsp.setParams(params);dsp.params={...dsp.target};dsp.playing=true;dsp.original=original;
+function render(params,original=false,material=data){
+  const dsp=new DraftDSP(material);dsp.setParams(params);dsp.params={...dsp.target};dsp.playing=true;dsp.original=original;
   let out=[];for(let i=0;i<Math.ceil(n/128);i++){let l=new Float32Array(128),r=new Float32Array(128);dsp.render(l,r);out.push(...l);}
   assert(out.every(Number.isFinite));assert(Math.max(...out.map(Math.abs))<=.89001);return out.slice(4096,n-1024);
 }
@@ -28,7 +28,7 @@ for(const p of [{sub:6},{sat:1},{punch:6},{trans:1},{vocal:6},{guitar:1},{space:
 const halfWidth=render({style_mode:'off',space:.6,space_width:.5});
 const fullWidth=render({style_mode:'off',space:.6,space_width:1});
 assert(delta(base,fullWidth)>delta(base,halfWidth)*1.5,'width responds above default');
-// 饱和度与正式链路 soft_clip(drive=1.6) 同形：小信号增益 1.6/tanh(1.6)>1。
+// 饱和度与正式链路同形：小信号增益归一，较强输入仍产生谐波。
 assert(delta(base,render({style_mode:'off',sat:.2}))>1e-5,'default saturation audible');
 const ref0=render({style_mode:'styled',style_blend:0});
 const ref5=render({style_mode:'styled',style_blend:.5});
@@ -37,6 +37,23 @@ assert(delta(base,ref0)<1e-7);assert(delta(base,ref1)>delta(base,ref5));
 assert(delta(render({eq:'Bright',style_mode:'off'}),render({eq:'Bright',style_mode:'styled',style_blend:0}))<1e-7);
 assert(delta(base,render({sub:12,vocal:12,eq:'Bright',bypass:['bass','vocals','soren']}))<1e-7);
 assert(delta(base,render({sub:12,vocal:12},true))<1e-7);
+// Spatial generation excludes drums/bass/vocals, even when they occupy the centre.
+const protectedBuffers={};
+for(const name of ['bass','drums','vocals'])protectedBuffers[name]=buffers[name];
+protectedBuffers.mix=Float32Array.from(buffers.mix,(_,i)=>
+  ['bass','drums','vocals'].reduce((v,k)=>v+buffers[k][i],0));
+protectedBuffers.original=protectedBuffers.mix;
+const protectedData={...data,buffers:protectedBuffers};
+assert(delta(render({space:.6,space_width:0},false,protectedData),
+             render({space:.6,space_width:1},false,protectedData))<1e-7,'protected stems retain positioning');
+const wideOnly=new Float32Array(n*2);
+for(let i=0;i<n;i++){
+  wideOnly[i*2]=.03*Math.sin(2*Math.PI*997*i/sr)+.025*Math.cos(2*Math.PI*997*i/sr);
+  wideOnly[i*2+1]=.03*Math.sin(2*Math.PI*997*i/sr)-.025*Math.cos(2*Math.PI*997*i/sr);
+}
+const wideData={...data,buffers:{mix:wideOnly,original:wideOnly,other:wideOnly}};
+assert(delta(render({space:.6,space_width:0},false,wideData),
+             render({space:.6,space_width:1},false,wideData))<1e-7,'already wide accompaniment is retained');
 const dsp=new DraftDSP(data);let l=new Float32Array(128),r=new Float32Array(128);dsp.render(l,r);assert(l.every(v=>v===0));
 console.log('Draft DSP: parameter effects, reference strength, bypass, original A/B, finite output and safety passed');
 const {DraftStream}=require('../ui/draft_audio.js');

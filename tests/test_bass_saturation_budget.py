@@ -152,14 +152,16 @@ def test_dense_addition_reduced_and_sub_kept():
 
 
 def test_added_lowmid_monotonic_in_sat():
-    """sat 旋钮在可控范围内保持单调：新增低中频能量随 sat 非递减。"""
+    """Measure the saturation delta against sat=0, independently of the warm EQ."""
     x = sine(60, 1.5, 0.5) + sine(250, 1.5, 0.5)
     lo, hi = int(0.15 * SR), int(1.35 * SR)
+    baseline = bass.enhance_bass_stem(
+        x, SR, sub_db=4.0, punch_db=2.0, sat=0, trans=0).astype(np.float64)
     prev = -1.0
     for s in (0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0):
         out = bass.enhance_bass_stem(x, SR, sub_db=4.0, punch_db=2.0,
                                      sat=s, trans=0.0).astype(np.float64)
-        added = bass._band_mean_square(out[lo:hi] - x[lo:hi], SR, 180, 500)
+        added = bass._band_mean_square(out[lo:hi] - baseline[lo:hi], SR, 180, 500)
         assert added >= prev * (1.0 - 1e-3), f'sat={s} 新增低中频出现回退'
         prev = added
 

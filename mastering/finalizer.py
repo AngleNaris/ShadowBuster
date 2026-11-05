@@ -18,7 +18,9 @@ from audio_metrics import integrated_lufs, oversampling_filter
 from . import ENGINE_VERSION, LOUDNESS_TARGETS, TRUE_PEAK_CEILING_DB
 
 OVERSAMPLING = 4
-LIMITER_CEILING_DB = -0.5
+# Limiter target sits 0.1 dB under the true-peak ceiling; the downsampling overshoot
+# left over is removed by the scalar safety trim.
+LIMITER_CEILING_DB = TRUE_PEAK_CEILING_DB - 0.1
 # Existing product budgets: p95 attenuation and worst instantaneous attenuation.
 GR_BUDGETS = {"soft": (4.0, 14.0), "dynamic": (4.0, 14.0),
               "normal": (6.0, 18.0), "loud": (8.0, 20.0)}
@@ -26,6 +28,13 @@ GR_BUDGETS = {"soft": (4.0, 14.0), "dynamic": (4.0, 14.0),
 # 5.09 dB median GR, pinning 84% of 50 ms block peaks to the ceiling — heard as clipping.
 ACTIVE_BUDGET_FRACTION = 0.70
 MEDIAN_GR_BUDGET_DB = 2.0
+# Engagement budgets also hold for the worst window, not only the song average:
+# a quiet intro diluted a 100%-active final chorus to a whole-song 0.48 (2026-11-04).
+LOCAL_WINDOW_SECONDS = 10.0
+LOOKAHEAD_MS = 10.0
+ATTACK_RAMP_MS = 5.0
+RELEASE_FAST_RATIO = .25
+RELEASE_MEMORY_MS = 50.0
 
 
 def true_peak_db(audio):
@@ -45,8 +54,38 @@ def _release_envelope(required, coefficient):
     return gain
 
 
-def linked_limiter(audio, sample_rate, release_ms):
-    """5 ms anticipation/hold, 1 ms attack smoothing, exponential release.
+@njit(cache=True)
+def _adaptive_release_envelope(required, fast_coefficient, slow_coefficient, memory_coefficient):
+    """Short peaks recover quickly; sustained reduction leaves a slower memory."""
+    gain = np.empty_like(required)
+    fast_gain = 1.0
+    slow_depth = 0.0
+    for index in range(len(required)):
+        fast_gain = min(required[index], 1.0 - (1.0 - fast_gain) * fast_coefficient)
+        depth = 1.0 - required[index]
+        coefficient = memory_coefficient if depth > slow_depth else slow_coefficient
+        slow_depth = depth + (slow_depth - depth) * coefficient
+        gain[index] = min(fast_gain, 1.0 - slow_depth)
+    return gain
+
+
+def _local_engagement(reduction, sample_rate):
+    """Worst sliding-window (1 s hop) active fraction and median GR.
+
+    GR moves no faster than the 10 ms attack ramp, so 1 ms decimation is exact enough."""
+    points = reduction[::max(1, round(sample_rate * .001))]
+    width = min(len(points), round(LOCAL_WINDOW_SECONDS * 1000))
+    windows = np.lib.stride_tricks.sliding_window_view(points, width)[::1000]
+    return (float(np.max(np.mean(windows > .1, axis=1))),
+            float(np.max(np.median(windows, axis=1))))
+
+
+def linked_limiter(audio, sample_rate, release_ms, *, release_mode="adaptive"):
+    """10 ms anticipation/hold, 10 ms attack ramp, dual-timescale recovery.
+
+    The ramp is a moving average of half-width ATTACK_RAMP_MS <= LOOKAHEAD_MS over
+    the held minimum, so the gain at every peak still meets that peak's ceiling.
+    A 1 ms ramp modulated the whole band like a soft clipper on dense material.
 
     Centered windows are possible because this is offline processing. There is
     no delay to compensate and no independent L/R detector to move the image.
@@ -54,20 +93,35 @@ def linked_limiter(audio, sample_rate, release_ms):
     peak = np.max(np.abs(audio), axis=1)
     ceiling = 10 ** (LIMITER_CEILING_DB / 20)
     required = np.minimum(1.0, ceiling / np.maximum(peak, 1e-30))
-    lookahead = max(1, round(sample_rate * .005))
+    lookahead = max(1, round(sample_rate * LOOKAHEAD_MS / 1000))
     preview = ndimage.minimum_filter1d(required, 2 * lookahead + 1, mode="nearest")
-    attack = max(1, round(sample_rate * .001))
+    attack = max(1, round(sample_rate * ATTACK_RAMP_MS / 1000))
     smoothed = ndimage.uniform_filter1d(preview, 2 * attack + 1, mode="nearest")
-    gain = _release_envelope(np.minimum(preview, smoothed),
-                             math.exp(-1 / (sample_rate * release_ms / 1000)))
+    required_gain = np.minimum(required, smoothed)
+    slow_coefficient = math.exp(-1 / (sample_rate * release_ms / 1000))
+    if release_mode == "fixed":
+        gain = _release_envelope(required_gain, slow_coefficient)
+    elif release_mode == "adaptive":
+        gain = _adaptive_release_envelope(
+            required_gain,
+            math.exp(-1 / (sample_rate * release_ms * RELEASE_FAST_RATIO / 1000)),
+            slow_coefficient, math.exp(-1 / (sample_rate * RELEASE_MEMORY_MS / 1000)))
+    else:
+        raise ValueError(f"Unknown limiter release mode: {release_mode}")
     out = audio * gain[:, None]
     reduction = -20 * np.log10(np.maximum(gain, 1e-30))
+    local_active, local_p50 = _local_engagement(reduction, sample_rate)
     stats = {
         "max_gain_reduction_db": float(np.max(reduction)),
         "gain_reduction_p50_db": float(np.percentile(reduction, 50)),
         "gain_reduction_p95_db": float(np.percentile(reduction, 95)),
         "active_fraction": float(np.mean(reduction > .1)),
+        "local_active_fraction": local_active,
+        "local_gain_reduction_p50_db": local_p50,
         "output_peak": float(np.max(np.abs(out))),
+        "release_mode": release_mode,
+        "fast_release_ms": release_ms * RELEASE_FAST_RATIO,
+        "release_memory_ms": RELEASE_MEMORY_MS,
     }
     return out, stats
 
@@ -121,7 +175,9 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
         feasible = (stats["gain_reduction_p95_db"] <= p95_budget + 1e-6
                     and stats["max_gain_reduction_db"] <= peak_budget + 1e-6
                     and stats["active_fraction"] <= ACTIVE_BUDGET_FRACTION + 1e-6
-                    and stats["gain_reduction_p50_db"] <= MEDIAN_GR_BUDGET_DB + 1e-6)
+                    and stats["gain_reduction_p50_db"] <= MEDIAN_GR_BUDGET_DB + 1e-6
+                    and stats["local_active_fraction"] <= ACTIVE_BUDGET_FRACTION + 1e-6
+                    and stats["local_gain_reduction_p50_db"] <= MEDIAN_GR_BUDGET_DB + 1e-6)
         if feasible and (best is None or abs(error) < best[0]):
             best = (abs(error), candidate, stats, drive, trim, actual, peak_before_trim)
         if feasible and abs(error) <= .1:
@@ -155,6 +211,8 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
         "limiter_p95_budget_db": p95_budget, "limiter_peak_budget_db": peak_budget,
         "limiter_active_budget_fraction": ACTIVE_BUDGET_FRACTION,
         "limiter_median_gr_budget_db": MEDIAN_GR_BUDGET_DB,
+        "limiter_local_window_seconds": LOCAL_WINDOW_SECONDS,
+        "limiter_lookahead_ms": LOOKAHEAD_MS, "limiter_attack_ramp_ms": ATTACK_RAMP_MS,
         "limiter_release_ms": release_ms, "limiter": limiter_stats,
         "iterations": attempt + 1, "applied_gain_db": drive, "safety_trim_db": trim,
         "true_peak_ceiling_dbtp": TRUE_PEAK_CEILING_DB,
@@ -196,7 +254,8 @@ def master_file(input_path, output_path, loudness="normal"):
 
 def write_output(result, sr, output_path, stats):
     """Common quantization boundary for no-style and protected reference paths."""
-    rng = np.random.default_rng()
+    # Fixed seed: identical input and settings give a bit-identical file.
+    rng = np.random.default_rng(0)
     dither = (rng.random(result.shape) - rng.random(result.shape)) / 2 ** 23
     sf.write(output_path, result + dither, sr, subtype="PCM_24")
     written, written_sr = sf.read(output_path, dtype="float64", always_2d=True)

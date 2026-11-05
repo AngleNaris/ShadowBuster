@@ -4,7 +4,7 @@
   class DraftDSP {
     constructor(data) {
       this.data = data; this.pos = 0; this.sr = data.sampleRate; this.filters = {};
-      this.fast = 0; this.slow = 0; this.low = [0, 0]; this.sideLow = 0;
+      this.fast = 0; this.slow = 0; this.low = [0, 0]; this.spaceStates = {};
       this.params = {}; this.target = {}; this.playing = false; this.original = false;
       this.delta = false; this.deltaMix = 0;
       this.originalMix=0;
@@ -42,6 +42,28 @@
       z[0]=f.b[1]*input-f.a[1]*y+z[1]; z[1]=f.b[2]*input-f.a[2]*y;
       return y;
     }
+    spaceSample(name,left,right,amount,width) {
+      let state=this.spaceStates[name];
+      if(!state) state=this.spaceStates[name]={mid:0,side:0,cross:0,low:0,
+        filters:[.0031,.0073,.0047,.0113].map((seconds,i)=>{
+          const count=Math.max(1,Math.round(seconds*this.sr));
+          return {input:new Float64Array(count),output:new Float64Array(count),pos:0,c:i%2?-.45:.55};
+        })};
+      const mid=(left+right)/2,side=(left-right)/2,rate=1-Math.exp(-1/(this.sr*.06));
+      state.mid+=rate*(mid*mid-state.mid);state.side+=rate*(side*side-state.side);
+      state.cross+=rate*(mid*side-state.cross);
+      const narrow=Math.max(0,1-Math.sqrt(Math.max(0,state.side)/Math.max(state.mid,1e-24))/.5);
+      const centered=Math.max(0,1-Math.abs(2*state.cross)/Math.max(state.mid+state.side,1e-24)/.5);
+      let value=mid,branch=0;
+      for(let k=0;k<4;k++){
+        if(k===2){branch=value;value=mid;}
+        const f=state.filters[k],pos=f.pos,y=f.c*value+f.input[pos]-f.c*f.output[pos];
+        f.input[pos]=value;f.output[pos]=y;f.pos=(pos+1)%f.input.length;value=y;
+      }
+      const diffuse=(branch-value)*.5;
+      state.low+=(1-Math.exp(-2*Math.PI*180/this.sr))*(diffuse-state.low);
+      return (diffuse-state.low)*narrow*centered*.5*amount*(10**(width*12/20)-1);
+    }
     measure(left,right) {
       const coeff=this.data.levels.weighting;
       for(let c=0;c<2;c++){
@@ -66,7 +88,7 @@
       for(const k of Object.keys(this.target)) this.params[k]+=(this.target[k]-this.params[k])*blend;
       const p=this.params, src=this.data.buffers, a=1-Math.exp(-2*Math.PI*200/this.sr);
       const af=1-Math.exp(-1/(this.sr*.005)), as=1-Math.exp(-1/(this.sr*.08));
-      const aw=1-Math.exp(-2*Math.PI*150/this.sr), gain=this.data.levels?1:this.data.gain*10**(p.loud/20);
+      const gain=this.data.levels?1:this.data.gain*10**(p.loud/20);
       for(let i=0;i<left.length;i++) {
         const n=this.pos*2; let out=[0,0];
         const sample=(name,c)=>{
@@ -76,6 +98,9 @@
           return dry ? dry[n+c]*(1-p.guidance)+wet[n+c]*p.guidance : wet[n+c];
         };
         const drum=src.drums, energy=drum ? (sample('drums',0)**2+sample('drums',1)**2)/2 : 0;
+        let ambience=0;
+        for(const name of ['other','guitar','piano'])if(src[name])
+          ambience+=this.spaceSample(name,sample(name,0),sample(name,1),p.space,p.width);
         this.fast+=af*(energy-this.fast); this.slow+=as*(energy-this.slow);
         const onset=Math.max(0,Math.min(1,(10*Math.log10((this.fast+1e-12)/(this.slow+1e-12))-3)/9));
         for(let c=0;c<2;c++) {
@@ -83,15 +108,15 @@
           if(src.bass) {
             const dry=sample('bass',c); let wet=this.filter('bass',dry,c,'low',65,p.sub);
             this.low[c]+=a*(wet-this.low[c]);
-            // 与 apollo_scripts/bass_enhance.py 的 soft_clip(drive=1.6) 同形：
-            // 小信号增益 1.6/tanh(1.6)≈1.74，低频提升+谐波都与正式导出一致。
-            wet+=p.sat*(Math.tanh(this.low[c]*1.6)/Math.tanh(1.6)-this.low[c]);
+            // 与正式饱和支路一致：小信号增益为 1，Sub 独立控制低频电平。
+            wet+=p.sat*(Math.tanh(this.low[c]*1.6)/1.6-this.low[c]);
             x+=wet-dry;
           }
           if(drum) x+=this.filter('drums',sample('drums',c),c,'peak',90,p.punch,1.2)*10**(4*p.trans*onset/20)-sample('drums',c);
           if(src.vocals) x+=sample('vocals',c)*(10**(p.vocal/20)-1);
           if(src.guitar) x+=this.filter('guitar',sample('guitar',c),c,'high',2500,4*p.guitar)-sample('guitar',c);
           if(src.other) x+=this.filter('space',sample('other',c),c,'peak',450,-1.5*p.space)-sample('other',c);
+          x+=c===0?ambience:-ambience;
           x=this.filter('noise',x,c,'high',10000,-3*p.denoise);
           for(let k=0;k<(this.data.curve || []).length;k++) {
             const [hz,db]=this.data.curve[k]; x=this.filter('ref'+k,x,c,'peak',hz,db*p.strength,1.1);
@@ -102,12 +127,9 @@
           x=this.filter('eqmid',x,c,'peak',3200,this.eq==='Bright'?1:0,.9);
           out[c]=this.filter('eqhi',x,c,'high',9000,air);
         }
-        const mid=(out[0]+out[1])/2, side=(out[0]-out[1])/2;
-        this.sideLow+=aw*(side-this.sideLow);
-        // 宽度旋钮 0-1 是授权比例（100% = +12dB Side 增益），声场推子作干湿；
-        // 请求本身封顶 2.98，不再设旧 0.4 硬盖（默认档即饱和的死区）。
-        const wide=side+(side-this.sideLow)*(p.space*(10**(p.width*12/20)-1));
-        out=[(mid+wide)*gain,(mid-wide)*gain];
+        // Coarse live approximation: only narrow accompaniment generates space.
+        // Formal export additionally decides admission per frequency and guards the mix.
+        out=out.map(v=>v*gain);
         if(this.data.levels){
           this.measure(out[0],out[1]);
           const desired=this.masterEnabled?10**(Math.max(-24,Math.min(24,this.masterTarget-this.measuredLufs))/20):1;

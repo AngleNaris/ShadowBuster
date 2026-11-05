@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=93">
+<link rel="stylesheet" href="style.css?v=97">
 </head>
 <body>
 
@@ -292,12 +292,13 @@
           </div>
         </div>
         <div class="field">
-          <span class="field-label">响度</span>
-          <div class="seg" role="group" aria-label="响度">
-            <button type="button" class="seg-btn" data-loudness="soft" aria-pressed="false">轻柔</button>
-            <button type="button" class="seg-btn" data-loudness="dynamic" aria-pressed="false">动态</button>
-            <button type="button" class="seg-btn" data-loudness="normal" aria-pressed="true">标准</button>
-            <button type="button" class="seg-btn" data-loudness="loud" aria-pressed="false">响亮</button>
+          <div class="fader-meta">
+            <span class="fader-label" id="label-blend">风格强度</span>
+            <output class="fader-value" id="val-blend">85%</output>
+          </div>
+          <div class="fader" id="fader-blend" tabindex="0" role="slider" aria-labelledby="label-blend" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0.85" aria-valuetext="85%" data-min="0" data-max="1" data-step="0.05" data-default="0.85">
+            <span class="fader-fill" aria-hidden="true"></span>
+            <span class="fader-cap" aria-hidden="true"></span>
           </div>
         </div>
         <div class="field">
@@ -310,13 +311,20 @@
           </div>
         </div>
         <div class="field">
-          <div class="fader-meta">
-            <span class="fader-label" id="label-blend">风格强度</span>
-            <output class="fader-value" id="val-blend">85%</output>
+          <span class="field-label">密度</span>
+          <div class="seg cols-3" role="group" aria-label="密度">
+            <button type="button" class="seg-btn" data-density="off" aria-pressed="false">关</button>
+            <button type="button" class="seg-btn" data-density="light" aria-pressed="true">轻</button>
+            <button type="button" class="seg-btn" data-density="standard" aria-pressed="false">标准</button>
           </div>
-          <div class="fader" id="fader-blend" tabindex="0" role="slider" aria-labelledby="label-blend" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0.85" aria-valuetext="85%" data-min="0" data-max="1" data-step="0.05" data-default="0.85">
-            <span class="fader-fill" aria-hidden="true"></span>
-            <span class="fader-cap" aria-hidden="true"></span>
+        </div>
+        <div class="field">
+          <span class="field-label">响度</span>
+          <div class="seg" role="group" aria-label="响度">
+            <button type="button" class="seg-btn" data-loudness="soft" aria-pressed="false">轻柔</button>
+            <button type="button" class="seg-btn" data-loudness="dynamic" aria-pressed="false">动态</button>
+            <button type="button" class="seg-btn" data-loudness="normal" aria-pressed="true">标准</button>
+            <button type="button" class="seg-btn" data-loudness="loud" aria-pressed="false">响亮</button>
           </div>
         </div>
       </div>
@@ -338,23 +346,7 @@
   </div><!-- /pane-process -->
 
   <section class="pane-view" id="pane-report" hidden aria-label="处理报告">
-    <div class="pane-body rp-body">
-
-
-      <div class="rp-head" id="rp-head">
-        <div class="rp-head-main">
-          <div class="rp-name" id="rp-name">未选择成品</div>
-          <div class="rp-mchips" id="rp-mchips"></div>
-        </div>
-        <div class="rp-head-side">
-          <span class="rp-legend-inline" id="rp-legend"></span>
-          <div class="rp-mrow"><span class="rp-mkey">分析时间</span><span class="rp-mval" id="rp-time">—</span></div>
-        </div>
-      </div>
-
-      <!-- 处理摘要：四张 KPI 卡（JS 填充） -->
-      <div class="rp-summary" id="rp-summary" aria-label="处理摘要"></div>
-
+    <div class="pane-body">
       <div class="rp-grid">
         <figure class="rp-fig rp-fig--freq">
           <figcaption><span class="rp-cap-zh">频率响应对比</span></figcaption>
@@ -515,7 +507,7 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="draft_audio.js?v=6"></script>
-<script src="app.js?v=88"></script>
+<script src="draft_audio.js?v=7"></script>
+<script src="app.js?v=93"></script>
 </body>
 </html>

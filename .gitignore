@@ -120,3 +120,6 @@ webview_storage/
 
 # Local git bundle backups (repo backups, not source)
 *.bundle
+
+# Third-party VST3 plugins (tools/fetch_plugins.py)
+/plugins/

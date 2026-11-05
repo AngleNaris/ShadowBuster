@@ -89,6 +89,9 @@ def main(argv=None):
     parser.add_argument('--genre', default=backend.DEFAULTS['genre'])
     parser.add_argument('--loudness', choices=['soft','dynamic','normal','loud'],
                         default=backend.DEFAULTS['loudness'])
+    parser.add_argument('--density', choices=['off', 'light', 'standard'],
+                        default=backend.DEFAULTS['density'],
+                        help='母带多频段密度压缩（ZL Compressor）；仅无风格/EQ/参考母带路径生效')
     parser.add_argument('--eq-profile', default=backend.DEFAULTS['eq_profile'],
                         help='global user EQ, active with or without reference/style matching')
     parser.add_argument('--style-mode', choices=['styled','off','eq_only'], default='off')

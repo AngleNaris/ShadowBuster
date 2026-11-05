@@ -20,6 +20,7 @@ from scipy import signal, ndimage
 
 from audio_validation import validate_audio, validate_audio_pair, finite_range
 from stage_metadata import write_report
+from ambience_width import accompaniment_delta, TARGET_STEMS
 from noise_profile import (NOISE_MODES, adaptive_denoise, constrain_noise_delta,
                            validate_noise_options)
 
@@ -207,6 +208,8 @@ def _dynamic_side_shelf(x, sr, fc, gain_db, thr_pct=70.0, rel_db=6.0):
 
 # 模式预设: (other: shelf_db/shelf_fc/side_gain_db, drums: 同)
 MODES = {
+    "adaptive": dict(other=(0.0, 3500.0, 6.0), guitar=(0.0, 3500.0, 6.0),
+                     piano=(0.0, 3500.0, 6.0)),
     "shelf3k":   dict(other=(3.0, 3500.0, 1.0), drums=(1.5, 5000.0, 0.0)),   # 原始版（擦片尖锐参照）
     "shelf-air": dict(other=(3.0, 7000.0, 1.0), drums=(1.5, 8000.0, 0.0)),   # 倾斜上移出敏感区
     "broadband": dict(other=(0.0, 3500.0, 3.0), drums=(0.0, 5000.0, 1.5)),   # 无频谱倾斜，纯 side 增益
@@ -238,7 +241,8 @@ def drum_width_envelope(stem, sr):
     return ndimage.uniform_filter1d(gain, max(1, int(sr * .003)), mode='nearest')
 
 
-def constrain_width_delta(mix, delta, sr, growth_db=6.0, stem_deltas=None):
+def constrain_width_delta(mix, delta, sr, growth_db=6.0, stem_deltas=None,
+                          allow_generated=False):
     """Bound added Side against the final mix in overlapping time/frequency windows.
 
     growth_db is the user-authorized Side energy growth (10**(growth_db/10)),
@@ -247,9 +251,10 @@ def constrain_width_delta(mix, delta, sr, growth_db=6.0, stem_deltas=None):
     (side energy must not be newly pushed above mid energy; already-inverted
     content is retained untouched). Caps are analysis-domain budgets, not
     perceptual width units. Reconstruction can change window energies
-    slightly. The returned delta is side-only by construction: any mid
-    component of the input delta is discarded, and bands whose existing mix
-    side is silent admit no new width.
+    slightly. The returned delta is side-only by construction. With
+    allow_generated=True, a narrow accompaniment may create Side where none
+    existed; its strength is already set by the caller. The local mix phase
+    boundary still applies. Legacy Side amplification retains its growth budget.
     """
     if not np.isfinite(growth_db) or not 0.0 <= growth_db <= 12.0:
         raise ValueError("growth_db must be finite and within [0, 12]")
@@ -285,11 +290,15 @@ def constrain_width_delta(mix, delta, sr, growth_db=6.0, stem_deltas=None):
         es = np.sum(abs(s[mask]) ** 2, axis=0)
         ed = np.sum(abs(d[mask]) ** 2, axis=0)
         cross = np.sum((s[mask].conj() * d[mask]).real, axis=0)
-        maximum = np.minimum(em * cap / (1 - cap), es * growth)
+        maximum = em * cap / (1 - cap)
+        if not allow_generated:
+            maximum = np.minimum(maximum, es * growth)
         budget = np.maximum(maximum - es, 0)
         root = np.sqrt(np.maximum(cross * cross + ed * budget, 0))
         alpha = np.clip((-cross + root) / np.maximum(ed, 1e-30), 0, 1)
-        alpha[(es >= em * cap / (1 - cap)) | (es < 1e-16)] = 0
+        alpha[es >= em * cap / (1 - cap)] = 0
+        if not allow_generated:
+            alpha[es < 1e-16] = 0
         alpha[ed < 1e-30] = 0
         # Conservative look-around smoothing never exceeds a frame's safe gain.
         limited = ndimage.minimum_filter1d(alpha, size=5, mode='nearest')
@@ -339,6 +348,11 @@ def resolve_side_gains(mode, override_db=None):
     3.0/1.5 比例一致），避免鼓被拉散。shelf 参数仍来自模式预设。
     """
     preset = MODES[mode]
+    if mode == "adaptive":
+        gain = 6.0 if override_db is None else float(override_db)
+        if not np.isfinite(gain) or not 0 <= gain <= 12:
+            raise ValueError("side gain must be finite and within [0, 12] dB")
+        return {name: (0.0, 3500.0, gain) for name in TARGET_STEMS}
     params = {"other": preset["other"], "drums": preset["drums"]}
     if override_db is not None:
         if not np.isfinite(override_db) or not 0.0 <= override_db <= 12.0:
@@ -487,10 +501,10 @@ def main():
     ap.add_argument("--in-mix", required=True, type=Path, help="输入混音（管线上一阶段产物或原曲）")
     ap.add_argument("--out-wav", required=True, type=Path)
     ap.add_argument("--stems-dir", required=True, type=Path, help="demucs 4-stem 输出目录（含 drums/other.wav）")
-    ap.add_argument("--mode", choices=list(MODES), default="broadband",
-                    help="broadband=纯side增益（默认，音色最保真）| shelf3k | shelf-air | dynamic")
+    ap.add_argument("--mode", choices=list(MODES), default="adaptive",
+                    help="adaptive=只优化窄且居中的伴奏（默认）；其余为历史对照模式")
     ap.add_argument("--side-gain-db", type=float, default=None,
-                    help="宽度上限 dB：覆盖模式预设的 side 增益（other=设定值，drums=一半）")
+                    help="空间生成强度 0-12 dB；历史模式中覆盖 Side 增益")
     ap.add_argument("--wet", type=float, default=1.0, help="拓宽干湿比 0-1；0=不拓宽，降噪仍由独立 amount 控制")
     ap.add_argument("--space-amount", type=float, default=0.0,
                     help="声场强度授权 0-1（规格 §7.4）：缩放宽度差值并授权 other 轨 "
@@ -544,6 +558,7 @@ def main():
         ap.error(str(exc))
 
     params = resolve_side_gains(args.mode, args.side_gain_db)
+    spatial_report = {"scope": list(TARGET_STEMS), "stems": {}}
     out = mix.copy()
     width_delta = np.zeros_like(mix)
     denoise_delta = np.zeros_like(mix)
@@ -634,7 +649,11 @@ def main():
     for name, (db, fc, gain) in params.items():
         if wet == 0 and not (name == "other" and legacy_other_denoise):
             continue
-        stem, s_sr = sf.read(stem_dir / f"{name}.wav", always_2d=True, dtype="float64")
+        path = stem_dir / f"{name}.wav"
+        if not path.is_file() and args.mode == "adaptive":
+            spatial_report["stems"][name] = {"applied": False, "reason": "missing_stem"}
+            continue
+        stem, s_sr = sf.read(path, always_2d=True, dtype="float64")
         if s_sr != sr:
             raise SystemExit(f"{name} sample rate {s_sr} != {sr}")
         try:
@@ -646,11 +665,16 @@ def main():
         if stem_width_deltas is not None:
             working_stems.setdefault(name, working)
         if wet > 0:
-            if args.mode == "dynamic" and db > 0:
+            if args.mode == "adaptive":
+                delta, detail = accompaniment_delta(working, sr, wet, gain)
+                spatial_report["stems"][name] = detail
+                reshaped = working
+            elif args.mode == "dynamic" and db > 0:
                 reshaped = _dynamic_side_shelf(working, sr, fc, db)
             else:
                 reshaped = _reshape_stem(working, sr, db, fc, gain)
-            delta = (reshaped - working) * wet
+            if args.mode != "adaptive":
+                delta = (reshaped - working) * wet
             if name == 'drums':
                 delta *= drum_width_envelope(working, sr)[:, None]
             delta = _protect_widen_delta(delta, sr)
@@ -668,7 +692,9 @@ def main():
                 working_stems[name] = working + (cleaned - processed)
             print(f"  other: ≥{args.other_denoise_fc:.0f}Hz 噪声地板降噪 {args.other_denoise_amount*100:.0f}%")
         if wet > 0:
-            if args.mode == "dynamic" and db > 0:
+            if args.mode == "adaptive":
+                print(f"  {name}: 局部窄伴奏空间生成 {spatial_report['stems'][name]}")
+            elif args.mode == "dynamic" and db > 0:
                 # 动态分支不施加静态 side 增益，打印不得谎报已生效的参数。
                 print(f"  {name}: 动态门 side shelf +{db}dB@{fc:.0f}Hz"
                       "（包络控制；静态 side 增益在此模式不适用）")
@@ -684,7 +710,10 @@ def main():
                     for db, _fc, gain in params.values())
     width_options = {"stem_deltas": stem_width_deltas} if stem_width_deltas is not None else {}
     accepted, budget = constrain_width_delta(base, width_delta, sr,
-                                             growth_db=growth_db, **width_options)
+                                             growth_db=growth_db,
+                                             allow_generated=args.mode == "adaptive", **width_options)
+    if args.mode == "adaptive":
+        budget["accompaniment"] = spatial_report
     out = base + accepted
     if stem_width_deltas is not None:
         for name, delta in stem_width_deltas.items():
