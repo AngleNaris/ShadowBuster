@@ -11,4 +11,16 @@
 
 Windows x64 使用 `ShadowBuster-Setup-1.6.15.exe` 安装或覆盖升级。已有 GPU 1.6.11 的用户可以继续使用。macOS 本次提供源代码和更新后的装配脚本。
 
-上游固定版本的许可证与对应源码随 Windows 安装包附在 `licenses/mastering/`。 [母带依赖清单](https://github.com/AngleNaris/ShadowBuster/tree/v1.6.15/packaging/third-party/mastering)
+Windows 安装包的 `licenses/mastering/` 包含上游许可证文本和对应版本的源码链接。 [母带依赖清单](https://github.com/AngleNaris/ShadowBuster/tree/v1.6.15/packaging/third-party/mastering)
+
+## 验收
+
+- 全量回归 810 项通过、1 项跳过，29 项子测试通过。
+- Windows 独立安装后，实际 GUI、ZL Compressor、ZL Limiter 和运行时导入检查通过。1010 项运行时关键文件与构建清单的 SHA-256 一致。四轨和六轨模型均通过离线加载检查。
+- 安装版处理 30 秒音乐，启用标准密度压缩和「响亮」母带。质量报告通过，鼓起音保护已生效，PCM24 成品回读为 −7.97 LUFS、−0.515 dBTP。
+
+## 安装包校验
+
+`ShadowBuster-Setup-1.6.15.exe`，903,942,881 字节。
+
+SHA-256 `63f4f28933c4abef888aed15c01b8d545fab051c3288d81a824adedcf0ce6290`，也可下载 `SHA256SUMS.txt` 核对。
