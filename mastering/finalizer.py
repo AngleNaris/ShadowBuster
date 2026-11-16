@@ -230,10 +230,15 @@ def _apply_measurements(stats, actual, true_peak_dbtp):
     (`_update_measurements`) or reused from the search loop (`finalize`, audit
     P1-3) — the target-status logic is identical either way."""
     error = stats["target_lufs"] - actual
-    met = abs(error) <= .2
+    target_range = stats.get("target_lufs_range")
+    if target_range is None:
+        met, below = abs(error) <= .2, error > 0
+    else:
+        lower, upper = target_range
+        met, below = lower <= actual <= upper, actual < lower
     stats.update(actual_lufs=actual, target_error_lu=abs(error),
                  target_signed_error_lu=error, target_met=met,
-                 target_status="met" if met else ("below_target" if error > 0 else "above_target"),
+                 target_status="met" if met else ("below_target" if below else "above_target"),
                  true_peak_dbtp=true_peak_dbtp)
     if met:
         stats.update(stop_reason="target_met", dynamic_budget_limited=False)
@@ -247,6 +252,9 @@ def master_file(input_path, output_path, loudness="normal"):
     """Write PCM24 with TPDF dither exactly once, then verify the actual file."""
     if Path(input_path).resolve() == Path(output_path).resolve():
         raise ValueError("Input and output must be different files")
+    if loudness == "loud":
+        from .pipeline import master_file as master
+        return master(input_path, output_path, loudness, density="off")
     audio, sr = sf.read(input_path, dtype="float64", always_2d=True)
     result, stats = finalize(audio, sr, loudness)
     return write_output(result, sr, output_path, stats)
@@ -258,11 +266,24 @@ def write_output(result, sr, output_path, stats):
     rng = np.random.default_rng(0)
     dither = (rng.random(result.shape) - rng.random(result.shape)) / 2 ** 23
     sf.write(output_path, result + dither, sr, subtype="PCM_24")
+    ceiling = stats.get("true_peak_ceiling_dbtp", TRUE_PEAK_CEILING_DB)
+    peak = None
+    if stats.get("target_lufs_range") is not None:
+        from .loud import written_true_peak
+        peak = written_true_peak(output_path)
+        if peak > ceiling:
+            trim = ceiling - .015 - peak
+            sf.write(output_path, result * 10 ** (trim / 20) + dither, sr, subtype="PCM_24")
+            stats["safety_trim_db"] = trim
+            peak = written_true_peak(output_path)
     written, written_sr = sf.read(output_path, dtype="float64", always_2d=True)
     if written.shape != result.shape or written_sr != sr:
         raise RuntimeError("Mastering output shape/sample rate changed")
-    _update_measurements(written, written_sr, stats)
-    if stats["true_peak_dbtp"] > TRUE_PEAK_CEILING_DB:
+    if peak is None:
+        _update_measurements(written, written_sr, stats)
+    else:
+        _apply_measurements(stats, integrated_lufs(written, written_sr)[0], peak)
+    if stats["true_peak_dbtp"] > ceiling:
         raise RuntimeError("Written mastering output exceeds true peak ceiling")
     stats.update(output_subtype=sf.info(output_path).subtype, output_sample_rate=sr,
                  output_frames=len(written), readback_verified=True)

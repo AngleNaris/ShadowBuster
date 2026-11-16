@@ -20,7 +20,7 @@ from scipy import signal, ndimage
 
 from audio_validation import validate_audio, validate_audio_pair, finite_range
 from stage_metadata import write_report
-from ambience_width import accompaniment_delta, TARGET_STEMS
+from ambience_width import accompaniment_delta, protect_side_cancellation, TARGET_STEMS, WINDOW
 from noise_profile import (NOISE_MODES, adaptive_denoise, constrain_noise_delta,
                            validate_noise_options)
 
@@ -219,7 +219,7 @@ MODES = {
 
 # 宽度保护（2026-09-30 裁决，与 mastering/soundstage.py widen() 的相位 guard
 # 同语义）：增长量由用户的宽度请求授权（constrain_width_delta 的 growth_db）；
-# 唯一固定保护是**相位翻转边界**——分析带内 Side 能量不得被本次处理新推到超过
+# 宽度上限是**相位翻转边界**——分析带内 Side 能量不得被本次处理新推到超过
 # Mid 能量（占比 0.50，等价于局部 correlation 被推负）。已越过边界的素材
 # 原样保留（部分歌曲本就存在单声道内容/超宽混音），不收窄也不再增宽。
 # 旧分带单声道兼容占比上限（0.40/0.60/0.75/0.70）同日废弃：mono 兼容性
@@ -246,15 +246,15 @@ def constrain_width_delta(mix, delta, sr, growth_db=6.0, stem_deltas=None,
     """Bound added Side against the final mix in overlapping time/frequency windows.
 
     growth_db is the user-authorized Side energy growth (10**(growth_db/10)),
-    not a fixed cap: the request itself is what admits headroom. The only
-    fixed guard is the per-band phase-inversion boundary in WIDTH_BANDS
+    not a fixed cap: the request itself is what admits headroom. The
+    fixed upper bound is the per-band phase-inversion boundary in WIDTH_BANDS
     (side energy must not be newly pushed above mid energy; already-inverted
     content is retained untouched). Caps are analysis-domain budgets, not
     perceptual width units. Reconstruction can change window energies
     slightly. The returned delta is side-only by construction. With
     allow_generated=True, a narrow accompaniment may create Side where none
-    existed; its strength is already set by the caller. The local mix phase
-    boundary still applies. Legacy Side amplification retains its growth budget.
+    existed; its strength is already set by the caller. Opposing generated Side
+    is reduced before the local mix budget. Legacy amplification keeps its budget.
     """
     if not np.isfinite(growth_db) or not 0.0 <= growth_db <= 12.0:
         raise ValueError("growth_db must be finite and within [0, 12]")
@@ -266,6 +266,8 @@ def constrain_width_delta(mix, delta, sr, growth_db=6.0, stem_deltas=None,
             for name, part in stem_deltas.items():
                 stem_deltas[name] = np.zeros_like(part)
         return np.zeros_like(delta), report
+    if allow_generated and n >= WINDOW:
+        delta, report['local_side_phase'] = protect_side_cancellation(mix, delta, sr, stem_deltas)
     size = min(4096, n)
     overlap = size * 3 // 4
     mid = np.asarray(mix, dtype=np.float64).mean(axis=1)

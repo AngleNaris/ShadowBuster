@@ -79,6 +79,37 @@ def test_stage_soren_without_sidecar_returns_none(monkeypatch, tmp_path):
     assert not Path(str(out) + backend.MASTERING_REPORT_SUFFIX).exists()
 
 
+@pytest.mark.parametrize("drums_bypassed,density,expected", [
+    (False, "standard", True),
+    (True, "standard", False),
+    (False, "off", False),
+])
+def test_loud_pipeline_forwards_drums_for_attack_protection(
+        fake_engine, monkeypatch, tmp_path, drums_bypassed, density, expected):
+    src = _tone_wav(tmp_path / "in.wav")
+
+    def split(source, out_dir, *, model, **kwargs):
+        folder = Path(out_dir) / model / Path(source).stem
+        folder.mkdir(parents=True)
+        shutil.copyfile(source, folder / "drums.wav")
+
+    def drum_stage(stem_dir, rest_wav, out_wav, **kwargs):
+        shutil.copyfile(rest_wav, out_wav)
+        return 1.0
+
+    monkeypatch.setattr(backend, "stage_demucs", split)
+    monkeypatch.setattr(backend, "stage_drums", drum_stage)
+    bypass = {"lew", "bass", "reshape", "vocals"}
+    if drums_bypassed:
+        bypass.add("drums")
+    backend.run_pipeline(src, tmp_path / "out", cache_enabled=False, demucs_model="htdemucs",
+                         bypass=bypass, style_mode="off", loudness="loud", density=density)
+    command = fake_engine["calls"][0]
+    assert ("--drums-source" in command) is expected
+    if expected:
+        assert Path(command[command.index("--drums-source") + 1]).name == "drums.wav"
+
+
 def test_report_copied_and_restored_on_cache_hit(fake_engine, tmp_path):
     src = _tone_wav(tmp_path / "song.wav")
     out_dir = tmp_path / "out"

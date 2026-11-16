@@ -1,7 +1,7 @@
 """Fetch the pinned third-party VST3 plugins into <repo>/plugins (git-ignored).
 
-ZL Compressor (AGPL-3.0, https://github.com/ZL-Audio/ZLCompressor) is used by
-mastering/density.py. The Windows MSI is verified by SHA-256 and unpacked with an
+ZL Compressor and ZL Limiter (AGPL-3.0) are used by the mastering engine.
+Each Windows MSI is verified by SHA-256 and unpacked with an
 administrative install (msiexec /a), which only extracts files and registers nothing.
 runtime_sync.ps1 copies <repo>/plugins into runtime/plugins.
 
@@ -22,6 +22,12 @@ ZL_COMPRESSOR = {
     "url": "https://github.com/ZL-Audio/ZLCompressor/releases/download/0.6.1/"
            "ZL.Compressor-0.6.1-Windows-x86-64.msi",
     "sha256": "4e6e14da03cbd4513d890fac01889982e3cd96b2cdeb73678507a09b0c463f7f",
+}
+ZL_LIMITER = {
+    "bundle": "ZL Limiter.vst3",
+    "url": "https://github.com/ZL-Audio/ZLLimiter/releases/download/0.0.1/"
+           "ZL.Limiter-0.0.1-Windows-x86-64.msi",
+    "sha256": "c58ecd0afe2ab2d1040a1fc7c39bd667eb45acdc84ac752602fd2f7af0be1550",
 }
 
 
@@ -48,3 +54,4 @@ def fetch(spec):
 
 if __name__ == "__main__":
     fetch(ZL_COMPRESSOR)
+    fetch(ZL_LIMITER)

@@ -124,6 +124,12 @@ cp -R "$SB_APOLLO/ckpts" "$STAGE/Apollo/ckpts"
 mkdir -p "$STAGE/mastering"
 cp "$REPO_ROOT/mastering/"*.py "$STAGE/mastering/"
 cp "$REPO_ROOT/audio_metrics.py" "$STAGE/"
+mkdir -p "$STAGE/plugins"
+for plugin in "ZL Compressor" "ZL Limiter"; do
+    bundle="$REPO_ROOT/plugins/$plugin.vst3"
+    [[ -d "$bundle/Contents/MacOS" ]] || fail "请将 macOS 版 $plugin.vst3 放入 plugins/"
+    cp -R "$bundle" "$STAGE/plugins/"
+done
 # Reference tonal-target cache (audit §9.8): subprocess import is best-effort, so
 # bundling enables it in the packaged mastering runtime; absence stays on cold path.
 cp "$REPO_ROOT/pipeline_cache.py" "$STAGE/"
@@ -156,7 +162,8 @@ uv pip install --python "$STAGE/env/bin/python" \
     --no-index --find-links "$WHEELS_DIR" -r "$REQS" \
     || fail "推理依赖安装失败"
 uv pip install --python "$STAGE/env/bin/python" --no-index --find-links "$WHEELS_DIR" \
-    "matchering==2.0.6" "resampy==0.4.3" || fail "Matchering wheels 缺失，请先加入离线 wheels 目录"
+    "matchering==2.0.6" "resampy==0.4.3" "pedalboard==0.9.26" \
+    || fail "母带依赖 wheels 缺失，请先加入离线 wheels 目录"
 
 log "[4b] 体积裁剪（__pycache__ / torch/include / wheel 残留）"
 find "$STAGE/env" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
@@ -189,7 +196,7 @@ PYTHONPATH="$STAGE:$STAGE/Apollo:$STAGE/Soren_src" "$STAGE/env/bin/python" - <<'
 import importlib
 for name in ("torch", "torchaudio", "demucs", "numpy", "soundfile", "scipy",
              "librosa", "numba", "statsmodels", "pyloudnorm", "joblib",
-             "cryptography", "look2hear.models", "matchering", "resampy",
+             "cryptography", "look2hear.models", "matchering", "resampy", "pedalboard",
              "mastering.pipeline", "audio_worker", "bass_enhance", "drum_enhance",
              "soundstage_reshape", "noise_profile", "premaster_hygiene",
              "stem_enhance", "vocal_adjust"):
@@ -204,7 +211,7 @@ MANIFEST="$STAGE/critical-manifest.sha256"
 : > "$MANIFEST"
 stage_full="$(cd "$STAGE" && pwd -P)"
 find "$STAGE/env/lib/python3.12/site-packages/numpy" "$STAGE/Apollo" "$STAGE/Soren_src" \
-     "$STAGE/mastering" "$STAGE/audio_metrics.py" "$STAGE/pipeline_cache.py" "$STAGE/audio_worker.py" \
+     "$STAGE/mastering" "$STAGE/plugins" "$STAGE/audio_metrics.py" "$STAGE/pipeline_cache.py" "$STAGE/audio_worker.py" \
      "$STAGE/ffmpeg" "$STAGE/torch_home" "$STAGE/hf_home" \
      -type f -size +0c ! -name '*.pyc' ! -name '*.pyo' ! -name '*.nbc' ! -name '*.nbi' 2>/dev/null | sort | while read -r f; do
     rel="${f#"$stage_full"/}"

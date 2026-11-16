@@ -20,7 +20,7 @@ from audio_metrics import (quality_report_path, quality_summary, read_quality_re
                            write_quality_report)
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.14"
+APP_VERSION = "1.6.15"
 GPU_ENV_VERSION = "1.6.11"
 
 # ── 处理默认值单一来源（开发规格 v2 §5.2/§12.1，P0-03；ENG-01）──────────
@@ -588,8 +588,9 @@ AUDIO_FORMAT_VERSION = "f32-internal-1"
 # 目标不可达的素材退回"不持续钳制"的候选并如实标 dynamic_budget，交付母带不再
 # 把块峰值钉死在天花板上。v6 起（2026-11-04）：介入预算同时约束最差 10 s 窗口，
 # 限制器 10 ms 预读 + 10 ms 线性起始斜坡，真峰天花板 −1.0 dBTP，抖动固定种子。
+# v10 起（2026-11-09）：扩宽按原 Side 的相位参考削弱局部反向增量。
 # 进入缓存身份（§16.5：新引擎不与旧缓存混用）。
-DSP_ENGINE_VERSION = "dsp-v7-20261105"
+DSP_ENGINE_VERSION = "dsp-v10-20261109"
 
 
 def ffmpeg_convert(src, dst, sr=44100, subtype="FLOAT"):
@@ -1160,7 +1161,10 @@ def _mastering_log_label(stats):
     if not isinstance(stats, dict):
         return None
     parts = []
-    if stats.get("target_lufs") is not None:
+    if stats.get("target_lufs_range") is not None:
+        lower, upper = stats["target_lufs_range"]
+        parts.append(f"目标 {_format_metric(lower)} 至 {_format_metric(upper)} LUFS")
+    elif stats.get("target_lufs") is not None:
         parts.append(f"目标 {_format_metric(stats['target_lufs'])} LUFS")
     if stats.get("actual_lufs") is not None:
         parts.append(f"实测 {_format_metric(stats['actual_lufs'])} LUFS")
@@ -1184,7 +1188,7 @@ def _emit_mastering_log(report_cb, mastered_path):
 def stage_mastering(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
                     *, reference=None, match_source=None, strength=.85,
                     eq_profile="Neutral", lowpass_cutoff=None, space_wet=0.0, width_db=0.0,
-                    density="light"):
+                    density="light", section_source=None, drums_source=None):
     """Independent finalizer and optional protected reference matching."""
     from mastering import LOUDNESS_TARGETS
     if loudness not in LOUDNESS_TARGETS:
@@ -1201,6 +1205,12 @@ def stage_mastering(input_wav, out_wav, loudness="normal", progress=None, cancel
         if match_source:
             cmd += ["--match-source", str(Path(match_source).resolve())]
         env["PATH"] = str(Path(ffmpeg_bin()).parent) + os.pathsep + env.get("PATH", "")
+    if loudness == "loud":
+        env["SB_FFMPEG"] = ffmpeg_bin()
+        if section_source is not None:
+            cmd += ["--section-source", str(Path(section_source).resolve())]
+        if density != "off" and drums_source is not None:
+            cmd += ["--drums-source", str(Path(drums_source).resolve())]
     if eq_profile != "Neutral":
         cmd += ["--eq-profile", eq_profile]
     if lowpass_cutoff is not None:
@@ -1222,7 +1232,8 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
                 progress=None, cancel=None, style_mode="styled",
                 upstream_delta_path=None, upstream_delta_hash=None,
                 style_blend=0.85, match_source=None,
-                final_space_wet=0.0, final_width_db=0.0, density="light"):
+                final_space_wet=0.0, final_width_db=0.0, density="light", section_source=None,
+                drums_source=None):
     if style_mode not in ("styled", "off", "eq_only"):
         raise ValueError(f"Unknown Soren style mode: {style_mode}")
     reference_active = style_mode == "styled" and bool(reference)
@@ -1230,6 +1241,10 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
         options = {"density": density}
         if reference_active:
             options.update(reference=reference, match_source=match_source, strength=style_blend)
+        if section_source is not None:
+            options["section_source"] = section_source
+        if drums_source is not None:
+            options["drums_source"] = drums_source
         # User EQ is global; off disables reference/style matching only.
         if eq_profile != "Neutral":
             options["eq_profile"] = eq_profile
@@ -1634,6 +1649,8 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     implementation += list(Path(DSP_DIR).glob("*.py"))
     implementation += list((MASTERING_ROOT / "mastering").glob("*.py"))
     implementation.append(MASTERING_ROOT / "audio_metrics.py")
+    if independent_mastering and loudness == "loud":
+        implementation += sorted((MASTERING_ROOT / "plugins" / "ZL Limiter.vst3").rglob("*"))
     if soren_root is not None:
         implementation += list(soren_root.glob("*.py"))
     # Lew 脚本在 APOLLO_DIR（模型/工具根）而非 DSP_DIR，必须单独入指纹：
@@ -1732,7 +1749,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     run_vocals = cached(stage_vocals, "out_wav", ["stem_dir", "in_mix", "reference_mix", "reference_vocals"])
     run_hygiene = cached(stage_hygiene, "out_wav", ["in_wav"])
     run_soren = cached(stage_soren, "out_wav",
-                       ["input_wav", "reference", "upstream_delta_hash", "match_source"],
+                       ["input_wav", "reference", "upstream_delta_hash", "match_source", "section_source", "drums_source"],
                        report_suffix=MASTERING_REPORT_SUFFIX)
     run_convert = cached(ffmpeg_convert, "dst", ["src"])
 
@@ -1929,6 +1946,11 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             mastering_options = {}
             if reference_active:
                 mastering_options["match_source"] = input_wav
+            if independent_mastering and loudness == "loud":
+                mastering_options["section_source"] = input_wav
+                drums_source = stem_dir / "drums.wav"
+                if density != "off" and "drums" not in bypass and drums_source.is_file():
+                    mastering_options["drums_source"] = drums_source
             # Accompaniment width is already in the repaired working stems.
             # Shared reference tone may follow; never widen the whole mix again.
             run_soren(premaster, mastered, genre=genre, loudness=loudness, density=density,

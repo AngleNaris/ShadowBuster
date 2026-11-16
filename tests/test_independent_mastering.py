@@ -11,7 +11,8 @@ from scipy import signal
 
 import studio_backend as backend
 from audio_metrics import measure_audio
-from mastering import LOUDNESS_TARGETS, TRUE_PEAK_CEILING_DB
+from mastering import LOUDNESS_TARGETS, TRUE_PEAK_CEILING_DB, LOUD_TRUE_PEAK_CEILING_DB
+from mastering.loud import PLUGIN_PATH, section_profile
 import mastering.finalizer as finalizer
 from mastering.finalizer import (ACTIVE_BUDGET_FRACTION, finalize, linked_limiter,
                                  master_file)
@@ -28,6 +29,10 @@ def music(seconds=1.2):
 
 @pytest.mark.parametrize("mode", LOUDNESS_TARGETS)
 def test_loudness_presets_write_verified_pcm24(tmp_path, mode):
+    if mode == "loud":
+        pytest.importorskip("pedalboard")
+        if not PLUGIN_PATH.exists() or shutil.which("ffmpeg") is None:
+            pytest.skip("ZL Limiter VST3 and FFmpeg are required")
     src, dst = tmp_path / "in.wav", tmp_path / "out.wav"
     sf.write(src, music(), SR, subtype="FLOAT")
     stats = master_file(src, dst, mode)
@@ -37,9 +42,27 @@ def test_loudness_presets_write_verified_pcm24(tmp_path, mode):
     assert info.subtype == "PCM_24" and info.frames == len(music())
     assert stats["readback_verified"] and stats["loudness_target_source"] == "application_preset"
     assert stats["actual_lufs"] == pytest.approx(measured["integrated_lufs"], abs=1e-8)
-    assert stats["true_peak_dbtp"] <= TRUE_PEAK_CEILING_DB
+    ceiling = LOUD_TRUE_PEAK_CEILING_DB if mode == "loud" else TRUE_PEAK_CEILING_DB
+    assert stats["true_peak_dbtp"] <= ceiling
+    if mode == "loud":
+        assert stats["limiter"]["engine"] == "ZL Limiter 0.0.1"
+        assert stats["target_lufs_range"] == (-8.0, -6.0)
     assert abs(stats["actual_lufs"] - LOUDNESS_TARGETS[mode]) <= .2
     assert json.loads(Path(str(dst) + ".mastering.json").read_text())["target_met"]
+
+
+def test_loud_sections_use_original_audio_on_the_same_timeline(tmp_path):
+    premaster = music(24)
+    original = premaster.copy()
+    original[:12 * SR] *= .2
+    path = tmp_path / "original.wav"
+    sf.write(path, original, SR, subtype="FLOAT")
+    weights, stats = section_profile(premaster, SR, path)
+    assert stats["source"] == "original_input"
+    assert np.min(weights[2 * SR:8 * SR]) > .9
+    assert np.max(weights[16 * SR:22 * SR]) < .01
+    premaster_weights, _ = section_profile(premaster, SR)
+    assert np.max(premaster_weights) < .01
 
 
 def test_unlimited_output_preserves_spectrum_and_stereo():

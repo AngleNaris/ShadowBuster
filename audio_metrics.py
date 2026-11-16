@@ -367,8 +367,12 @@ def assess_quality(input_metrics: Mapping[str, Any], output_metrics: Mapping[str
     mono_loss = output_metrics.get("mono_fold_down_loss_db")
     constraints: dict[str, Any] = {}
     constraints["finite_audio"] = _constraint("pass", True)
-    constraints["true_peak"] = (_constraint("pass", peak) if peak is None or peak <= -0.4
-                                 else _constraint("fail", peak, "true peak exceeds -0.4 dBTP"))
+    range_target = mastering_stats and mastering_stats.get("target_lufs_range")
+    ceiling = mastering_stats["true_peak_ceiling_dbtp"] if range_target else -0.4
+    if range_target:
+        peak = mastering_stats.get("true_peak_dbtp", peak)
+    constraints["true_peak"] = (_constraint("pass", peak) if peak is None or peak <= ceiling
+                                 else _constraint("fail", peak, f"true peak exceeds {ceiling:.1f} dBTP"))
     constraints["sample_clipping"] = (_constraint("pass", output_metrics.get("clipping_samples"))
                                       if output_metrics.get("clipping_samples") == 0
                                       else _constraint("fail", output_metrics.get("clipping_samples"), "samples at digital full scale"))
@@ -378,7 +382,9 @@ def assess_quality(input_metrics: Mapping[str, Any], output_metrics: Mapping[str
                                       else _constraint("warn", mono_loss, "mono fold-down loses more than 3 dB"))
     if mastering_stats:
         error = mastering_stats.get("target_error_lu")
-        constraints["loudness_target"] = (_constraint("pass", error) if error is not None and abs(float(error)) <= 0.2
+        in_target = (mastering_stats.get("target_met") if range_target
+                     else error is not None and abs(float(error)) <= 0.2)
+        constraints["loudness_target"] = (_constraint("pass", error) if in_target
                                            else _constraint("warn", error, "integrated loudness is outside target tolerance"))
         if mastering_stats.get("dynamic_budget_limited"):
             constraints["dynamic_budget"] = _constraint("warn", True, "limiter budget limited target convergence")

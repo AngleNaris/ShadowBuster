@@ -18,7 +18,7 @@
 ; 取消下方 [Languages] 注释。
 ; ══════════════════════════════════════════════════════════════════
 #define MyAppName "ShadowBuster"
-#define MyAppVersion "1.6.14"  ; 与 studio_backend.APP_VERSION 保持一致（tests/test_app_version.py 校验）
+#define MyAppVersion "1.6.15"  ; 与 studio_backend.APP_VERSION 保持一致（tests/test_app_version.py 校验）
 #define MyAppExeName "ShadowBuster.exe"
 
 [Setup]
@@ -51,6 +51,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Source: "..\dist\ShadowBuster\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; AI 推理运行时（CUDA torch / demucs / look2hear / 模型 / ffmpeg / 预置权重）
 Source: "stage\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "third-party\mastering\*"; DestDir: "{app}\licenses\mastering"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

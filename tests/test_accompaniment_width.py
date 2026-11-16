@@ -75,6 +75,22 @@ def test_generated_width_obeys_local_mix_phase_boundary():
         assert np.corrcoef((x + accepted)[lo:hi].T)[0, 1] >= -1e-3
 
 
+def test_generated_width_protects_existing_side_from_opposing_delta():
+    x = stem(.25)
+    side = (x[:, 0] - x[:, 1]) * .5
+    delta = np.column_stack((-.5 * side, .5 * side))
+    parts = {"other": .7 * delta, "guitar": .3 * delta}
+    accepted, report = reshape.constrain_width_delta(x, delta, SR, stem_deltas=parts,
+                                                     allow_generated=True)
+    output = x + accepted
+    interior = slice(8192, -8192)
+    output_side = (output[:, 0] - output[:, 1]) * .5
+    assert rms(output_side[interior]) >= .999 * rms(side[interior])
+    np.testing.assert_allclose(output.mean(axis=1), x.mean(axis=1), rtol=0, atol=1e-16)
+    np.testing.assert_allclose(sum(parts.values()), accepted, rtol=0, atol=1e-16)
+    assert report["local_side_phase"]["phase_cells"] > 0
+
+
 def test_stage_changes_only_target_working_stems_and_preserves_residual(tmp_path, monkeypatch):
     sources = {"other": stem(), "guitar": stem(frequency=1703) * .3,
                "piano": stem(frequency=2309) * .2,

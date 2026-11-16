@@ -79,3 +79,56 @@ def accompaniment_delta(stem, sr, wet, width_db):
     report.update(applied=bool(np.any(added)), narrow_coverage=covered / max(total, 1),
                   requested_wet=wet, requested_width_db=width_db)
     return np.column_stack((added, -added)), report
+
+
+def protect_side_cancellation(mix, delta, sr, stem_deltas=None):
+    """Use the mix's original Side as the reference for new ambience Side."""
+    def side(audio):
+        return (audio[:, 0] - audio[:, 1]) * .5
+
+    source_side, total_side = side(mix), side(delta)
+    parts = ({name: side(value) for name, value in stem_deltas.items()}
+             if stem_deltas else {None: total_side})
+    corrected = {name: part.copy() for name, part in parts.items()}
+    phase_cells = active_cells = 0
+
+    for start in range(0, len(mix), CHUNK):
+        end = min(start + CHUNK, len(mix))
+        lo, hi = max(0, start - CONTEXT), min(len(mix), end + CONTEXT)
+
+        def stft(value):
+            return signal.stft(value[lo:hi], sr, nperseg=WINDOW,
+                               noverlap=WINDOW * 3 // 4)
+
+        frequencies, times, reference = stft(source_side)
+        taper = .5 - .5 * np.cos(np.pi * np.clip((frequencies - 120) / 120, 0, 1))
+        requested = stft(total_side)[2] * taper[:, None]
+        es, ed = abs(reference) ** 2, abs(requested) ** 2
+        cross = (reference.conj() * requested).real
+        # Include any intermediate gain that the subsequent width budget can admit.
+        minimum_gain = np.clip(-cross / np.maximum(ed, 1e-30), 0, 1)
+        lowest_energy = es + 2 * minimum_gain * cross + minimum_gain ** 2 * ed
+        loss = -10 * np.log10(np.maximum(lowest_energy / np.maximum(es, 1e-30), 1e-12))
+        active = (es > max(float(es.max()) * 1e-8, 1e-24)) & (taper[:, None] > 0)
+        weight = np.where(active, np.clip((loss - .5) / .5, 0, 1), 0)
+        central = (times * sr >= start - lo) & (times * sr < end - lo)
+        phase_cells += int(np.count_nonzero(weight[:, central]))
+        active_cells += int(np.count_nonzero(active[:, central]))
+        if not np.any(weight):
+            continue
+
+        weight = np.maximum(weight, ndimage.uniform_filter(weight, size=(3, 5)))
+        weight *= active & (cross < 0)
+        direction = weight * reference / np.maximum(es, 1e-30)
+        # A common linear projection keeps the working stems and mix in agreement.
+        for name, part in parts.items():
+            projection = (reference.conj() * stft(part)[2]).real
+            _, correction = signal.istft(-direction * projection, sr, nperseg=WINDOW,
+                                         noverlap=WINDOW * 3 // 4)
+            corrected[name][start:end] += correction[start - lo:end - lo]
+
+    if stem_deltas:
+        for name, part in corrected.items():
+            stem_deltas[name] = np.column_stack((part, -part))
+    result = sum(corrected.values())
+    return np.column_stack((result, -result)), {"phase_cells": phase_cells, "active_cells": active_cells}

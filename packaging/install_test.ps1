@@ -49,6 +49,10 @@ audio = numpy.zeros((2, 4096), dtype=numpy.float32)
 processed = plugin.process(audio, 44100)
 assert processed.shape == audio.shape and numpy.isfinite(processed).all()
 print('installed ZL Compressor VST3 probe OK')
+from mastering.loud import _render_limiter
+processed = _render_limiter(audio.T, 44100)
+assert processed.shape == audio.T.shape and numpy.isfinite(processed).all()
+print('installed ZL Limiter VST3 probe OK')
 "@
 $previousPythonPath = $env:PYTHONPATH
 $previousNoUserSite = $env:PYTHONNOUSERSITE

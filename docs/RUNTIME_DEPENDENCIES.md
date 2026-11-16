@@ -6,6 +6,8 @@ v1.6.14 的 pedalboard 0.9.26 安装在内置 CPU 运行时中，打包态母带
 
 2026-09-19 迁移增量：无风格终段改为 `mastering/`，直接使用 numpy、scipy、soundfile、numba 与共享 `audio_metrics`（优先 pyloudnorm 测量）。用户参考新增固定依赖 matchering==2.0.6 / resampy==0.4.3，已装入开发音频解释器。
 
+C+ 使用 ZL Limiter 0.0.1（AGPL-3.0）VST3 和现有的 pedalboard 0.9.26。Windows 运行 `python tools/fetch_plugins.py` 获取两款固定版本的插件。运行时装配和安装探针同时检查两款插件，FFmpeg 用于回读校验 C+ WAV 真峰值。 [ZL Limiter 源码与发布](https://github.com/ZL-Audio/ZLLimiter/releases/tag/0.0.1)
+
 2026-11-05：母带密度段改为宿主 ZL Compressor 0.6.1（AGPL-3.0）VST3，新增 pedalboard==0.9.26（GPL-3.0）。插件二进制不入库：`python tools/fetch_plugins.py` 按固定 URL + SHA-256 下载 MSI、`msiexec /a` 解包到仓库 `plugins/`（gitignore），`runtime_sync.ps1` 复制为 `runtime/plugins/` 并校验。用户 EQ 同样独立；旧预置风格清理前，Soren 依赖暂不删除。Matchering 依赖 statsmodels，不能随 Soren 一并盲删。
 
 ## 推理链与直接依赖

@@ -66,6 +66,8 @@ bash packaging/runtime_sync_macos.sh
 
 `SB_*` 环境变量（与 Windows 语义一致）：`SB_PYTHON` 推理解释器、`SB_APOLLO` Apollo 组件根、`SB_SOREN` Soren 组件根、`SB_FFMPEG` ffmpeg 路径、`SB_DEVICE` 强制 `mps/cuda/cpu`、`SB_TRACE=1` 诊断打点（`SB_TRACE_FILE`，默认 `/tmp/sb_trace.log`）。
 
+母带依赖需要在离线 wheels 目录提供 `pedalboard==0.9.26`，并在仓库 `plugins/` 放置 macOS 版 `ZL Compressor.vst3` 和 `ZL Limiter.vst3`。打包时将两款插件一起放入应用运行时。 [ZL Compressor 0.6.1](https://github.com/ZL-Audio/ZLCompressor/releases/tag/0.6.1) · [ZL Limiter 0.0.1](https://github.com/ZL-Audio/ZLLimiter/releases/tag/0.0.1)
+
 ## 无头 CLI（v1.6.6）
 
 GUI 之外可用官方无头入口批处理（自动探测 MPS，输出 JSON 结果）：

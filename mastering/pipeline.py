@@ -10,13 +10,15 @@ from .matchering_adapter import candidate, UnsuitableReference
 from .reference_tone import tonal_target
 from .soundstage import widen
 from .density import densify
+from .drum_attack import RESTORE_FRACTION, detect_attacks, restore_attacks
+from .loud import finalize_loud, section_profile
 from .tone import apply_eq
 
 
 def master_file(input_path, output_path, loudness="normal", *, reference=None,
                 match_source=None, strength=.85, eq_profile="Neutral", lowpass=None,
                 space_wet=0.0, width_db=0.0, density="light", reference_cache=None,
-                reference_cache_artifact=None):
+                reference_cache_artifact=None, section_source=None, drums_source=None):
     if Path(input_path).resolve() == Path(output_path).resolve():
         raise ValueError("Input and output must be different files")
     if not np.isfinite(strength) or not 0 <= strength <= 1:
@@ -43,17 +45,45 @@ def master_file(input_path, output_path, loudness="normal", *, reference=None,
     elif reference:
         ref_report["reason"] = "zero_strength"
     print("MASTERING_PROGRESS 35", flush=True)
+    sections = section_profile(audio, sr, section_source) if loudness == "loud" else None
+    attacks = None
+    attack_report = {"applied": False, "reason": "no_drums_source"}
+    if sections is not None and density != "off" and drums_source is not None:
+        drums, drum_rate = sf.read(drums_source, always_2d=True, dtype="float64")
+        if drum_rate == sr and len(drums) == len(audio) and np.isfinite(drums).all():
+            attacks = detect_attacks(drums, sr)
+            counts = {name: len(hits) for name, hits in attacks.items()}
+            attack_report = {"applied": bool(sum(counts.values())), "detected_hits": counts}
+            if attack_report["applied"]:
+                attack_report["restore_fraction"] = RESTORE_FRACTION
+            else:
+                attack_report["reason"] = "no_drum_attacks"
+        else:
+            attack_report["reason"] = "invalid_or_unaligned_drums_source"
+        del drums
+
+    def finish(data):
+        compressed, density_report = densify(data, density)
+        if sections is not None:
+            report = attack_report if density_report["applied"] else {
+                "applied": False, "reason": "density_inactive"}
+            if report["applied"]:
+                compressed = restore_attacks(data, compressed, sr, attacks)
+            result, stats = finalize_loud(compressed, sr, sections)
+            stats["drum_attack"] = report
+        else:
+            result, stats = finalize(compressed, sr, loudness)
+        return result, stats, density_report
+
     toned = apply_eq(matched, eq_profile, lowpass)
     shaped, width_report = widen(toned, space_wet, width_db)
-    shaped, density_report = densify(shaped, density)
-    result, stats = finalize(shaped, sr, loudness)
+    result, stats, density_report = finish(shaped)
     if ref_report["accepted_strength"] > 0:
         # Validate after limiting against the same EQ/width/loudness controls.
         # A safe pre-limiter candidate need not remain safe after limiting.
         base = apply_eq(audio, eq_profile, lowpass)
         base, base_width = widen(base, space_wet, width_db)
-        base, base_density = densify(base, density)
-        baseline, base_stats = finalize(base, sr, loudness)
+        baseline, base_stats, base_density = finish(base)
         before, after = snapshot(baseline), snapshot(result)
         reasons = violations(before, after)
         ref_report["final_validation"] = {"before": before, "after": after, "violations": reasons}

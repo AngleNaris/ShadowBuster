@@ -172,9 +172,12 @@ Copy-Item "$srcApollo\ckpts" "$stage\Apollo\" -Recurse -ErrorAction SilentlyCont
 New-Item -ItemType Directory -Force -Path "$stage\mastering" | Out-Null
 Copy-Item "$root\mastering\*.py" "$stage\mastering\" -ErrorAction Stop
 Copy-Item "$root\audio_metrics.py" "$stage\" -ErrorAction Stop
-# Density stage hosts ZL Compressor (AGPL-3.0) via pedalboard; fetched by tools/fetch_plugins.py.
-if (-not (Test-Path -LiteralPath "$root\plugins\ZL Compressor.vst3" -PathType Container)) {
-    throw "缺少 plugins\ZL Compressor.vst3，请先运行 python tools\fetch_plugins.py"
+# Density and loud mastering host the pinned ZL VST3 plugins via pedalboard.
+foreach ($pluginName in @("ZL Compressor", "ZL Limiter")) {
+    $pluginBinary = "$root\plugins\$pluginName.vst3\Contents\x86_64-win\$pluginName.vst3"
+    if (-not (Test-Path -LiteralPath $pluginBinary -PathType Leaf)) {
+        throw "缺少 $pluginBinary，请先运行 python tools\fetch_plugins.py"
+    }
 }
 Copy-Item "$root\plugins" "$stage\" -Recurse -Force -ErrorAction Stop
 # Reference tonal-target cache (audit §9.8) runs in the mastering subprocess; the

@@ -14,6 +14,7 @@ compressed as if they sat at the song's average level, keeping their contrast.
 """
 import math
 from pathlib import Path
+import sys
 
 import numpy as np
 from scipy import ndimage, signal
@@ -32,8 +33,9 @@ BLOCK = 2048
 # Threshold offset per mode: light compresses less than the reference settings.
 MODES = {"light": 3.0, "standard": 0.0}
 DENSITY_MODES = ("off",) + tuple(MODES)
-PLUGIN = (Path(__file__).resolve().parents[1] / "plugins" / "ZL Compressor.vst3"
-          / "Contents" / "x86_64-win" / "ZL Compressor.vst3")
+PLUGIN_BUNDLE = Path(__file__).resolve().parents[1] / "plugins" / "ZL Compressor.vst3"
+PLUGIN = (PLUGIN_BUNDLE / "Contents" / "x86_64-win" / "ZL Compressor.vst3"
+          if sys.platform == "win32" else PLUGIN_BUNDLE)
 
 
 def split_bands(audio, sr):
@@ -48,7 +50,7 @@ def split_bands(audio, sr):
 
 def _compressor(ratio, attack, release):
     from pedalboard import load_plugin
-    if not PLUGIN.is_file():
+    if not PLUGIN.exists():
         raise RuntimeError(f"ZL Compressor not found: {PLUGIN} (run tools/fetch_plugins.py)")
     plugin = load_plugin(str(PLUGIN))
     plugin.compressor_style_compressor_style = STYLE

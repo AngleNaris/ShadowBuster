@@ -43,6 +43,18 @@ def test_independent_mastering_command_carries_density(monkeypatch, mode):
     assert cmd[cmd.index("--density") + 1] == mode
 
 
+def test_loud_mastering_command_carries_original_source_and_ffmpeg(monkeypatch, tmp_path):
+    calls = []
+    original = tmp_path / "original.wav"
+    monkeypatch.setattr(backend, "ffmpeg_bin", lambda: "verified-ffmpeg")
+    monkeypatch.setattr(backend, "_run_stream", lambda cmd, *a, **k: calls.append((cmd, k["env"])))
+    monkeypatch.setattr(backend, "read_mastering_stats", lambda path: {})
+    backend.stage_soren("in.wav", "out.wav", style_mode="off", loudness="loud", section_source=original)
+    cmd, env = calls[-1]
+    assert cmd[cmd.index("--section-source") + 1] == str(original.resolve())
+    assert env["SB_FFMPEG"] == "verified-ffmpeg"
+
+
 def test_gui_mapping_forwards_density():
     pytest.importorskip("PySide6.QtWebEngineWidgets")
     import main as app_main

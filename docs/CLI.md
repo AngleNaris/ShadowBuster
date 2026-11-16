@@ -17,7 +17,7 @@ Get-Content -Raw -Encoding UTF8 'D:\Music\run-001.json'
 
 将 EXE 路径替换为实际安装路径。`--input` 可以重复提供；同名输出冲突会拒绝。默认不覆盖已有音频，确需覆盖时显式使用 `--overwrite`。结果 JSON 必须是新路径，避免覆盖旧报告。运行成功退出 0；处理/文件错误退出 1；参数解析错误退出 2（解析错误不生成 JSON）。JSON 包含 status、exit_code、outputs、error。
 
-`--cpu` 使用 CPU，默认 cuda。主要旋钮与 UI 范围一致：Sub 0–12dB，Punch 0–10dB，sat/trans/space-wet/space-denoise 0–1，space-width-db 0–12dB。默认母带 style-mode=off（UI 无风格），默认 space-wet=.6、space-denoise=.2。**低频默认值经两轮听音校准定版（2026-09-17）**：`--sub-db 2 --punch-db 3 --trans 0.4 --sat 0.2`（此前 6/2/0.3/0.3；sub 6/9 被判低频偏多，弹性档 rc1e 在真实歌曲上最好，记录见 `listening_pack/ROUND1_RESULTS.md` / `ROUND2_RESULTS.md`）。三旋钮派生的 Kick/Bass 侧链默认 0.5、auto-clarity 授权 1.0（u_low=1.0）。`--loudness loud` 不只是更高的目标响度（应用固定目标 −6.70 LUFS），还配合更快的限制器恢复（release 由 150ms 收紧到 80ms，其余响度档保持 150ms）。`--style-mode styled` 时 `--style-blend` 是风格处理强度（0–1，默认 0.85）：0 不施加风格处理，1 完整风格处理；它是处理强度而非波形比例，100%（1.0）与旧版"末端干湿混合"的实现不再位级一致。off / eq_only 忽略该强度；eq_only 的 EQ 与强度相互独立。`--help` 列出完整参数。bypass 不跳过分轨阶段，仅当低频/鼓/声场/人声四个分轨消费阶段全部旁路时才自动跳过分轨（此时分轨产物无人消费）。旁路 Lew 时输入若探测到非 44.1kHz 采样率，会先统一重采样为 44.1kHz 再进入后续阶段（Soren 母带只接受 44.1k；已是 44.1k 不重编码；六个阶段全部旁路时逐字节透传）。
+`--cpu` 使用 CPU，默认 cuda。主要旋钮与 UI 范围一致：Sub 0–12dB，Punch 0–10dB，sat/trans/space-wet/space-denoise 0–1，space-width-db 0–12dB。默认母带 style-mode=off（UI 无风格），默认 space-wet=.6、space-denoise=.2。**低频默认值经两轮听音校准定版（2026-09-17）**：`--sub-db 2 --punch-db 3 --trans 0.4 --sat 0.2`（此前 6/2/0.3/0.3；sub 6/9 被判低频偏多，弹性档 rc1e 在真实歌曲上最好，记录见 `listening_pack/ROUND1_RESULTS.md` / `ROUND2_RESULTS.md`）。三旋钮派生的 Kick/Bass 侧链默认 0.5、auto-clarity 授权 1.0（u_low=1.0）。`--loudness loud` 在独立母带路径采用 C+。`--style-mode styled` 时 `--style-blend` 是风格处理强度（0–1，默认 0.85）：0 不施加风格处理，1 完整风格处理；它是处理强度而非波形比例，100%（1.0）与旧版"末端干湿混合"的实现不再位级一致。off / eq_only 忽略该强度；eq_only 的 EQ 与强度相互独立。`--help` 列出完整参数。bypass 不跳过分轨阶段，仅当低频/鼓/声场/人声四个分轨消费阶段全部旁路时才自动跳过分轨（此时分轨产物无人消费）。旁路 Lew 时输入若探测到非 44.1kHz 采样率，会先统一重采样为 44.1kHz 再进入后续阶段（Soren 母带只接受 44.1k；已是 44.1k 不重编码；六个阶段全部旁路时逐字节透传）。
 
 ## 参考音频与响度（§10.4 契约，v1.6.10）
 
@@ -27,7 +27,11 @@ Get-Content -Raw -Encoding UTF8 'D:\Music\run-001.json'
 
 将 `lew,bass,drums,reshape,vocals` 全部旁路而保留 `soren`，表示原曲直接进入母带（必要时重采样），不代表重跑了前三个上游处理环节。比较风格强度应使用相同母带输入、相同响度档和 EQ；不能把与历史完整流水线成品的差异全部归因于母带。
 
-`loud` 是目标响度档，不保证在任何素材上固定增加音量。Pop 的目标约 −6.70 LUFS，属于较高密度输出；达到目标若超过动态预算，优先保留安全输出并在统计中标记未达标。更重视自然动态时使用 normal 或 dynamic。
+独立母带的 `loud` 档采用 C+，整曲目标为 −8 至 −6 LUFS，先在区间低端收敛。以原曲的 3 秒短时响度识别柔和段，限制器前按比例少抬最多 2 dB，并保留至少 65% 的正增益。ZL Limiter 0.0.1 以 4× 过采样和立体声全联动运行，限幅后柔和段最多再少抬 0.5 dB。PCM24 成品用 FFmpeg 在 192 kHz 回读验证 −0.5 dBTP 上限。若在有界增益内未进入目标区间，旁车和进度日志记录实测结果及状态。
+
+GUI 和本 CLI 自动传入原始输入供段落识别。直接使用 `python -m mastering` 可传 `--section-source <原曲>`。省略该参数或时长无法对齐时，段落曲线取自母带前输入。旧预置风格的兼容入口继续使用 Soren 的流派配置。
+
+「响亮」档启用密度时，以对齐的鼓分轨识别强击打，在压缩后、限幅前于约 30 ms 起音窗口混回最多 15% 的压缩差值。保护频带为 42–125 Hz 和 1.8–6.2 kHz。GUI 和本 CLI 自动传入现有分轨，独立母带命令可用 `--drums-source <鼓分轨 WAV>` 指定。旁路鼓阶段、关闭密度或缺少对齐鼓分轨时使用普通 C+，旁车的 `drum_attack` 字段记录是否应用及原因。
 
 ## Sub 低架标定（v1.6.10，规格 §6.2）
 
@@ -98,11 +102,13 @@ CLI 的 `--no-cache` 仅对本次运行停用缓存读写，不删除已有缓�
 
 ## 2026-09-19 无风格独立母带
 
-`--style-mode off` 已切换到 ShadowBuster 自有终段，不再需要 Soren 资源、genre profile 或参考文件。响度档为 soft −12.30、dynamic −11.14、normal −9.20、loud −6.70 LUFS；目标来自应用配置，不受 `--genre` 或 `--reference` 改变。关闭风格仍执行母带，`--bypass soren` 才旁路整个母带阶段（兼容名称暂时保留）。
+`--style-mode off` 已切换到 ShadowBuster 自有终段，不再需要 Soren 资源、genre profile 或参考文件。当时的响度档为 soft −12.30、dynamic −11.14、normal −9.20、loud −6.70 LUFS；目标来自应用配置，不受 `--genre` 或 `--reference` 改变。关闭风格仍执行母带，`--bypass soren` 才旁路整个母带阶段（兼容名称暂时保留）。
 
 输出为 44.1 kHz 立体声 PCM24，TPDF dither 只在输出边界施加；文件回读验证 True Peak ≤ −0.4 dBTP。限制器动态预算不足时允许低于目标，旁车记录实际响度与停止原因。`eq_only` 和用户参考同样使用独立终段；仅无参考的旧 styled 预置风格暂留旧引擎。本轮未重建已安装应用。
 
 批次 C 的初始设计将最终宽度放在参考/EQ 后。2026-11-05 按用户确认目标调整：声场在分轨修复阶段只对 other/guitar/piano 中局部偏窄、居中的内容生成空间差异，已有宽内容减少或停止生成，鼓/bass/人声不作为空间输入。有效工作分轨同步传递；参考/EQ 后不再对全混音重复拓宽。参考分析仍读取原始输入，修正应用于修复后的混音。宽度诊断在 reshape 报告的 `extra.width.accompaniment` 中，原始输入及参数变化使对应缓存失效。
+
+DSP v10 以合并前混音的原 Side 为相位参考。预测新增 Side 会令局部侧边下降超过 0.5 dB 时，逐步削弱新增 Side 中相反方向的成分。工作分轨和混音共用同一变换，处理后沿用宽度预算。介入统计位于 `extra.width.local_side_phase`。
 
 ### 全局用户 EQ 与风格强度（2026-09-19 补充）
 

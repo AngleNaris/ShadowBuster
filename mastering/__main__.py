@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--loudness", choices=tuple(LOUDNESS_TARGETS), default="normal")
     parser.add_argument("--reference")
     parser.add_argument("--match-source")
+    parser.add_argument("--section-source", help="Original input for the loud preset's section curve.")
+    parser.add_argument("--drums-source", help="Aligned drum stem for loud preset attack protection.")
     parser.add_argument("--strength", type=float, default=.85)
     parser.add_argument("--eq-profile", default="Neutral")
     parser.add_argument("--lowpass-cutoff", type=float)
@@ -45,7 +47,8 @@ def main():
         reference=args.reference, match_source=args.match_source,
         strength=args.strength, eq_profile=args.eq_profile,
         lowpass=args.lowpass_cutoff, space_wet=args.space_wet, width_db=args.width_db, density=args.density,
-        reference_cache=reference_cache, reference_cache_artifact=reference_cache_artifact)
+        reference_cache=reference_cache, reference_cache_artifact=reference_cache_artifact,
+        section_source=args.section_source, drums_source=args.drums_source)
     print(f"LUFS {stats['actual_lufs']:.2f}; TP {stats['true_peak_dbtp']:.2f} dBTP", flush=True)
     print("MASTERING_PROGRESS 100", flush=True)
 
