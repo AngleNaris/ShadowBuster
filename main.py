@@ -89,6 +89,23 @@ def map_ui_params(params, six_stem_available=None):
     # Only the retained legacy preset engine has the fixed high-shelf cut.
     # Independent no-style/reference mastering must not inherit its compensation.
     vocal_comp_amount = with_default("vocal_comp_amount", 0.4)
+    vocal_deess_amount = with_default("vocal_deess_amount", 0.4)
+    # 高频降噪推子（0–1，界面默认 0.2）同步驱动人声去嘶声/去电噪：
+    # 0% = 0.0（完全关闭）；10% = 0.5；20% 及以上 = 1.0（满额保护性清理）。
+    vocal_defizz_amount = explicit("vocal_defizz_amount")
+    if vocal_defizz_amount is None:
+        vocal_defizz_amount = min(1.0, max(0.0, round(denoise / 0.2, 4)))
+    # P2-2 非对称 2 次偶次低频饱和：映射到「饱和」旋钮（0% → 0.0，默认 20% → 0.5，≥40% → 1.0）。
+    bass_sat_even = explicit("bass_sat_even")
+    if bass_sat_even is None:
+        bass_sat_even = min(1.0, max(0.0, round(sat / 0.4, 4)))
+    # P2-1 动态共振抑制：映射到母带「密度」档位（off → 0.0，默认 light → 0.6，standard → 0.85）。
+    density_mode = params.get("density", backend.DEFAULTS["density"])
+    resonance_amount = explicit("resonance_amount")
+    if resonance_amount is None:
+        resonance_amount = {"off": 0.0, "light": 0.6, "standard": 0.85}.get(density_mode, 0.6)
+    # P2-3 低频 Side 温和收束（Mono-Maker）：母带默认 0.7（90 Hz），显式隐藏参数可覆盖/关闭。
+    low_side_amount = with_default("low_side_amount", 0.7)
     legacy_mastering = (params.get("style_mode", backend.DEFAULTS["style_mode"]) == "styled"
                         and not params.get("reference") and "soren" not in (params.get("bypass") or ()))
     vocal_air_db = with_default(
@@ -115,8 +132,13 @@ def map_ui_params(params, six_stem_available=None):
         "clarity_auth": clarity_auth,
         "demucs_model": demucs_model,
         "vocal_comp_amount": vocal_comp_amount,
+        "vocal_deess_amount": vocal_deess_amount,
+        "vocal_defizz_amount": vocal_defizz_amount,
         "vocal_air_db": vocal_air_db,
         "bass_auto_clarity": bass_auto_clarity,
+        "bass_sat_even": bass_sat_even,
+        "resonance_amount": resonance_amount,
+        "low_side_amount": low_side_amount,
     }
     if guitar > 0:
         mapping.update(guitar_gain_db=round(1.5 * guitar - 0.75, 4),
@@ -240,6 +262,7 @@ def collect_pipeline_kwargs(params):
     不传参时解析出同一套产品默认，不存在隐藏的第二默认。"""
     params = dict(params or {})
     d = backend.DEFAULTS
+    params.setdefault("denoise", d["space_denoise"])
     mapping, notices = map_ui_params(params)
 
     def _stem_params(prefix):
@@ -266,6 +289,7 @@ def collect_pipeline_kwargs(params):
         style_blend=float(params.get("style_blend", d["style_blend"])),
         loudness=params.get("loudness", d["loudness"]),
         density=params.get("density", d["density"]),
+        density_scope=params.get("density_scope", d["density_scope"]),
         eq_profile=params.get("eq", d["eq_profile"]),
         reference=params.get("reference") or None,
         device=backend.auto_device(),

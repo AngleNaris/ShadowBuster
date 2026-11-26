@@ -76,9 +76,18 @@ except ImportError:  # 无 numba 的运行时：回退纯 Python（逐位等价�
     _ar_envelope = _ar_envelope_py
 
 
-def soft_clip(x, drive):
-    """Unit small-signal gain: drive changes curvature, not a hidden bass boost."""
-    return np.tanh(x * drive) / drive
+def soft_clip(x, drive, even=0.0):
+    """Unit small-signal gain: drive changes curvature, not a hidden bass boost.
+
+    even ∈ [0, 1] adds a gentle asymmetric bias (2nd-order even harmonic warmth
+    for small-speaker low-end translation) while preserving exact unit slope at
+    x = 0: g(0) = 0, g'(0) = 1.0. even = 0 is bit-identical to pure odd tanh.
+    """
+    if not even:
+        return np.tanh(x * drive) / drive
+    bias = 0.35 * float(even)
+    sech2 = 1.0 / (np.cosh(bias) ** 2)
+    return (np.tanh(x * drive + bias) - np.tanh(bias)) / (drive * sech2)
 
 
 # ── 饱和 4× 过采样（开发规格 v2 §6.6；DSP-14）───────────────────────────
@@ -89,13 +98,15 @@ def soft_clip(x, drive):
 SAT_OVERSAMPLE_FACTOR = 4
 SAT_CHUNK_SAMPLES = 1 << 19      # ≈12s @44.1k；分块控内存
 SAT_CHUNK_CONTEXT = 256          # FIR 半长/过采样因子 ≈ 10 样本，256 为 25 倍余量
+SAT_DC_BLOCK_HZ = 12.0
 
 
 def saturation_wet(lp, drive=1.6, factor=SAT_OVERSAMPLE_FACTOR,
-                   chunk=SAT_CHUNK_SAMPLES):
+                   chunk=SAT_CHUNK_SAMPLES, even=0.0, sr=44100):
     """4× 过采样 tanh 饱和湿路径（输入应为已限带信号）。
 
     drive→0 时 tanh(x·d)/d → x，可用作干湿对齐的自检。
+    even > 0 引入 2 次偶次谐波并在差值域做 12 Hz 零相位 DC 阻断，消除非对称直流偏移。
     0% 混合由调用方处理（sat=0 不调用本函数即逐样本恒等）。
     """
     x = np.asarray(lp, dtype=np.float64)
@@ -105,17 +116,22 @@ def saturation_wet(lp, drive=1.6, factor=SAT_OVERSAMPLE_FACTOR,
 
     def _one(seg):
         up = signal.resample_poly(seg, factor, 1)
-        return signal.resample_poly(soft_clip(up, drive), 1, factor)
+        return signal.resample_poly(soft_clip(up, drive, even=even), 1, factor)
 
     if n <= chunk:
-        return _one(x)
-    out = np.empty(n)
-    for start in range(0, n, chunk):
-        end = min(start + chunk, n)
-        lo = max(0, start - SAT_CHUNK_CONTEXT)
-        hi = min(n, end + SAT_CHUNK_CONTEXT)
-        seg = _one(x[lo:hi])
-        out[start:end] = seg[start - lo:end - lo]
+        out = _one(x)
+    else:
+        out = np.empty(n)
+        for start in range(0, n, chunk):
+            end = min(start + chunk, n)
+            lo = max(0, start - SAT_CHUNK_CONTEXT)
+            hi = min(n, end + SAT_CHUNK_CONTEXT)
+            seg = _one(x[lo:hi])
+            out[start:end] = seg[start - lo:end - lo]
+    if even and n > 16:
+        # Remove asymmetric rectification DC drift on the nonlinear delta only.
+        sos = signal.butter(2, SAT_DC_BLOCK_HZ, btype="highpass", fs=sr, output="sos")
+        out = x + signal.sosfiltfilt(sos, out - x, padlen=0)
     return out
 
 
@@ -232,7 +248,7 @@ def _frame_power(band, hop):
 def _frame_onepole(pf, hop, sr, ms):
     """帧域一阶平滑（lfilter 实现，等效采样域同时间常数）。"""
     a = 1.0 - np.exp(-hop / (sr * ms / 1000.0))
-    return signal.lfilter([a], [1.0], pf)
+    return signal.lfilter([a], [1.0, -(1.0 - a)], pf)
 
 
 def _relative_activity_gate(e_slow, hop, sr):
@@ -774,7 +790,7 @@ def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
                       drive=1.6, gate_db=GATE_THRESHOLD_DB, attack_ms=GATE_ATTACK_MS,
                       release_ms=GATE_RELEASE_MS, auto_clarity_gains=None,
                       sat_budget_gain=None, transient_curves=None,
-                      activity_gate=None):
+                      activity_gate=None, sat_even=0.0):
     """增强 bass stem。
     sub_db   : sub 低架提升（65Hz 中点、低频渐近增益，见 _shelf 契约），给包裹感
     punch_db : 60-120Hz bell 提升，给鼓 body/punch
@@ -814,7 +830,7 @@ def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
     x_warm = _warm_stage(x, sr, sub_db, punch_db)
     # ── 3. 谐波饱和：仅作用于 sub+low-mid（限带 → 4× 过采样 tanh → 回落）──
     lp = _lp200(x_warm, sr)
-    x_sat = saturation_wet(lp, drive)
+    x_sat = saturation_wet(lp, drive, even=sat_even, sr=sr)
     x_eff = (1.0 - sat) * lp + sat * x_sat
     # ── 3b. 饱和低中频预算（启发式/未听感验证）：仅衰减 sat 新增的 180-500Hz
     # 增量，静态因子 ≤-3dB（非硬预算），立体声联动时两声道同一 g；g==1.0 或
@@ -855,7 +871,7 @@ def enhance_bass_stem(x, sr, sub_db=4.0, punch_db=2.0, sat=0.3, trans=0.3,
 
 
 def _enhance_stereo(bass, sr, sub_db, punch_db, sat, trans,
-                    auto_clarity_gains, sat_budget):
+                    auto_clarity_gains, sat_budget, sat_even=0.0):
     """M/S 域立体声处理：Mid 全额 sub shelf，Side 按 side_shelf_db 受控溢出。
 
     punch bell / 饱和 / 瞬态 / 门限对 M、S 用同一参数。立体声联动（§6.2/§6.5）：
@@ -871,12 +887,13 @@ def _enhance_stereo(bass, sr, sub_db, punch_db, sat, trans,
     out_m = enhance_bass_stem(
         m, sr, sub_db=sub_db, punch_db=punch_db, sat=sat, trans=trans,
         auto_clarity_gains=auto_clarity_gains, sat_budget_gain=sat_budget,
-        transient_curves=transient_curves, activity_gate=activity_gate)
+        transient_curves=transient_curves, activity_gate=activity_gate,
+        sat_even=sat_even)
     out_s = enhance_bass_stem(
         s, sr, sub_db=side_shelf_db(sub_db), punch_db=punch_db, sat=sat,
         trans=trans, auto_clarity_gains=auto_clarity_gains,
         sat_budget_gain=sat_budget, transient_curves=transient_curves,
-        activity_gate=activity_gate)
+        activity_gate=activity_gate, sat_even=sat_even)
     return np.column_stack((out_m + out_s, out_m - out_s))
 
 
@@ -889,6 +906,8 @@ def main():
     ap.add_argument("--sub-db", type=float, default=4.0, help="sub 低频渐近提升 dB（65Hz 低架）")
     ap.add_argument("--punch-db", type=float, default=2.0, help="60-120Hz 鼓 body 提升 dB")
     ap.add_argument("--sat", type=float, default=0.3, help="谐波饱和混入比例 0-1")
+    ap.add_argument("--sat-even", type=float, default=0.0,
+                    help="非对称 2 次偶次谐波温暖度 0-1（0=纯奇次 tanh）")
     ap.add_argument("--trans", type=float, default=0.3, help="瞬态强调强度 0-1")
     ap.add_argument("--bass-gain-db", type=float, default=0.0, help="bass 整体增益 dB")
     ap.add_argument("--auto-clarity", action="store_true",
@@ -921,7 +940,7 @@ def main():
     except ValueError as exc:
         ap.error(str(exc))
 
-    for value, name, lo, hi in ((args.sub_db, "sub-db", -12, 12), (args.punch_db, "punch-db", -12, 12), (args.sat, "sat", 0, 1), (args.trans, "trans", 0, 1)):
+    for value, name, lo, hi in ((args.sub_db, "sub-db", -12, 12), (args.punch_db, "punch-db", -12, 12), (args.sat, "sat", 0, 1), (args.sat_even, "sat-even", 0, 1), (args.trans, "trans", 0, 1)):
         try: finite_range(value, name, lo, hi)
         except ValueError as exc: ap.error(str(exc))
     for value, name, lo, hi in (
@@ -977,7 +996,8 @@ def main():
                               punch_db=args.punch_db, sat=args.sat,
                               trans=args.trans,
                               auto_clarity_gains=clarity_gains,
-                              sat_budget=sat_budget)
+                              sat_budget=sat_budget,
+                              sat_even=args.sat_even)
     else:
         out = np.zeros_like(bass)
         for c in range(bass.shape[1]):
@@ -987,6 +1007,7 @@ def main():
                 sat=args.sat, trans=args.trans,
                 auto_clarity_gains=clarity_gains,
                 sat_budget_gain=sat_budget,
+                sat_even=args.sat_even,
             )
     # Kick/Bass 有界侧链（v20260912）：仅当 --sidechain-amount > 0 且提供了
     # --drums 时启用；duck 施加在增强后的 bass、delta-add 之前，使混音中的

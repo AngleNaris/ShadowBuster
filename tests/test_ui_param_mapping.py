@@ -21,12 +21,21 @@ import main as app_main  # noqa: E402
 def test_denoise_fader_drives_adaptive_mode():
     mapping, notices = app_main.map_ui_params({"denoise": 0.2})
     assert mapping["noise_mode"] == "adaptive_all"
+    assert mapping["vocal_defizz_amount"] == 1.0
     assert notices == []
+    half, _ = app_main.map_ui_params({"denoise": 0.1})
+    assert half["vocal_defizz_amount"] == 0.5
+    high, _ = app_main.map_ui_params({"denoise": 0.8})
+    assert high["vocal_defizz_amount"] == 1.0
+    collected, _ = app_main.collect_pipeline_kwargs({})
+    assert collected["vocal_defizz_amount"] == 1.0
+    assert collected["noise_mode"] == "adaptive_all"
 
 
 def test_zero_denoise_keeps_legacy_mode():
     mapping, _ = app_main.map_ui_params({"denoise": 0.0})
     assert mapping["noise_mode"] == "other"
+    assert mapping["vocal_defizz_amount"] == 0.0
 
 
 def test_punch_drives_bounded_sidechain():
@@ -102,14 +111,20 @@ def test_mapping_carries_full_noise_and_sidechain_contract():
 def test_vocal_comp_and_air_default_on_with_mastering_mirror():
     mapping, _ = app_main.map_ui_params({})
     assert mapping["vocal_comp_amount"] == 0.4
+    assert mapping["vocal_deess_amount"] == 0.4
+    assert mapping["vocal_defizz_amount"] == 0.0
     # 镜像母带 8kHz 高架衰减（−1.5dB → 人声 +1.5dB，只补不削，封顶 2dB）
     assert mapping["vocal_air_db"] == 1.5
     assert mapping["vocal_air_db"] <= 2.0
 
 
 def test_explicit_vocal_params_win():
-    mapping, _ = app_main.map_ui_params({"vocal_comp_amount": 0.0, "vocal_air_db": 0.5})
+    mapping, _ = app_main.map_ui_params(
+        {"vocal_comp_amount": 0.0, "vocal_deess_amount": 0.0,
+         "vocal_defizz_amount": 0.6, "vocal_air_db": 0.5})
     assert mapping["vocal_comp_amount"] == 0.0
+    assert mapping["vocal_deess_amount"] == 0.0
+    assert mapping["vocal_defizz_amount"] == 0.6
     assert mapping["vocal_air_db"] == 0.5
 
 
@@ -180,3 +195,27 @@ def test_width_knob_fraction_maps_to_db():
     assert kwargs["space_width_db"] == 6.0
     kwargs, _ = app_main.collect_pipeline_kwargs({})
     assert kwargs["space_width_db"] == app_main.backend.DEFAULTS["space_width_db"]
+
+
+def test_p2_knob_mappings_and_low_side_default():
+    """P2 联合方案映射：饱和→偶次温暖、密度→动态共振、低频 Side 收束默认 0.7。"""
+    default_map, _ = app_main.map_ui_params({})
+    assert default_map["bass_sat_even"] == 0.5         # 默认 sat=0.2 → 0.5
+    assert default_map["resonance_amount"] == 0.6      # 默认 density=light → 0.6
+    assert default_map["low_side_amount"] == 0.7       # 母带低频收束默认 0.7
+
+    # 饱和旋钮归零 → 偶次饱和归零；调高至 0.4+ → 1.0
+    assert app_main.map_ui_params({"sat": 0.0})[0]["bass_sat_even"] == 0.0
+    assert app_main.map_ui_params({"sat": 0.4})[0]["bass_sat_even"] == 1.0
+    assert app_main.map_ui_params({"sat": 0.8})[0]["bass_sat_even"] == 1.0
+
+    # 密度档位驱动动态共振抑制
+    assert app_main.map_ui_params({"density": "off"})[0]["resonance_amount"] == 0.0
+    assert app_main.map_ui_params({"density": "standard"})[0]["resonance_amount"] == 0.85
+
+    # 显式隐藏参数覆盖优先
+    explicit, _ = app_main.map_ui_params(
+        {"bass_sat_even": 0.0, "resonance_amount": 0.3, "low_side_amount": 0.0})
+    assert explicit["bass_sat_even"] == 0.0
+    assert explicit["resonance_amount"] == 0.3
+    assert explicit["low_side_amount"] == 0.0

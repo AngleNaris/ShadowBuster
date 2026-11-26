@@ -493,7 +493,12 @@ def test_report_contract():
     assert "低频清理" not in module and "人声空气感" not in module
     # 指标 hover 提示（含义 + 数值）
     assert "function attachRpTip(canvas)" in module
-    assert "立体声相关性" in module
+    # 报告页移除无量化意义的宽带「立体声相关性」，改为最大短时响度（3s LUFS）与处理量化明细
+    assert "立体声相关性" not in module
+    assert 'label: "最大短时响度"' in module and "short_term_lufs" in module
+    assert 'id="rp-telemetry"' in pane and "function renderTelemetry()" in module
+    for metric in ("限幅压减", "软削峰", "共振抑制", "低频收束", "自适应低切", "动态余量 PLR"):
+        assert metric in module
     # 版本号一律大写 V
     assert re.search(r'`v\$\{', APP) is None
     # 报告页不再有标题行（`renderHead` 已随信息行删除），版本号只出现在版本胶囊上
@@ -502,6 +507,29 @@ def test_report_contract():
     # 跨会话数据：报告从输出目录读取（只读选中的那一版）
     assert 'api.reportLoad(path + ".quality.json")' in APP
     assert 'rp.reports.set(path, report)' in APP
+
+
+def test_realtime_daw_meter_tab_contract():
+    assert 'id="tab-meter"' in HTML and ">仪表<" in HTML
+    assert 'id="pane-meter" hidden' in HTML
+    for cid in ('id="mt-rta"', 'id="mt-bars"', 'id="mt-scope"',
+                'id="mt-scope-low"', 'id="mt-scope-mid"', 'id="mt-scope-high"',
+                'id="mt-history"', 'id="mt-val-m"', 'id="mt-val-s"',
+                'id="mt-val-smax"', 'id="mt-val-peak"', 'id="mt-val-crest"',
+                'id="btn-meter-reset"'):
+        assert cid in HTML
+    assert 'id="mt-band-low"' not in HTML
+    assert 'id="btn-ref-clear"' in HTML
+    assert "function setReference(path)" in APP
+    assert "function clearReference(e)" in APP
+    assert "meterUI.reset({ keepHistory: true })" in APP
+    assert "function createMeterChain(ctx, sourceNode)" in APP
+    assert "function ensureNativeMeterTap()" in APP
+    assert "const meterUI = (() => {" in APP
+    assert '["meter", "tab-meter", "pane-meter"]' in APP
+    assert 'dock.hidden = which === "report" || which === "meter";' in APP
+    draft_js = (ROOT / "ui" / "draft_audio.js").read_text(encoding="utf-8")
+    assert "getMeterSource()" in draft_js
 
 
 def test_no_emoji_icons_and_no_pane_keyframes():

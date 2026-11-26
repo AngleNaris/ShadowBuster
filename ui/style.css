@@ -377,13 +377,68 @@ body {
 .rack-body { padding: var(--s-4); display: flex; gap: var(--s-5); justify-content: center; align-items: center; flex: 1; }
 .rack-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); align-items: center; }
 .rack-fields .field:nth-child(3) { grid-column: 1 / -1; }
-/* 母带面板固定两行：参考 | 风格强度 各半；EQ | 密度 | 响度 按按键数 4:3:4 分（22 栅格 = 11+11 / 8+6+8） */
+/* 母带两行分栏：首行 11+11（参考/风格强度），次行 8+6+8（EQ/密度翻转/响度），与左侧声场卡齐高。 */
 .rack[data-rack="soren"] .rack-fields { grid-template-columns: repeat(22, minmax(0, 1fr)); }
 .rack[data-rack="soren"] .rack-fields .field { grid-column: span 11; }
 .rack[data-rack="soren"] .rack-fields .field:nth-child(n+3) { grid-column: span 8; }
 .rack[data-rack="soren"] .rack-fields .field:nth-child(4) { grid-column: span 6; }
 .rack[data-rack="space"], .rack[data-rack="soren"] { min-height: 188px; }
 .rack[data-rack="space"] .rack-body, .rack[data-rack="soren"] .rack-body { min-height: 142px; }
+
+/* ═══ 密度 / 压缩范围原位翻转卡（低频交互收进背面，保持母带两行齐整）═══ */
+.field-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 4px;
+  min-height: 14px; line-height: 14px;
+}
+.flip-toggle {
+  display: inline-flex; align-items: center; gap: 3px;
+  height: 16px; padding: 0 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--c-text-faint);
+  font-family: var(--font); font-size: 10px; line-height: 1;
+  cursor: pointer; white-space: nowrap;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              background-color var(--dur) var(--ease);
+}
+.flip-toggle:hover:not(:disabled) {
+  color: var(--c-text);
+  border-color: var(--c-border);
+  background: var(--c-bg);
+}
+.flip-toggle[aria-expanded="true"] {
+  color: var(--c-accent-hi);
+  border-color: var(--c-accent-hi);
+  background: color-mix(in srgb, var(--c-accent) 16%, var(--c-bg));
+}
+.flip-toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+.flip-toggle-ic {
+  width: 10px; height: 10px; flex-shrink: 0;
+  transition: transform 260ms var(--ease);
+}
+.flip-toggle[aria-expanded="true"] .flip-toggle-ic { transform: rotate(180deg); }
+.density-flip {
+  position: relative;
+  height: 36px;
+  perspective: 520px;
+}
+.density-flip-inner {
+  position: relative;
+  width: 100%; height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 280ms var(--ease);
+}
+.density-flip.is-flipped .density-flip-inner { transform: rotateX(180deg); }
+.density-face {
+  position: absolute; inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.density-face--back { transform: rotateX(180deg); }
+.density-face .seg { width: 100%; height: 36px; }
+@media (prefers-reduced-motion: reduce) {
+  .density-flip-inner, .flip-toggle-ic { transition: none; }
+}
 
 /* ═══ 大旋钮（指针与高亮弧同原点 -135°）═══ */
 .knob-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
@@ -666,20 +721,35 @@ html[data-mode="light"] { --hardware-face: radial-gradient(circle at 50% 32%, #f
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 12px rgba(var(--c-accent-rgb), 0.45);
 }
 .seg-btn:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -1px; z-index: 1; }
-/* ═══ 母带面板：参考音频 / 风格强度 / EQ 风格 / 响度，与左侧声场行位对齐 ═══
-   声场行节奏：fader-wrap = meta 14 + gap 8 + fader 36 = 58，两行间隔 18。
-   母带镜像同一节奏：field = label 14 + gap 8 + 控件 36 = 58，行距 18，
-   内容 58+18+58 = 134 与声场推子列完全一致，控件行逐像素对齐。═══ */
+/* 母带参数沿用声场控件的标签和按钮高度。 */
 .rack[data-rack="soren"] .rack-fields { align-items: start; gap: var(--s-5); }
 .rack[data-rack="soren"] .field { gap: var(--s-2); }
 .rack[data-rack="soren"] .field-label { line-height: 14px; min-height: 14px; }
 .rack[data-rack="soren"] .field .seg { height: 36px; }
 .rack[data-rack="soren"] .seg-btn { height: auto; }
-/* 参考音频卡：紧凑变体（无内嵌标签，控件行与分段/推子同高 36px） */
+/* 参考音频卡：紧凑变体（无内嵌标签，控件行与分段/推子同高 36px，有值时右侧显示清除键） */
 .rack[data-rack="soren"] .file-card {
-  min-height: 36px; height: 36px; padding: 0 8px;
-  display: flex; flex-direction: column; justify-content: center;
+  min-height: 36px; height: 36px; padding: 0 6px 0 8px;
+  display: flex; flex-direction: row; align-items: center; gap: 4px;
 }
+.rack[data-rack="soren"] .file-card .path-input { flex: 1 1 auto; min-width: 0; }
+.ref-clear {
+  flex: none; width: 22px; height: 22px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent;
+  color: var(--c-text-dim); cursor: pointer;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              background-color var(--dur) var(--ease);
+}
+.ref-clear[hidden] { display: none; }
+.ref-clear svg { width: 12px; height: 12px; }
+.ref-clear:hover:not(:disabled) {
+  color: var(--c-text);
+  border-color: var(--c-border);
+  background: var(--c-key);
+}
+.ref-clear:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -1px; }
+.ref-clear:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ═══ 阶段流水线 ═══ */
 .pipeline {
@@ -1449,6 +1519,7 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
    顶部只补 4px：内容区已有 8px 行距，合计 12px 与 .rp-grid 的卡片间距一致，
    播放器到第一张图的间隔不再比图与图之间宽。底部留 10px 气口。 */
 #pane-report.pane-view { border: none; background: none; padding: var(--s-1) 0 var(--s-3); }
+#pane-meter.pane-view { border: none; background: none; padding: var(--s-1) 0 var(--s-3); }
 
 /* ═══════════════ 频谱预览（DAW 式）与报告图表 ═══════════════ */
 .spec-panel { border: var(--border); background: var(--c-panel); }
@@ -1592,6 +1663,160 @@ html[data-mode="light"] .rack-bypass--hardware[aria-checked="true"] .bp-dot {
 .rp-spec-tab:focus-visible { outline: 2px solid var(--c-accent-hi); outline-offset: -2px; }
 .rp-spec-wrap { position: relative; display: flex; gap: var(--s-2); flex: 1 1 auto; min-height: 0; }
 .rp-spec-wrap canvas { flex: 1 1 0; min-width: 0; height: auto; min-height: 112px; border: var(--border); }
+
+/* ═══ 报告：处理量化明细条（限幅/软削峰/共振/低频收束/低切/动态余量）═══ */
+.rp-fig--proc { padding: var(--s-3) var(--s-4); }
+.rp-fig--proc figcaption { margin-bottom: var(--s-2); }
+.rp-telemetry {
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+@media (max-width: 980px) { .rp-telemetry { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.rp-tel-cell {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 7px var(--s-2);
+  background: var(--c-bg); border: var(--border);
+  box-shadow: var(--inset-deep);
+  min-width: 0;
+}
+.rp-tel-k { font-size: 10px; color: var(--c-text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-tel-v {
+  font-size: 13px; font-weight: 700; line-height: 1.25;
+  color: var(--c-text); font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rp-tel-cell.is-active .rp-tel-v { color: var(--rp-cut); }
+.rp-tel-cell.is-boost .rp-tel-v { color: var(--rp-boost); }
+.rp-tel-cell.is-warn .rp-tel-v { color: var(--c-err); }
+.rp-tel-cell.is-idle .rp-tel-v { color: var(--c-text-faint); font-weight: 600; }
+.rp-tel-s {
+  font-size: 9.5px; color: var(--c-text-faint); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ═══════════════ 实时 DAW 仪表视图（频谱 / 响度与峰值 / 示波器 / 分频段宽度）═══════════════ */
+.mt-grid {
+  display: grid; grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr);
+  gap: var(--s-4);
+}
+@media (max-width: 980px) { .mt-grid { grid-template-columns: 1fr; } }
+.mt-fig figcaption { gap: var(--s-2); }
+.mt-tag {
+  padding: 1px 6px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  color: var(--c-text-dim); background: var(--c-bg); border: var(--border);
+}
+.mt-tag.is-live {
+  color: #fff; background: var(--c-accent); border-color: var(--c-accent-hi);
+  box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.35);
+}
+.mt-sub { font-size: 10.5px; color: var(--c-text-faint); font-variant-numeric: tabular-nums; }
+.mt-sub--right { margin-left: auto; }
+.mt-legend {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10px; color: var(--c-text-dim);
+}
+.mt-dot { display: inline-block; width: 7px; height: 7px; margin-right: -3px; }
+.mt-dot--mid { background: var(--c-accent-hi); }
+.mt-dot--side { background: var(--rp-boost, var(--c-support)); }
+.mt-dot--peak { background: var(--c-text-dim); height: 2px; }
+.mt-reset {
+  height: 22px; padding: 0 8px;
+  background: var(--c-key); color: var(--c-text-dim);
+  border: var(--border); font: inherit; font-size: 10.5px; font-weight: 600;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.mt-reset:hover { color: var(--c-text); border-color: var(--c-accent-hi); background: var(--c-panel-2); }
+
+.mt-fig--rta canvas { height: 224px; border: var(--border); background: var(--c-bg); box-shadow: var(--inset-deep); }
+.mt-loud-body {
+  display: grid; grid-template-columns: minmax(132px, 0.95fr) minmax(0, 1.05fr);
+  gap: var(--s-3); height: 224px; min-height: 0;
+}
+.mt-readouts {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr); gap: 6px;
+}
+.mt-readout {
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  padding: 5px 8px;
+  background: var(--c-bg); border: var(--border); box-shadow: var(--inset-deep);
+  min-width: 0;
+}
+.mt-readout--primary { grid-column: 1 / -1; }
+.mt-rk { font-size: 9.5px; color: var(--c-text-dim); line-height: 1.1; }
+.mt-rv {
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 16px; font-weight: 700; line-height: 1.15;
+  color: var(--c-text); font-variant-numeric: tabular-nums;
+}
+.mt-readout--primary .mt-rv { font-size: 24px; color: var(--c-accent-hi); }
+.mt-readout.is-clip .mt-rv { color: var(--c-err); }
+.mt-ru { font-size: 9px; color: var(--c-text-faint); line-height: 1.1; }
+.mt-loud-body canvas {
+  width: 100%; height: 100%;
+  border: var(--border); background: var(--c-bg); box-shadow: var(--inset-deep);
+}
+
+.mt-fig--scope, .mt-fig--history { min-height: 248px; }
+.mt-scopes {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-2); flex: 1 1 auto; min-height: 0;
+}
+.mt-scope-cell {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 6px 5px;
+  background: var(--c-bg); border: var(--border); box-shadow: var(--inset-deep);
+  min-width: 0;
+}
+.mt-scope-hd {
+  display: flex; align-items: baseline; gap: 4px;
+  white-space: nowrap; overflow: hidden; line-height: 1.1;
+}
+.mt-scope-hd b { font-size: 11px; font-weight: 600; color: var(--c-text-dim); }
+.mt-scope-hd i { font-style: normal; font-size: 8.5px; color: var(--c-text-faint); }
+.mt-scope-w {
+  margin-left: auto;
+  font-size: 9.5px; font-weight: 700; color: var(--c-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.mt-scope-cell canvas {
+  width: 100%; height: 146px; flex: 1 1 auto; display: block;
+}
+.mt-bal-bar {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) 14px;
+  align-items: center; gap: 6px; margin-top: var(--s-2);
+}
+.mt-bal-end { font-size: 10px; font-weight: 700; color: var(--c-text-faint); text-align: center; }
+.mt-bal-track {
+  position: relative; height: 10px;
+  background: var(--c-bg); border: var(--border); box-shadow: var(--inset-deep);
+}
+.mt-bal-mid {
+  position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+  background: var(--c-border); pointer-events: none;
+}
+.mt-bal-fill {
+  position: absolute; top: 1px; bottom: 1px; left: 50%; width: 0;
+  background: rgba(var(--c-accent-rgb), 0.55); pointer-events: none;
+  will-change: left, width;
+}
+.mt-bal-dot {
+  position: absolute; top: 0; bottom: 0; left: 50%; width: 3px;
+  transform: translateX(-50%);
+  background: var(--c-accent-hi);
+  box-shadow: 0 0 6px rgba(var(--c-accent-rgb), 0.7);
+  pointer-events: none;
+  will-change: left;
+}
+
+.mt-fig--history canvas {
+  height: 188px; flex: 1 1 auto;
+  border: var(--border); background: var(--c-bg); box-shadow: var(--inset-deep);
+}
 
 /* 画布 hover 指标说明 */
 .rp-tip {

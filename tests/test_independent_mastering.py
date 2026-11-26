@@ -288,8 +288,8 @@ def test_off_pipeline_cache_and_report_without_soren(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "APOLLO_DIR", tmp_path / "no-models")
     calls = []
     def local_stage(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
-                    density="light"):
-        calls.append(1)
+                    density="light", density_scope="low,mid,high"):
+        calls.append(density_scope)
         return master_file(input_wav, out_wav, loudness)
     monkeypatch.setattr(backend, "stage_mastering", local_stage)
     src = tmp_path / "music.wav"
@@ -302,6 +302,9 @@ def test_off_pipeline_cache_and_report_without_soren(tmp_path, monkeypatch):
     assert Path(out1).read_bytes() == Path(out2).read_bytes()
     assert backend.read_mastering_stats(out2)["readback_verified"]
     assert backend.read_quality_report(out2) is not None
+    out3 = backend.run_pipeline(src, tmp_path / "out", density_scope="high,low", **options)
+    assert calls == ["low,mid,high", "low,high"]
+    assert backend.read_quality_report(out3)["processing"]["density_scope"] == "low,high"
 
 
 def test_no_style_bypass_does_not_finalize(tmp_path, monkeypatch):
@@ -369,7 +372,7 @@ def test_master_file_refuses_source_overwrite(tmp_path):
 def test_pipeline_resamples_before_independent_mastering(tmp_path, monkeypatch, rate):
     monkeypatch.setattr(backend, "_ensure_dev_runtime", lambda: pytest.fail("Soren requested"))
     def local_stage(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
-                    density="light"):
+                    density="light", density_scope="low,mid,high"):
         return master_file(input_wav, out_wav, loudness)
     monkeypatch.setattr(backend, "stage_mastering", local_stage)
     src = tmp_path / "input.wav"
@@ -379,3 +382,43 @@ def test_pipeline_resamples_before_independent_mastering(tmp_path, monkeypatch, 
                                bypass=["lew", "bass", "drums", "reshape", "vocals"])
     info = sf.info(dst)
     assert info.samplerate == SR and info.channels == 2 and info.frames == round(SR * .6)
+
+
+def test_soft_clip_peaks_is_linked_bounded_and_untouched_below_ceiling():
+    rng = np.random.default_rng(19)
+    mono = rng.standard_normal(40000) * 1.8
+    stereo = np.column_stack((mono, mono * .37))
+    untouched, info0 = finalizer.soft_clip_peaks(stereo, finalizer.LIMITER_CEILING_DB, 0.0)
+    np.testing.assert_array_equal(untouched, stereo)
+    assert not info0["applied"]
+
+    quiet = stereo * .05
+    q_out, q_info = finalizer.soft_clip_peaks(quiet, finalizer.LIMITER_CEILING_DB, 1.5)
+    np.testing.assert_array_equal(q_out, quiet)
+    assert not q_info["applied"]
+
+    clipped, info = finalizer.soft_clip_peaks(stereo, finalizer.LIMITER_CEILING_DB, 1.5)
+    assert info["applied"] and 0.0 < info["max_clip_gr_db"] < 1.5
+    np.testing.assert_allclose(clipped[:, 1], clipped[:, 0] * .37, atol=1e-12)
+    assert np.max(np.abs(clipped)) < np.max(np.abs(stereo))
+
+
+def test_finalize_with_soft_clip_reduces_limiter_peak_gr_on_spiky_audio():
+    # 1. 目标可达的尖峰素材：同等响度下，预限幅软削波显著降低限制器峰值减益
+    x = music(2.0)
+    x[SR // 2] += .45
+    x[3 * SR // 2] += .45
+    _, stats_plain = finalize(x, SR, "normal", soft_clip_db=0.0)
+    _, stats_clip = finalize(x, SR, "normal", soft_clip_db=1.5)
+    assert stats_plain["target_met"] and stats_clip["target_met"]
+    assert stats_clip["true_peak_dbtp"] <= TRUE_PEAK_CEILING_DB
+    assert stats_clip["limiter"]["soft_clip"]["applied"]
+    assert stats_clip["limiter"]["max_gain_reduction_db"] < stats_plain["limiter"]["max_gain_reduction_db"] - 0.5
+
+    # 2. 受动态预算约束的高频尖峰素材：相同预算下软削波换来更高可用响度
+    spiky = music(2.0) * .5
+    spiky[::11025] += .95
+    _, s0 = finalize(spiky, SR, "normal", soft_clip_db=0.0)
+    _, s1 = finalize(spiky, SR, "normal", soft_clip_db=1.5)
+    assert s1["true_peak_dbtp"] <= TRUE_PEAK_CEILING_DB
+    assert s1["actual_lufs"] > s0["actual_lufs"] + 0.2

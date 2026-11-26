@@ -128,6 +128,9 @@
     return Number.isFinite(n) ? n : fallback;
   }
 
+  const allDensityBands = "low,mid,high";
+  const initialDensityScope = loadValue("density_scope",
+    loadValue("actual_units", null) === null ? "global" : allDensityBands);
   // 一次性读取旧档位，不覆盖旧键；存储不可用时仍在内存中使用真实值。
   try {
     const snapshot = JSON.parse(loadValue("actual_units", "null"));
@@ -850,6 +853,11 @@
     const refOff = !panelOn.soren || state.draftLocked;
     $("ref-card").inert = refOff;
     $("ref-card").setAttribute("aria-disabled", String(refOff));
+    const refClear = $("btn-ref-clear");
+    if (refClear) {
+      refClear.disabled = refOff;
+      refClear.setAttribute("aria-disabled", String(refOff));
+    }
 
     // 风格强度以参考音频为前提；面板旁路时由整块变淡接管，避免叠加两次。
     const noRef = !state.reference;
@@ -858,6 +866,28 @@
     blendField.title = noRef ? "选择参考音频后可用" : "";
     $("fader-blend").inert = noRef;
     $("fader-blend").setAttribute("aria-disabled", String(!panelOn.soren || noRef));
+    const scopeField = document.querySelector(".density-scope");
+    const flipBtn = $("btn-density-flip");
+    const modeFace = $("density-mode-face");
+    const scopeFace = $("density-scope-face");
+    const scopeOff = !panelOn.soren || state.density === "off";
+    if (scopeOff && state.densityFlipped) setDensityFlipped(false, false);
+    if (flipBtn) {
+      flipBtn.disabled = scopeOff;
+      flipBtn.setAttribute("aria-disabled", String(scopeOff));
+      flipBtn.title = scopeOff
+        ? "开启密度（轻 / 标准）后可设置压缩范围"
+        : (state.densityFlipped ? "返回密度强度设置" : `翻转设置压缩范围（当前：${densityScopeSummary(state.density_scope)}）`);
+    }
+    if (modeFace) modeFace.inert = !panelOn.soren || !!state.densityFlipped;
+    if (scopeFace) scopeFace.inert = scopeOff || !state.densityFlipped;
+    if (scopeField) {
+      scopeField.classList.toggle("is-disabled", panelOn.soren && scopeOff);
+      scopeField.querySelectorAll("button").forEach((btn) => {
+        btn.disabled = scopeOff;
+        btn.setAttribute("aria-disabled", String(scopeOff));
+      });
+    }
   }
 
 
@@ -997,20 +1027,99 @@
   const getBlend = bindFader($("fader-blend"), $("val-blend"),
     (v) => Math.round(v * 100) + "%", "style_blend");
 
-  /* ─── 密度分段：多频段压缩（ZL Compressor），默认轻 ─── */
+  /* ─── 密度强度与压缩范围（原位翻转卡）─── */
   state.density = loadValue("density", "light");
+  state.densityFlipped = false;
   const densityBtns = document.querySelectorAll(".seg-btn[data-density]");
+  const densityFlipEl = $("density-flip");
+  const densityFlipInner = $("density-flip-inner");
+  const densityFlipBtn = $("btn-density-flip");
+  const densityFieldLabel = $("density-field-label");
+  const densityScopeBadge = $("density-scope-badge");
+  const densityModeFace = $("density-mode-face");
+  const densityScopeFace = $("density-scope-face");
+  function densityScopeSummary(scope) {
+    if (!scope || scope === "global") return "全局";
+    if (scope === allDensityBands) return "全段";
+    if (scope === "none") return "未选";
+    const names = { low: "低", mid: "中", high: "高" };
+    return scope.split(",").map((k) => names[k] || k).join("/");
+  }
+  function paintDensityFlipHead() {
+    if (densityFieldLabel) densityFieldLabel.textContent = state.densityFlipped ? "压缩范围" : "密度";
+    if (densityScopeBadge) densityScopeBadge.textContent = state.densityFlipped ? "返回" : densityScopeSummary(state.density_scope);
+    if (densityFlipBtn) {
+      densityFlipBtn.setAttribute("aria-expanded", String(state.densityFlipped));
+      if (!densityFlipBtn.disabled) {
+        densityFlipBtn.title = state.densityFlipped
+          ? "返回密度强度设置"
+          : `翻转设置压缩范围（当前：${densityScopeSummary(state.density_scope)}）`;
+      }
+    }
+  }
+  function setDensityFlipped(on, animate = true) {
+    const next = !!on;
+    if (next && (state.density === "off" || !rackEnabled("soren"))) return;
+    const changed = state.densityFlipped !== next;
+    state.densityFlipped = next;
+    if (densityFlipEl) densityFlipEl.classList.toggle("is-flipped", next);
+    if (densityModeFace) densityModeFace.setAttribute("aria-hidden", String(next));
+    if (densityScopeFace) densityScopeFace.setAttribute("aria-hidden", String(!next));
+    paintDensityFlipHead();
+    paintParamAvailability();
+    if (changed && animate && densityFlipInner && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      densityFlipInner.getAnimations().forEach((a) => a.cancel());
+      densityFlipInner.animate(
+        [{ transform: next ? "rotateX(0deg)" : "rotateX(180deg)" },
+         { transform: next ? "rotateX(180deg)" : "rotateX(0deg)" }],
+        { duration: 260, easing: "cubic-bezier(0.25, 0.6, 0.35, 1)" }
+      );
+    }
+  }
+  if (densityFlipBtn) {
+    densityFlipBtn.addEventListener("click", () => setDensityFlipped(!state.densityFlipped, true));
+  }
+  if (densityScopeFace) {
+    densityScopeFace.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && state.densityFlipped) {
+        e.stopPropagation();
+        setDensityFlipped(false, true);
+        if (densityFlipBtn) densityFlipBtn.focus();
+      }
+    });
+  }
   function paintDensity() {
     densityBtns.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.density === state.density)));
   }
-  densityBtns.forEach((btn) => btn.addEventListener("click", () => {
-    state.density = btn.dataset.density;
+  function setDensity(value) {
+    state.density = value;
     saveValue("density", state.density);
     paintDensity();
-  }));
+    paintParamAvailability();
+  }
+  densityBtns.forEach((btn) => btn.addEventListener("click", () => setDensity(btn.dataset.density)));
   paintDensity();
   const getDensity = () => state.density;
-  function setDensity(v) { state.density = String(v); saveValue("density", state.density); paintDensity(); }
+  const scopeBtns = document.querySelectorAll(".density-scope [data-scope]");
+  function setDensityScope(value) {
+    state.density_scope = value;
+    saveValue("density_scope", value);
+    const active = value.split(",");
+    scopeBtns.forEach((btn) => btn.setAttribute("aria-pressed", String(active.includes(btn.dataset.scope))));
+    paintDensityFlipHead();
+  }
+  scopeBtns.forEach((btn) => btn.addEventListener("click", () => {
+    const scope = btn.dataset.scope;
+    if (scope === "global") {
+      setDensityScope("global");
+      return;
+    }
+    const active = new Set(state.density_scope.split(","));
+    if (active.has(scope)) active.delete(scope);
+    else active.add(scope);
+    setDensityScope(allDensityBands.split(",").filter((band) => active.has(band)).join(",") || "none");
+  }));
+  setDensityScope(initialDensityScope);
 
   /* ─── EQ 分段 ─── */
   state.eq = loadValue("eq", "Neutral");
@@ -1040,6 +1149,7 @@
     punch: getPunch, trans: getTrans, vocal: getVocal, guitar: getGuitar,
     space: getSpace, denoise: getDenoise, space_width: getWidth,
     style_blend: getBlend, loudness: getLoudness, density: getDensity, eq: () => state.eq,
+    density_scope: () => state.density_scope,
     bypass: activeBypassList,
   };
   const PRESET_SETTERS = {
@@ -1048,6 +1158,7 @@
     vocal: getVocal.set, guitar: getGuitar.set, space: getSpace.set,
     denoise: getDenoise.set, space_width: getWidth.set,
     style_blend: getBlend.set, loudness: setLoudness, density: setDensity, eq: setEq,
+    density_scope: setDensityScope,
     bypass: setBypassList,
   };
   function readSlots() {
@@ -1067,6 +1178,7 @@
     return p;
   }
   function applyPanel(p) {
+    if (p && p.density_scope == null) setDensityScope(allDensityBands);
     for (const [k, set] of Object.entries(PRESET_SETTERS)) {
       if (p && p[k] !== undefined && p[k] !== null) set(p[k]);
     }
@@ -1348,11 +1460,19 @@
   });
 
   /* ─── 输出 / 参考音频 ─── */
+  function setReference(path) {
+    const next = String(path || "");
+    state.reference = next;
+    const input = $("ref-path");
+    if (input) { input.value = next; input.title = next; }
+    const clearBtn = $("btn-ref-clear");
+    if (clearBtn) clearBtn.hidden = !next;
+    saveValue("reference", next);
+    paintParamAvailability();
+  }
   state.output = loadValue("output", "");
   $("output-path").value = state.output;
-  state.reference = loadValue("reference", "");
-  $("ref-path").value = state.reference;
-  paintParamAvailability();
+  setReference(loadValue("reference", ""));
 
   async function chooseOutput() {
     if (state.processing) return;
@@ -1364,19 +1484,29 @@
       refreshReportVersions();
     }
   }
+  function isRefLocked() {
+    return state.processing || $("ref-card").inert ||
+      $("ref-card").getAttribute("aria-disabled") === "true";
+  }
   async function chooseReference() {
-    if (state.processing || $('ref-card').inert ||
-        $('ref-card').getAttribute('aria-disabled') === 'true') return;
+    if (isRefLocked()) return;
     const path = await api.selectReference();
-    if (path) {
-      state.reference = path; $("ref-path").value = path; saveValue("reference", path);
-      paintParamAvailability();
-    }
+    if (path) setReference(path);
+  }
+  function clearReference(e) {
+    if (e) e.stopPropagation();
+    if (isRefLocked() || !state.reference) return;
+    setReference("");
   }
   $("output-card").addEventListener("click", chooseOutput);
   $("ref-card").addEventListener("click", chooseReference);
+  $("btn-ref-clear")?.addEventListener("click", clearReference);
   $("output-card").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseOutput(); } });
-  $("ref-card").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseReference(); } });
+  $("ref-card").addEventListener("keydown", (e) => {
+    if (e.target === $("btn-ref-clear")) return;
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseReference(); }
+    else if ((e.key === "Backspace" || e.key === "Delete") && state.reference) { e.preventDefault(); clearReference(); }
+  });
   [$("output-card"), $("ref-card")].forEach((card) => {
     card.addEventListener("dragover", (e) => { e.preventDefault(); card.classList.add("drop-hover"); });
     card.addEventListener("dragleave", () => card.classList.remove("drop-hover"));
@@ -1389,12 +1519,9 @@
     const hit = document.elementFromPoint(x, y);
     const card = hit && (hit.closest("#output-card") || hit.closest("#ref-card"));
     if (card === $("ref-card")) {
-      if(card.inert || card.getAttribute('aria-disabled')==='true')return;
+      if (isRefLocked()) return;
       const audio = paths.find(isAudio);
-      if (audio) {
-        state.reference = audio; $("ref-path").value = audio; saveValue("reference", audio);
-        paintParamAvailability();
-      }
+      if (audio) setReference(audio);
       return;
     }
     if (card === $("output-card")) {
@@ -1601,6 +1728,7 @@
       style_mode: state.reference ? "styled" : (state.eq === "Neutral" ? "off" : "eq_only"),
       style_blend: getBlend(),
       loudness: getLoudness(), density: getDensity(), eq: state.eq,
+      density_scope: state.density_scope,
     };
   }
 
@@ -1673,7 +1801,7 @@
         "<h3>参考音频</h3><p>拖入音频或点击选择一首<b>你想接近的歌</b>，音色方向会以参考为准；<b>响度仍由你选的响度档决定</b>，不会被参考的音量带走。不选参考就是无风格母带。</p>" +
         "<h3>风格强度</h3><p>控制参考母带的处理力度，主要改变压缩、瞬态与密度，<b>需要先选参考音频</b>；它不是干湿混合，调低不会把两条不同相位的波形相加，音色和声场只做有限修正。拿不准就保持默认。</p>" +
         "<h3>EQ 风格</h3><p><b>平直</b>：少改音色；<b>温暖</b>：更厚；<b>明亮</b>：更亮；<b>融合</b>：尝试更融合的整体音色。</p>" +
-        "<h3>密度</h3><p>多频段压缩，让鼓和低频更有弹性、乐器更抱团；<b>主歌和副歌的起伏会保留</b>。<b>轻</b>适合大多数歌，<b>标准</b>更紧更满，<b>关</b>保持原样。会稍微收敛明亮 EQ 的高频。</p>" +
+        "<h3>密度与压缩范围</h3><p>轻、标准控制压缩力度；点击「密度」右上角翻转按钮可切换到压缩范围（全 / 低 / 中 / 高）。全局用一个压缩器联动整段声音；低、中、高频可多选，分界为 120 Hz 和 2 kHz（高频在 10 kHz 再分两段）。取消全部频段或选择关即可跳过密度压缩。</p>" +
         "<h3>响度</h3><p>轻柔更舒缓，标准适合日常，响亮更满、更响。<b>更响不等于更好听</b>。</p>" +
         "<h3>怎么选</h3><p><b>先保持默认，再按喜好微调</b>。关闭面板可跳过这一步。</p>",
     },
@@ -2205,9 +2333,10 @@ window.addEventListener("resize", () => moveTabGlider(false));
 moveTabGlider(false);
 
 function openOverlay(which) {
-  // 三页切换：效果器（默认）/ 预览 / 报告。文件 UI（待处理队列）始终显示在上方。
+  // 三页切换：效果器（默认）/ 仪表 / 报告。顶部试听播放器始终常驻上方。
   state.view = which;
   const tabs = [["process", "tab-process", "pane-process"],
+                ["meter", "tab-meter", "pane-meter"],
                 ["report", "tab-report", "pane-report"]];
   const pane = $(tabs.find(([name]) => name === which)[2]);
   tabs.forEach(([name, tabId, paneId]) => {
@@ -2221,15 +2350,15 @@ function openOverlay(which) {
                   { opacity: 1, transform: "none" }],
                  { duration: 220, easing: "cubic-bezier(0.25, 0.6, 0.35, 1)" });
   }
-  // 底部主按钮随视图切换：效果器=BUSTER!，预览=PREVIEW（渲染入口），
-  // 报告页无动作（隐藏）。批处理进行中一律回到 停止 展示。
+  // 底部主按钮随视图切换：效果器=BUSTER!，仪表与报告页无动作（隐藏）。
   const dock = document.querySelector(".dock");
-  dock.hidden = which === "report";
+  dock.hidden = which === "report" || which === "meter";
   if (!state.processing) {
     processLabel.textContent = "BUSTER!";
     processBtn.disabled = draft.busy;
   }
 
+  if (typeof meterUI !== "undefined") meterUI.setVisible(which === "meter");
   if (which === "report") {
     refreshReportVersions("reveal");   // 覆盖启动后直进报告的场景（版本列表兜底刷新）
     renderReport("reveal");
@@ -2238,10 +2367,11 @@ function openOverlay(which) {
 }
 
 $("tab-process").addEventListener("click", () => openOverlay("process"));
+$("tab-meter").addEventListener("click", () => openOverlay("meter"));
 $("tab-report").addEventListener("click", () => openOverlay("report"));
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("pane-report").hidden) openOverlay("process");
+  if (!$("pane-report").hidden || !$("pane-meter").hidden) openOverlay("process");
 });
 
 function normPath(p) { return String(p ?? "").replace(/\\/g, "/"); }
@@ -2452,8 +2582,20 @@ function drawPlayerWaveform() {
 }
 document.addEventListener('sb-theme',drawPlayerWaveform);
 const nativeAudio = $('player-audio');
+let nativeMeterTap = null;
+function applyMonitorVolume(pct) {
+  const g = Math.max(0, Math.min(1, Number(pct) / 100));
+  if (nativeMeterTap && nativeMeterTap.gainNode) {
+    nativeAudio.volume = 1;
+    try { nativeMeterTap.gainNode.gain.setTargetAtTime(g, nativeMeterTap.ctx.currentTime, 0.02); }
+    catch (_) { nativeMeterTap.gainNode.gain.value = g; }
+  } else {
+    nativeAudio.volume = g;
+  }
+  draft.player.volume(g);
+}
 const getMonitorVolume=bindKnob($('player-volume'),$('player-volume-value'),v=>`${v}%`,null,value=>{
-  nativeAudio.volume=value/100;draft.player.volume(value/100);
+  applyMonitorVolume(value);
 });
 function draftTime(t) { t=Math.max(0,Math.floor(t||0));return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`; }
 function preciseTime(t) { const ms=Math.round(Math.max(0,t||0)*1000);return `${String(Math.floor(ms/60000)).padStart(2,'0')}:${String(Math.floor(ms/1000)%60).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`; }
@@ -2538,7 +2680,8 @@ async function switchToNativeOriginal() {
   draft.player.stop();
   renderPlayerSources();paintTransport();
   if(!transport.file)return;
-  nativeAudio.src=fileUrl(transport.file);nativeAudio.volume=getMonitorVolume()/100;
+  nativeAudio.src=fileUrl(transport.file);applyMonitorVolume(getMonitorVolume());
+  meterUI.reset({ keepHistory: true });
   try {
     await new Promise((resolve,reject)=>{
       const done=()=>{nativeAudio.removeEventListener('loadedmetadata',ok);nativeAudio.removeEventListener('error',fail);};
@@ -2584,15 +2727,15 @@ async function chooseSource(source,keepPlaying=true) {
   const shared=usesDraftEngine()&&['original','draft'].includes(source);
   if(!shared)stopTransport();
   transport.source=source;if(!['original','draft'].includes(source))transport.lastVersion=source;
-  renderPlayerSources();syncReportSelection();requestPlayerWaveform();playerError('');paintTransport();
+  renderPlayerSources();syncReportSelection();requestPlayerWaveform();playerError('');paintTransport();meterUI.reset({ keepHistory: true });
   if(shared){draft.player.original(source==='original');return;}
   if(usesDraftEngine()) {
-    draft.player.original(source==='original');draft.player.seek(time);draft.player.params(collectParams());draft.player.volume(getMonitorVolume()/100);
+    draft.player.original(source==='original');draft.player.seek(time);draft.player.params(collectParams());applyMonitorVolume(getMonitorVolume());
     setPlayerLoop();if(playing)await draft.player.play(true);
   } else {
     const path=source==='original'?transport.file:source;
     if(!path)return;
-    nativeAudio.src=fileUrl(path);nativeAudio.volume=getMonitorVolume()/100;
+    nativeAudio.src=fileUrl(path);applyMonitorVolume(getMonitorVolume());
     try {
       await new Promise((resolve,reject)=>{
         const done=()=>{nativeAudio.removeEventListener('loadedmetadata',ok);nativeAudio.removeEventListener('error',fail);};
@@ -2665,7 +2808,7 @@ function refreshPreviewFiles() {
   const file=state.selectedFile;if(file===transport.file)return;
   stopTransport();draft.id++;draft.busy=false;transport.dragging=false;seekPointer=null;transport.token++;transport.file=file;transport.source='original';transport.duration=0;
   transport.range=[0,0];transport.loop=false;transport.versions=[];transport.lastVersion=null;requestPlayerWaveform();$('player-loop-editor').close();renderPlayerRuler();
-  draft.ready=false;nativeAudio.removeAttribute('src');nativeAudio.load();
+  draft.ready=false;nativeAudio.removeAttribute('src');nativeAudio.load();meterUI.reset({ keepHistory: true });
   setPlayerLoop();cacheState('empty','缓存尚未准备');playerError('');paintTransport();renderPlayerSources();
   if(file){api.audioInfo(file);chooseSource('original',false);refreshPreviewOutputs();restoreDraftForFile(file);}
 }
@@ -2823,6 +2966,7 @@ $('player-delta').addEventListener('click',()=>{
   transport.delta=!transport.delta;draft.player.delta(transport.delta);paintTransport();
 });
 for(const event of ['play','pause','ended','loadedmetadata'])nativeAudio.addEventListener(event,paintTransport);
+nativeAudio.addEventListener('play',()=>{ensureNativeMeterTap();if(nativeMeterTap?.ctx?.state==='suspended')nativeMeterTap.ctx.resume().catch(()=>{});});
 function nativeTick(){
   if(usesDraftEngine()){if(draft.player.playing)paintPlaybackPosition();}
   else if(!nativeAudio.paused){
@@ -2835,10 +2979,13 @@ function nativeTick(){
 }
 requestAnimationFrame(nativeTick);
 document.addEventListener('keydown',e=>{
-  if(e.code!=='Space')return;
+  if(e.code!=='Space' || e.target.matches?.('[data-scope]:focus-visible'))return;
   e.preventDefault();e.stopImmediatePropagation();if(!e.repeat)togglePlayer();
 },true);
-document.addEventListener('keyup',e=>{if(e.code==='Space'){e.preventDefault();e.stopImmediatePropagation();}},true);
+document.addEventListener('keyup',e=>{
+  if(e.code!=='Space' || e.target.matches?.('[data-scope]:focus-visible'))return;
+  e.preventDefault();e.stopImmediatePropagation();
+},true);
 let lastDraftParams='';
 setInterval(()=>{
   if(!draft.ready)return;
@@ -2893,6 +3040,922 @@ function reportCurves() {
              { label: `V${ver}`, db: cmp.output_db }],
   };
 }
+/* ═══════════════ 实时 DAW 仪表（BS.1770 K 加权响度 / Mid-Side RTA / 三频极坐标声场 / 响度走势）═══════════════ */
+const meterChains = new WeakMap();
+function createMeterChain(ctx, sourceNode) {
+  if (!ctx || !sourceNode) return null;
+  const cached = meterChains.get(sourceNode);
+  if (cached) return cached;
+  const splitter = ctx.createChannelSplitter(2);
+  const analyserL = ctx.createAnalyser();
+  const analyserR = ctx.createAnalyser();
+  analyserL.fftSize = 2048; analyserR.fftSize = 2048;
+  analyserL.smoothingTimeConstant = 0; analyserR.smoothingTimeConstant = 0;
+
+  const midL = ctx.createGain(); midL.gain.value = 0.5;
+  const midR = ctx.createGain(); midR.gain.value = 0.5;
+  const midSum = ctx.createGain();
+  const analyserMid = ctx.createAnalyser();
+  analyserMid.fftSize = 2048;
+  analyserMid.smoothingTimeConstant = 0.65;
+  analyserMid.minDecibels = -84; analyserMid.maxDecibels = 0;
+
+  const sideL = ctx.createGain(); sideL.gain.value = 0.5;
+  const sideR = ctx.createGain(); sideR.gain.value = -0.5;
+  const sideSum = ctx.createGain();
+  const analyserSide = ctx.createAnalyser();
+  analyserSide.fftSize = 2048;
+  analyserSide.smoothingTimeConstant = 0.65;
+  analyserSide.minDecibels = -84; analyserSide.maxDecibels = 0;
+
+  function makeKBranch() {
+    const shelf = ctx.createBiquadFilter();
+    shelf.type = "highshelf"; shelf.frequency.value = 1681.974450955533; shelf.gain.value = 4.0;
+    const hpf = ctx.createBiquadFilter();
+    hpf.type = "highpass"; hpf.frequency.value = 38.13547087602444; hpf.Q.value = 0.5003270373238773;
+    const an = ctx.createAnalyser();
+    an.fftSize = 2048; an.smoothingTimeConstant = 0;
+    shelf.connect(hpf); hpf.connect(an);
+    return { input: shelf, analyser: an };
+  }
+  const kL = makeKBranch(), kR = makeKBranch();
+
+  /* 三频立体声分频支路（L/R 严格对称二阶 Butterworth，零通道相位差，音频线程原生计算） */
+  function makeBandBranch(kind) {
+    const makeChannel = (ch) => {
+      const an = ctx.createAnalyser();
+      an.fftSize = 512; an.smoothingTimeConstant = 0;
+      if (kind === "low") {
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass"; lp.frequency.value = 250; lp.Q.value = 0.7071;
+        splitter.connect(lp, ch); lp.connect(an);
+      } else if (kind === "mid") {
+        const hp = ctx.createBiquadFilter();
+        hp.type = "highpass"; hp.frequency.value = 250; hp.Q.value = 0.7071;
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass"; lp.frequency.value = 4000; lp.Q.value = 0.7071;
+        splitter.connect(hp, ch); hp.connect(lp); lp.connect(an);
+      } else {
+        const hp = ctx.createBiquadFilter();
+        hp.type = "highpass"; hp.frequency.value = 4000; hp.Q.value = 0.7071;
+        splitter.connect(hp, ch); hp.connect(an);
+      }
+      return an;
+    };
+    return { L: makeChannel(0), R: makeChannel(1) };
+  }
+
+  sourceNode.connect(splitter);
+  splitter.connect(analyserL, 0);
+  splitter.connect(analyserR, 1);
+  splitter.connect(midL, 0); splitter.connect(midR, 1);
+  midL.connect(midSum); midR.connect(midSum); midSum.connect(analyserMid);
+  splitter.connect(sideL, 0); splitter.connect(sideR, 1);
+  sideL.connect(sideSum); sideR.connect(sideSum); sideSum.connect(analyserSide);
+  splitter.connect(kL.input, 0);
+  splitter.connect(kR.input, 1);
+
+  const bands = {
+    low: makeBandBranch("low"),
+    mid: makeBandBranch("mid"),
+    high: makeBandBranch("high"),
+  };
+
+  const chain = {
+    ctx, sampleRate: ctx.sampleRate || 44100,
+    analyserL, analyserR, analyserMid, analyserSide,
+    analyserKL: kL.analyser, analyserKR: kR.analyser,
+    bands,
+  };
+  meterChains.set(sourceNode, chain);
+  return chain;
+}
+
+function ensureNativeMeterTap() {
+  if (nativeMeterTap) return nativeMeterTap;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx || !nativeAudio) return null;
+    const ctx = new AudioCtx();
+    const src = ctx.createMediaElementSource(nativeAudio);
+    const gainNode = ctx.createGain();
+    const vol = Math.max(0, Math.min(1, getMonitorVolume() / 100));
+    gainNode.gain.value = vol;
+    nativeAudio.volume = 1;
+    src.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    const chain = createMeterChain(ctx, src);
+    nativeMeterTap = { ctx, src, gainNode, chain };
+    return nativeMeterTap;
+  } catch (_) {
+    return null;
+  }
+}
+
+const meterUI = (() => {
+  const N = 2048, BINS = N / 2;
+  const SCOPE_N = 512, ANG_BINS = 36;
+  const bufL = new Float32Array(N), bufR = new Float32Array(N);
+  const bufKL = new Float32Array(N), bufKR = new Float32Array(N);
+  const fMid = new Float32Array(BINS), fSide = new Float32Array(BINS);
+  const rtaPeak = new Float32Array(BINS).fill(-90);
+  const rtaPeakAt = new Float64Array(BINS);
+
+  /* 三频极坐标声场预分配缓冲（零 GC，帧率无关指数平滑） */
+  const bBufL = new Float32Array(SCOPE_N), bBufR = new Float32Array(SCOPE_N);
+  const framePk = new Float32Array(ANG_BINS);
+  const frameSq = new Float32Array(ANG_BINS);
+  const frameCnt = new Uint16Array(ANG_BINS);
+  const frameNorm = new Float32Array(ANG_BINS);
+  const frameBlur = new Float32Array(ANG_BINS);
+  const angCos = new Float32Array(ANG_BINS);
+  const angSin = new Float32Array(ANG_BINS);
+  for (let i = 0; i < ANG_BINS; i++) {
+    const a = -Math.PI * 0.5 + ((i + 0.5) / ANG_BINS) * Math.PI;
+    angSin[i] = Math.sin(a);
+    angCos[i] = Math.cos(a);
+  }
+  const SCOPE_BANDS = [
+    { key: "low", canvasId: "mt-scope-low", widthId: "mt-scope-w-low", floor: 0.05 },
+    { key: "mid", canvasId: "mt-scope-mid", widthId: "mt-scope-w-mid", floor: 0.036 },
+    { key: "high", canvasId: "mt-scope-high", widthId: "mt-scope-w-high", floor: 0.014 },
+  ];
+  const scopeState = {};
+  SCOPE_BANDS.forEach(({ key, floor }) => {
+    scopeState[key] = {
+      env: new Float32Array(ANG_BINS),
+      crest: new Float32Array(ANG_BINS),
+      gainRef: floor,
+      smDb: -36,
+    };
+  });
+
+  /* 缓存主题颜色：避免每帧在 6 张画布上重复触发 getComputedStyle 重算样式 */
+  let themeCache = null;
+  function getMeterTheme() {
+    if (themeCache) return themeCache;
+    const light = document.documentElement.dataset.mode === "light";
+    const pal = rpThemeColors();
+    const rgb = widthAccentRgb();
+    themeCache = {
+      light,
+      pal,
+      rgb,
+      faint: cssVar("--c-text-faint", "#6b6378"),
+      dimCol: cssVar("--c-text-dim", "#9a91a8"),
+      textCol: cssVar("--c-text", "#e6e0e9"),
+      errCol: cssVar("--c-err", "#ff4d4f"),
+    };
+    return themeCache;
+  }
+
+  let visible = false, raf = 0, lastFrame = 0, lastTextAt = 0, lastHistAt = 0;
+  let kRing = [];          // [{t, p}] 3s sliding BS.1770 power samples
+  let history = [];        // [{t, m, s}] 20s rolling loudness trace
+  let switchMarks = [];    // [t] 切换音频源时的柔和竖向分割标线
+  let sMax = -Infinity, peakHoldDb = -Infinity;
+  let barL = -72, barR = -72, rmsL = -72, rmsR = -72, holdL = -72, holdR = -72;
+  let holdLAt = 0, holdRAt = 0;
+  let barM = -72, barS = -72, smoothBal = 0, smoothWidth = 0;
+
+  function activeChain() {
+    if (usesDraftEngine()) {
+      const src = draft.player.getMeterSource?.();
+      return src ? createMeterChain(src.context, src.node) : null;
+    }
+    if (!nativeAudio.paused) {
+      const tap = ensureNativeMeterTap();
+      if (tap && tap.ctx.state === "suspended") tap.ctx.resume().catch(() => {});
+      return tap ? tap.chain : null;
+    }
+    return nativeMeterTap ? nativeMeterTap.chain : null;
+  }
+
+  function sourceLabel() {
+    if (!transport.file) return { text: "待机", live: false };
+    const playing = playerPlaying();
+    const mode = transport.source === "original" ? "原声"
+      : transport.source === "draft" ? (transport.delta ? "草稿 Δ" : "草稿")
+      : ($("player-mode")?.textContent || "成品");
+    return { text: playing ? `${mode} · 实时` : `${mode} · 暂停`, live: playing };
+  }
+
+  function fmtDb(v, dp = 1) {
+    if (v == null || !Number.isFinite(v) || v <= -69.5) return "—";
+    return (v < 0 ? `−${Math.abs(v).toFixed(dp)}` : v.toFixed(dp));
+  }
+
+  function reset(opts) {
+    const keepHistory = !!(opts && opts.keepHistory);
+    const now = performance.now();
+    kRing = [];
+    if (!keepHistory) {
+      history = [];
+      switchMarks = [];
+    } else if (history.length) {
+      switchMarks.push(now);
+      while (switchMarks.length && now - switchMarks[0] > 20500) switchMarks.shift();
+    }
+    sMax = -Infinity;
+    peakHoldDb = -Infinity;
+    rtaPeak.fill(-90);
+    rtaPeakAt.fill(0);
+    holdL = -72; holdR = -72;
+    SCOPE_BANDS.forEach(({ key, floor }) => {
+      const st = scopeState[key];
+      st.env.fill(0);
+      st.crest.fill(0);
+      st.gainRef = floor;
+      st.smDb = -36;
+    });
+    paintBalanceBar();
+    paintText(null, null, -Infinity, null, true);
+    if (visible) drawAll(false, now);
+  }
+
+  /* 平衡条不节流，与画布同频 60fps 更新 */
+  function paintBalanceBar() {
+    const dot = $("mt-bal-dot"), fill = $("mt-bal-fill");
+    const pos = 50 + Math.max(-50, Math.min(50, smoothBal * 50));
+    if (dot) dot.style.left = pos.toFixed(2) + "%";
+    if (fill) {
+      fill.style.left = Math.min(50, pos).toFixed(2) + "%";
+      fill.style.width = Math.abs(pos - 50).toFixed(2) + "%";
+    }
+  }
+
+  function paintText(mLufs, sLufs, pkDb, crest, force = false) {
+    const now = performance.now();
+    if (!force && now - lastTextAt < 80) return;
+    lastTextAt = now;
+    const src = sourceLabel();
+    const tag = $("mt-source");
+    if (tag) {
+      tag.textContent = src.text;
+      tag.classList.toggle("is-live", src.live);
+    }
+    const set = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
+    set("mt-val-m", fmtDb(mLufs, 1));
+    set("mt-val-s", fmtDb(sLufs, 1));
+    set("mt-val-smax", fmtDb(sMax, 1));
+    set("mt-val-peak", fmtDb(peakHoldDb, 1));
+    set("mt-val-crest", crest != null && Number.isFinite(crest) && crest > 0 ? crest.toFixed(1) : "—");
+    const pkBox = $("mt-peak-box");
+    if (pkBox) pkBox.classList.toggle("is-clip", Number.isFinite(peakHoldDb) && peakHoldDb >= -0.3);
+
+    const wEl = $("mt-val-width");
+    if (wEl) wEl.textContent = smoothWidth > 0.005 ? `宽度 ${Math.round(Math.min(100, smoothWidth * 200))}%` : "宽度 —";
+    const bEl = $("mt-val-bal");
+    if (bEl) {
+      const pct = Math.round(smoothBal * 100);
+      bEl.textContent = Math.abs(pct) < 2 ? "平衡 居中" : (pct < 0 ? `平衡 L ${Math.abs(pct)}%` : `平衡 R ${pct}%`);
+    }
+    SCOPE_BANDS.forEach(({ key, widthId }) => {
+      const st = scopeState[key];
+      set(widthId, st.smDb > -34 ? `${fmtDb(st.smDb, 1)} dB` : "—");
+    });
+  }
+
+  function resizeCanvas(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+    if (!w || !h) return null;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    return { w, h, dpr };
+  }
+
+  function drawRta(live, sr) {
+    const canvas = $("mt-rta");
+    if (!canvas) return;
+    const dim = resizeCanvas(canvas);
+    if (!dim) return;
+    const { w, h, dpr } = dim;
+    const ctx = canvas.getContext("2d");
+    const { light, pal, faint, dimCol, rgb } = getMeterTheme();
+
+    ctx.clearRect(0, 0, w, h);
+    const padL = 30 * dpr, padR = 10 * dpr, padT = 8 * dpr, padB = 18 * dpr;
+    const plotW = w - padL - padR, plotH = h - padT - padB;
+    if (plotW <= 10 || plotH <= 10) return;
+    const fMin = Math.log10(20), fMax = Math.log10(20000);
+    const X = (f) => padL + ((Math.log10(Math.max(20, Math.min(20000, f))) - fMin) / (fMax - fMin)) * plotW;
+    const Y = (db) => padT + (1 - Math.max(0, Math.min(1, (db + 72) / 72))) * plotH;
+
+    ctx.font = `${9.5 * dpr}px sans-serif`;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (const db of [0, -12, -24, -36, -48, -60]) {
+      const y = Y(db);
+      ctx.strokeStyle = light ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.06)";
+      ctx.lineWidth = dpr;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillStyle = faint;
+      ctx.fillText(String(db), padL - 5 * dpr, y);
+    }
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (const f of [30, 60, 120, 250, 500, 1000, 2000, 4000, 8000, 16000]) {
+      const x = X(f);
+      ctx.strokeStyle = light ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.045)";
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+      ctx.fillStyle = faint;
+      ctx.fillText(f >= 1000 ? `${f / 1000}k` : String(f), x, padT + plotH + 4 * dpr);
+    }
+
+    const nyq = sr / 2;
+    const cols = 128;
+    const midPts = [], sidePts = [], pkPts = [];
+    for (let i = 0; i < cols; i++) {
+      const f0 = Math.pow(10, fMin + (fMax - fMin) * (i / (cols - 1)));
+      const f1 = Math.pow(10, fMin + (fMax - fMin) * (Math.min(cols - 1, i + 1) / (cols - 1)));
+      const b0 = Math.max(1, Math.min(BINS - 1, Math.floor(f0 / nyq * BINS)));
+      const b1 = Math.max(b0, Math.min(BINS - 1, Math.ceil(f1 / nyq * BINS)));
+      let mv = -90, sv = -90, pv = -90;
+      for (let b = b0; b <= b1; b++) {
+        if (fMid[b] > mv) mv = fMid[b];
+        if (fSide[b] > sv) sv = fSide[b];
+        if (rtaPeak[b] > pv) pv = rtaPeak[b];
+      }
+      const x = padL + (i / (cols - 1)) * plotW;
+      midPts.push([x, Y(live ? mv : -72)]);
+      sidePts.push([x, Y(live ? sv : -72)]);
+      pkPts.push([x, Y(pv)]);
+    }
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(padL, padT, plotW, plotH); ctx.clip();
+
+    if (live) {
+      ctx.beginPath();
+      ctx.moveTo(padL, padT + plotH);
+      midPts.forEach(([x, y]) => ctx.lineTo(x, y));
+      ctx.lineTo(padL + plotW, padT + plotH);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+      grad.addColorStop(0, `rgba(${rgb}, 0.42)`);
+      grad.addColorStop(1, `rgba(${rgb}, 0.04)`);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      ctx.beginPath();
+      midPts.forEach(([x, y], idx) => (idx ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.strokeStyle = pal.cut;
+      ctx.lineWidth = 1.6 * dpr;
+      ctx.stroke();
+
+      ctx.beginPath();
+      sidePts.forEach(([x, y], idx) => (idx ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.strokeStyle = pal.boost;
+      ctx.lineWidth = 1.3 * dpr;
+      ctx.globalAlpha = 0.88;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    let hasPeak = false;
+    for (let i = 0; i < pkPts.length; i++) { if (pkPts[i][1] < padT + plotH - 1) { hasPeak = true; break; } }
+    if (hasPeak) {
+      ctx.beginPath();
+      pkPts.forEach(([x, y], idx) => (idx ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.strokeStyle = dimCol;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1 * dpr;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  function drawBars() {
+    const canvas = $("mt-bars");
+    if (!canvas) return;
+    const dim = resizeCanvas(canvas);
+    if (!dim) return;
+    const { w, h, dpr } = dim;
+    const ctx = canvas.getContext("2d");
+    const { light, pal, faint, textCol, errCol, rgb } = getMeterTheme();
+
+    ctx.clearRect(0, 0, w, h);
+    const padL = 26 * dpr, padR = 8 * dpr, padT = 10 * dpr, padB = 20 * dpr;
+    const plotW = w - padL - padR, plotH = h - padT - padB;
+    if (plotW <= 10 || plotH <= 10) return;
+
+    const toY = (db) => padT + (1 - Math.max(0, Math.min(1, (db + 54) / 54))) * plotH;
+    ctx.font = `${9 * dpr}px sans-serif`;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (const db of [0, -6, -12, -18, -24, -36, -48]) {
+      const y = toY(db);
+      ctx.strokeStyle = light ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.06)";
+      ctx.lineWidth = dpr;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillStyle = faint;
+      ctx.fillText(String(db), padL - 4 * dpr, y);
+    }
+
+    const cols = [
+      { label: "L", val: barL, rms: rmsL, hold: holdL, col: pal.cut, isPeak: true },
+      { label: "R", val: barR, rms: rmsR, hold: holdR, col: pal.cut, isPeak: true },
+      { label: "M", val: barM, rms: null, hold: null, col: pal.boost, isPeak: false },
+      { label: "S", val: barS, rms: null, hold: null, col: pal.boost, isPeak: false },
+    ];
+    const gap = 8 * dpr;
+    const bw = Math.max(8 * dpr, (plotW - gap * (cols.length + 1)) / cols.length);
+    cols.forEach((c, idx) => {
+      const x = padL + gap + idx * (bw + gap);
+      ctx.fillStyle = light ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.04)";
+      ctx.fillRect(x, padT, bw, plotH);
+
+      const yVal = toY(c.val);
+      const fh = padT + plotH - yVal;
+      if (fh > 0.5) {
+        const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+        grad.addColorStop(0, c.isPeak ? errCol : c.col);
+        grad.addColorStop(0.14, c.col);
+        grad.addColorStop(1, `rgba(${rgb}, 0.35)`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, yVal, bw, fh);
+      }
+      if (c.rms != null) {
+        const yRms = toY(c.rms);
+        const rh = padT + plotH - yRms;
+        if (rh > 0.5) {
+          ctx.fillStyle = light ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.22)";
+          ctx.fillRect(x + 2 * dpr, yRms, Math.max(2, bw - 4 * dpr), rh);
+        }
+      }
+      if (c.hold != null && c.hold > -53) {
+        const yH = toY(c.hold);
+        ctx.fillStyle = c.hold >= -0.3 ? errCol : textCol;
+        ctx.fillRect(x, yH - dpr, bw, 2 * dpr);
+      }
+      ctx.fillStyle = faint;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(c.label, x + bw / 2, padT + plotH + 5 * dpr);
+    });
+  }
+
+  /* 采集并平滑单频段的 36 扇区极坐标包络（无乱麻连线，纯平滑角度分布） */
+  function updateBandScope(bandAnalyser, cfg, dt, live) {
+    const st = scopeState[cfg.key];
+    const env = st.env;
+    const crest = st.crest;
+    const attEnv = 1 - Math.exp(-dt / 0.032);
+    const relEnv = 1 - Math.exp(-dt / 0.14);
+    const attCrest = 1 - Math.exp(-dt / 0.018);
+    const relCrest = 1 - Math.exp(-dt / 0.45);
+    const relWidth = 1 - Math.exp(-dt / 0.12);
+
+    if (!live || !bandAnalyser) {
+      for (let i = 0; i < ANG_BINS; i++) {
+        env[i] *= (1 - relEnv);
+        crest[i] *= (1 - relCrest);
+        if (env[i] < 0.002) env[i] = 0;
+        if (crest[i] < 0.002) crest[i] = 0;
+      }
+      st.smDb += (-36 - st.smDb) * relWidth;
+      return;
+    }
+
+    bandAnalyser.L.getFloatTimeDomainData(bBufL);
+    bandAnalyser.R.getFloatTimeDomainData(bBufR);
+    framePk.fill(0);
+    frameSq.fill(0);
+    frameCnt.fill(0);
+
+    let peak = 0, sumM = 0, sumS = 0;
+    const invSqrt2 = 0.70710678;
+    const invPi = 1 / Math.PI;
+    for (let i = 0; i < SCOPE_N; i++) {
+      const l = bBufL[i], r = bBufR[i];
+      const m = (l + r) * 0.5, s = (l - r) * 0.5;
+      sumM += m * m; sumS += s * s;
+      let sx = (r - l) * invSqrt2;
+      let my = (l + r) * invSqrt2;
+      if (my < 0) { sx = -sx; my = -my; }
+      const mag = Math.hypot(sx, my);
+      if (mag > peak) peak = mag;
+      if (mag > 1e-5) {
+        const ang = Math.atan2(sx, my);
+        let idx = Math.floor((ang * invPi + 0.5) * ANG_BINS);
+        if (idx < 0) idx = 0;
+        else if (idx >= ANG_BINS) idx = ANG_BINS - 1;
+        if (mag > framePk[idx]) framePk[idx] = mag;
+        frameSq[idx] += mag * mag;
+        frameCnt[idx]++;
+      }
+    }
+
+    const smDb = sumM > 1e-12 && sumS > 1e-13 ? 10 * Math.log10(sumS / sumM) : -36;
+    st.smDb += (Math.max(-36, Math.min(6, smDb)) - st.smDb) * relWidth;
+
+    const targetRef = Math.max(cfg.floor, peak * 1.06);
+    const refTau = targetRef > st.gainRef ? 0.08 : 0.65;
+    st.gainRef += (targetRef - st.gainRef) * (1 - Math.exp(-dt / refTau));
+    const invRef = 1 / Math.max(1e-5, st.gainRef);
+
+    for (let i = 0; i < ANG_BINS; i++) {
+      const c = frameCnt[i];
+      const rms = c ? Math.sqrt(frameSq[i] / c) : 0;
+      const v = Math.min(1, (0.55 * framePk[i] + 0.45 * rms) * invRef);
+      frameNorm[i] = v > 0.004 ? Math.pow(v, 0.78) : 0;
+    }
+    /* 相邻 3 点空间平滑，保证轮廓曲线温润无锯齿 */
+    for (let i = 0; i < ANG_BINS; i++) {
+      const prev = i > 0 ? frameNorm[i - 1] : 0;
+      const next = i + 1 < ANG_BINS ? frameNorm[i + 1] : 0;
+      frameBlur[i] = prev * 0.22 + frameNorm[i] * 0.56 + next * 0.22;
+    }
+    for (let i = 0; i < ANG_BINS; i++) {
+      const t = frameBlur[i];
+      env[i] += (t - env[i]) * (t > env[i] ? attEnv : relEnv);
+      crest[i] += (t - crest[i]) * (t > crest[i] ? attCrest : relCrest);
+    }
+  }
+
+  /* 渲染单个频段的极坐标声场：渐变填充 + 光滑双层描边 + 外侧点阵（零 shadowBlur） */
+  function drawBandScope(cfg) {
+    const canvas = $(cfg.canvasId);
+    if (!canvas) return;
+    const dim = resizeCanvas(canvas);
+    if (!dim) return;
+    const { w, h, dpr } = dim;
+    const ctx = canvas.getContext("2d");
+    const { light, pal, faint, rgb } = getMeterTheme();
+    const st = scopeState[cfg.key];
+    const env = st.env;
+    const crest = st.crest;
+
+    ctx.clearRect(0, 0, w, h);
+    const padX = 14 * dpr, padTop = 15 * dpr, padBot = 8 * dpr;
+    const radius = Math.min((w - padX * 2) * 0.5, h - padTop - padBot);
+    if (radius < 18 * dpr) return;
+    const cx = w * 0.5;
+    const cy = padTop + radius + Math.max(0, (h - padTop - padBot - radius) * 0.5);
+
+    const grid = light ? "rgba(0,0,0,0.11)" : "rgba(255,255,255,0.09)";
+    const axis = light ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.15)";
+    const d45 = radius * 0.70710678;
+
+    /* 静态半圆极坐标网格 */
+    ctx.strokeStyle = grid;
+    ctx.lineWidth = dpr;
+    for (const frac of [1, 0.64, 0.32]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * frac, Math.PI, 0, false);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = axis;
+    ctx.beginPath();
+    ctx.moveTo(cx - radius, cy); ctx.lineTo(cx + radius, cy);
+    ctx.moveTo(cx, cy); ctx.lineTo(cx, cy - radius);
+    ctx.stroke();
+
+    ctx.save();
+    ctx.setLineDash([2.5 * dpr, 2.5 * dpr]);
+    ctx.strokeStyle = grid;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy); ctx.lineTo(cx - d45, cy - d45);
+    ctx.moveTo(cx, cy); ctx.lineTo(cx + d45, cy - d45);
+    ctx.stroke();
+    ctx.restore();
+
+    /* 计算平滑包络顶点 */
+    let peakEnv = 0;
+    for (let i = 0; i < ANG_BINS; i++) {
+      if (env[i] > peakEnv) peakEnv = env[i];
+      if (crest[i] > peakEnv) peakEnv = crest[i];
+    }
+
+    if (peakEnv > 0.006) {
+      const pts = new Float32Array((ANG_BINS + 2) * 2);
+      pts[0] = cx - env[0] * radius * 0.65;
+      pts[1] = cy;
+      for (let i = 0; i < ANG_BINS; i++) {
+        const r = env[i] * radius * 0.90;
+        pts[(i + 1) * 2] = cx + angSin[i] * r;
+        pts[(i + 1) * 2 + 1] = cy - angCos[i] * r;
+      }
+      pts[(ANG_BINS + 1) * 2] = cx + env[ANG_BINS - 1] * radius * 0.65;
+      pts[(ANG_BINS + 1) * 2 + 1] = cy;
+
+      const traceCurve = () => {
+        ctx.beginPath();
+        ctx.moveTo(pts[0], pts[1]);
+        for (let i = 1; i <= ANG_BINS; i++) {
+          const x0 = pts[i * 2], y0 = pts[i * 2 + 1];
+          const x1 = pts[(i + 1) * 2], y1 = pts[(i + 1) * 2 + 1];
+          ctx.quadraticCurveTo(x0, y0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
+        }
+        ctx.lineTo(pts[(ANG_BINS + 1) * 2], pts[(ANG_BINS + 1) * 2 + 1]);
+      };
+
+      /* 1. 内层径向渐变填充 */
+      traceCurve();
+      ctx.closePath();
+      const grad = ctx.createRadialGradient(cx, cy, radius * 0.06, cx, cy, radius * 0.95);
+      grad.addColorStop(0, `rgba(${rgb}, ${light ? 0.08 : 0.07})`);
+      grad.addColorStop(0.55, `rgba(${rgb}, ${light ? 0.20 : 0.22})`);
+      grad.addColorStop(1, `rgba(${rgb}, ${light ? 0.34 : 0.38})`);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      /* 2. 双层硬件加速平滑描边（外晕 + 清晰主线，替代卡顿的 shadowBlur） */
+      traceCurve();
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.strokeStyle = `rgba(${rgb}, ${light ? 0.20 : 0.26})`;
+      ctx.lineWidth = 3.2 * dpr;
+      ctx.stroke();
+
+      traceCurve();
+      ctx.strokeStyle = pal.cut;
+      ctx.lineWidth = 1.35 * dpr;
+      ctx.stroke();
+
+      /* 3. 外侧点阵：峰值浮标点 + 外缘微点阵扩散（±45° 外侧极宽区域切换对比色） */
+      const twoPi = Math.PI * 2;
+      for (let i = 0; i < ANG_BINS; i++) {
+        const cVal = Math.max(env[i], crest[i]);
+        if (cVal < 0.03) continue;
+        const wide = Math.abs(angSin[i]) > 0.72;
+        const sx = angSin[i], sy = angCos[i];
+        const rLead = Math.min(0.985, Math.max(env[i] * 0.90 + 0.055, cVal * 0.92 + 0.035)) * radius;
+        const dotR = (1.05 + cVal * 0.95) * dpr;
+        ctx.fillStyle = wide ? pal.boost : pal.cut;
+        ctx.globalAlpha = Math.min(0.95, 0.35 + cVal * 0.65);
+        ctx.beginPath();
+        ctx.arc(cx + sx * rLead, cy - sy * rLead, dotR, 0, twoPi);
+        ctx.fill();
+
+        /* 第二圈稀疏外侧微点阵，增强空间外沿层次感 */
+        if (cVal > 0.20) {
+          const rOuter = Math.min(1.0, rLead / radius + 0.065) * radius;
+          ctx.globalAlpha = Math.min(0.52, (cVal - 0.16) * 0.62);
+          ctx.beginPath();
+          ctx.arc(cx + sx * rOuter, cy - sy * rOuter, 0.85 * dpr, 0, twoPi);
+          ctx.fill();
+        }
+        if (cVal > 0.52 && (i & 1) === 0) {
+          const rFar = Math.min(1.01, rLead / radius + 0.12) * radius;
+          ctx.globalAlpha = Math.min(0.28, (cVal - 0.45) * 0.48);
+          ctx.beginPath();
+          ctx.arc(cx + sx * rFar, cy - sy * rFar, 0.7 * dpr, 0, twoPi);
+          ctx.fill();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    /* 极坐标方位标记 */
+    ctx.font = `${8.5 * dpr}px sans-serif`;
+    ctx.fillStyle = faint;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("M", cx, cy - radius - 7 * dpr);
+    ctx.fillText("L", cx - d45 - 6 * dpr, cy - d45 - 5 * dpr);
+    ctx.fillText("R", cx + d45 + 6 * dpr, cy - d45 - 5 * dpr);
+    ctx.fillText("S", cx - radius - 6 * dpr, cy - 2 * dpr);
+    ctx.fillText("S", cx + radius + 6 * dpr, cy - 2 * dpr);
+  }
+
+  function drawScopes() {
+    for (let i = 0; i < SCOPE_BANDS.length; i++) drawBandScope(SCOPE_BANDS[i]);
+  }
+
+  function drawHistory() {
+    const canvas = $("mt-history");
+    if (!canvas) return;
+    const dim = resizeCanvas(canvas);
+    if (!dim) return;
+    const { w, h, dpr } = dim;
+    const ctx = canvas.getContext("2d");
+    const { light, pal, faint, rgb } = getMeterTheme();
+
+    ctx.clearRect(0, 0, w, h);
+    const padL = 28 * dpr, padR = 8 * dpr, padT = 8 * dpr, padB = 12 * dpr;
+    const plotW = w - padL - padR, plotH = h - padT - padB;
+    if (plotW <= 10 || plotH <= 10) return;
+    const lo = -30, hi = -3;
+    const Y = (v) => padT + (1 - Math.max(0, Math.min(1, (v - lo) / (hi - lo)))) * plotH;
+
+    ctx.font = `${8.5 * dpr}px sans-serif`;
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (const ref of [-6, -9, -14, -20, -26]) {
+      const y = Y(ref);
+      ctx.strokeStyle = ref === -9 || ref === -14
+        ? (light ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.14)")
+        : (light ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.05)");
+      ctx.lineWidth = dpr;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillStyle = faint;
+      ctx.fillText(String(ref), padL - 4 * dpr, y);
+    }
+
+    if (history.length < 2) {
+      ctx.fillStyle = faint;
+      ctx.textAlign = "center";
+      ctx.fillText("播放后实时绘制 20 秒响度轨迹（M / S LUFS）", padL + plotW / 2, padT + plotH / 2);
+      return;
+    }
+
+    const tSpan = 20000;
+    const tEnd = history[history.length - 1].t;
+    const X = (t) => padL + Math.max(0, Math.min(1, 1 - (tEnd - t) / tSpan)) * plotW;
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(padL, padT, plotW, plotH); ctx.clip();
+    ctx.beginPath();
+    let started = false, lastX = padL;
+    for (const pt of history) {
+      if (pt.m == null) continue;
+      const x = X(pt.t), y = Y(pt.m);
+      if (!started) { ctx.moveTo(x, padT + plotH); ctx.lineTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+      lastX = x;
+    }
+    if (started) {
+      ctx.lineTo(lastX, padT + plotH); ctx.closePath();
+      ctx.fillStyle = `rgba(${rgb}, 0.16)`;
+      ctx.fill();
+    }
+    ctx.beginPath();
+    started = false;
+    for (const pt of history) {
+      if (pt.s == null) continue;
+      const x = X(pt.t), y = Y(pt.s);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    if (started) {
+      ctx.strokeStyle = pal.boost;
+      ctx.lineWidth = 1.8 * dpr;
+      ctx.stroke();
+    }
+    if (switchMarks.length) {
+      ctx.save();
+      ctx.setLineDash([3 * dpr, 3 * dpr]);
+      ctx.strokeStyle = light ? "rgba(0,0,0,0.22)" : "rgba(255,255,255,0.22)";
+      ctx.lineWidth = dpr;
+      for (const t of switchMarks) {
+        if (tEnd - t > tSpan || t > tEnd) continue;
+        const x = X(t);
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawAll(live, now, sr = 44100) {
+    drawRta(live, sr);
+    drawBars();
+    drawScopes();
+    drawHistory();
+  }
+
+  function tick(now) {
+    if (!visible) { raf = 0; return; }
+    const dt = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 0.016;
+    lastFrame = now;
+    const playing = playerPlaying();
+    const chain = playing ? activeChain() : null;
+    const decay = 28 * dt;
+    const kRms = 1 - Math.exp(-dt / 0.06);
+    const kBal = 1 - Math.exp(-dt / 0.09);
+
+    if (playing && chain) {
+      chain.analyserL.getFloatTimeDomainData(bufL);
+      chain.analyserR.getFloatTimeDomainData(bufR);
+      chain.analyserKL.getFloatTimeDomainData(bufKL);
+      chain.analyserKR.getFloatTimeDomainData(bufKR);
+      chain.analyserMid.getFloatFrequencyData(fMid);
+      chain.analyserSide.getFloatFrequencyData(fSide);
+
+      let sumL = 0, sumR = 0, pkL = 0, pkR = 0, sumKL = 0, sumKR = 0;
+      let sumMid = 0, sumSide = 0;
+      for (let i = 0; i < N; i++) {
+        const l = bufL[i], r = bufR[i];
+        sumL += l * l; sumR += r * r;
+        const al = Math.abs(l), ar = Math.abs(r);
+        if (al > pkL) pkL = al;
+        if (ar > pkR) pkR = ar;
+        sumKL += bufKL[i] * bufKL[i];
+        sumKR += bufKR[i] * bufKR[i];
+        const m = (l + r) * 0.5, s = (l - r) * 0.5;
+        sumMid += m * m; sumSide += s * s;
+      }
+      const pkLDb = pkL > 1e-6 ? 20 * Math.log10(pkL) : -72;
+      const pkRDb = pkR > 1e-6 ? 20 * Math.log10(pkR) : -72;
+      const rmsLDb = sumL > 1e-12 ? 10 * Math.log10(sumL / N) : -72;
+      const rmsRDb = sumR > 1e-12 ? 10 * Math.log10(sumR / N) : -72;
+      const framePeak = Math.max(pkLDb, pkRDb);
+      if (framePeak > peakHoldDb) peakHoldDb = framePeak;
+
+      barL = pkLDb > barL ? pkLDb : Math.max(-72, barL - decay);
+      barR = pkRDb > barR ? pkRDb : Math.max(-72, barR - decay);
+      rmsL += (rmsLDb - rmsL) * kRms;
+      rmsR += (rmsRDb - rmsR) * kRms;
+      if (pkLDb >= holdL) { holdL = pkLDb; holdLAt = now; }
+      else if (now - holdLAt > 1400) holdL = Math.max(-72, holdL - 18 * dt);
+      if (pkRDb >= holdR) { holdR = pkRDb; holdRAt = now; }
+      else if (now - holdRAt > 1400) holdR = Math.max(-72, holdR - 18 * dt);
+
+      const kPow = (sumKL + sumKR) / N;
+      kRing.push({ t: now, p: kPow });
+      while (kRing.length && now - kRing[0].t > 3000) kRing.shift();
+      let sumM = 0, cntM = 0, sumS = 0;
+      for (let i = kRing.length - 1; i >= 0; i--) {
+        const p = kRing[i].p;
+        sumS += p;
+        if (now - kRing[i].t <= 400) { sumM += p; cntM++; }
+      }
+      const avgM = cntM ? sumM / cntM : 0;
+      const avgS = kRing.length ? sumS / kRing.length : 0;
+      const mLufs = avgM > 1e-9 ? -0.691 + 10 * Math.log10(avgM) : null;
+      const sLufs = avgS > 1e-9 ? -0.691 + 10 * Math.log10(avgS) : null;
+      if (sLufs != null && sLufs > sMax) sMax = sLufs;
+      const kM = 1 - Math.exp(-dt / 0.045);
+      const kS = 1 - Math.exp(-dt / 0.08);
+      barM = mLufs != null ? barM + (mLufs - barM) * kM : Math.max(-72, barM - decay);
+      barS = sLufs != null ? barS + (sLufs - barS) * kS : Math.max(-72, barS - decay);
+
+      for (let b = 0; b < BINS; b++) {
+        const v = Math.max(fMid[b], fSide[b]);
+        if (v >= rtaPeak[b]) { rtaPeak[b] = v; rtaPeakAt[b] = now; }
+        else if (now - rtaPeakAt[b] > 1200) rtaPeak[b] = Math.max(-90, rtaPeak[b] - 14 * dt);
+      }
+
+      const lrDen = Math.sqrt(sumL) + Math.sqrt(sumR) + 1e-9;
+      const bal = (Math.sqrt(sumR) - Math.sqrt(sumL)) / lrDen;
+      smoothBal += (bal - smoothBal) * kBal;
+      const wInst = sumSide / (sumMid + sumSide + 1e-12);
+      smoothWidth += (wInst - smoothWidth) * kBal;
+
+      /* 更新三频段实时极坐标声场 */
+      for (let i = 0; i < SCOPE_BANDS.length; i++) {
+        const cfg = SCOPE_BANDS[i];
+        updateBandScope(chain.bands ? chain.bands[cfg.key] : null, cfg, dt, true);
+      }
+
+      if (now - lastHistAt >= 100) {
+        lastHistAt = now;
+        history.push({ t: now, m: mLufs, s: sLufs });
+        while (history.length && now - history[0].t > 20500) history.shift();
+        while (switchMarks.length && now - switchMarks[0] > 20500) switchMarks.shift();
+      }
+
+      const crest = sLufs != null && Number.isFinite(holdL) && Math.max(holdL, holdR) > -50
+        ? Math.max(0, Math.max(holdL, holdR) - sLufs) : null;
+      paintBalanceBar();
+      paintText(mLufs, sLufs, framePeak, crest);
+      drawAll(true, now, chain.sampleRate);
+    } else {
+      barL = Math.max(-72, barL - decay);
+      barR = Math.max(-72, barR - decay);
+      rmsL = Math.max(-72, rmsL - decay);
+      rmsR = Math.max(-72, rmsR - decay);
+      barM = Math.max(-72, barM - decay);
+      barS = Math.max(-72, barS - decay);
+      const idleDecay = Math.exp(-dt / 0.14);
+      smoothBal *= idleDecay;
+      smoothWidth *= idleDecay;
+      for (let i = 0; i < SCOPE_BANDS.length; i++) {
+        updateBandScope(null, SCOPE_BANDS[i], dt, false);
+      }
+      paintBalanceBar();
+      paintText(null, null, -Infinity, null);
+      drawAll(false, now);
+    }
+    raf = requestAnimationFrame(tick);
+  }
+
+  $("btn-meter-reset")?.addEventListener("click", () => reset());
+  window.addEventListener("resize", () => { if (visible) drawAll(playerPlaying(), performance.now()); });
+  document.addEventListener("sb-theme", () => {
+    themeCache = null;
+    if (visible) drawAll(playerPlaying(), performance.now());
+  });
+
+  return {
+    reset,
+    setVisible(on) {
+      visible = !!on;
+      if (visible) {
+        themeCache = null;
+        if (!usesDraftEngine() && !nativeAudio.paused) ensureNativeMeterTap();
+        lastFrame = performance.now();
+        paintBalanceBar();
+        paintText(null, null, -Infinity, null, true);
+        if (!raf) raf = requestAnimationFrame(tick);
+      } else if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+    },
+  };
+})();
+
 /* ── 报告画布 hover 提示：指标含义 + 数值 ── */
 const rpHitZones = new WeakMap();   // canvas → [{y0, y1, title, tip, rows: [{label, text}]}]
 function rpTipFor(canvas) {
@@ -3247,14 +4310,14 @@ function rpSpecFade(apply, ms = 240) {
 const RP_DYN = [
   { label: "响度", sub: "LUFS", key: "integrated_lufs", dp: 1, ref: [-20, -6],
     tip: "整合响度（LUFS）：整曲感知响度，流媒体目标常约 -14。" },
+  { label: "最大短时响度", sub: "3s LUFS", get: (m) => m && m.short_term_lufs && m.short_term_lufs.max, dp: 1, ref: [-16, -4],
+    tip: "最响 3 秒段落（副歌/高潮）的感知响度，直接反映高潮段推力与能量密度。" },
   { label: "真实峰值", sub: "dBTP", key: "true_peak_4x_dbtp", dp: 1, ref: [-6, 0],
     tip: "4x 过采样真峰值（dBTP）：超过 0 会削波失真。" },
   { label: "动态范围", sub: "LU", key: "lra_lu", dp: 1, ref: [0, 12],
     tip: "响度范围（LU）：最响与最静段落差距，越大越有起伏。" },
   { label: "峰值响度比", sub: "dB", key: "crest_factor_db", dp: 1, ref: [6, 18],
     tip: "峰值与平均能量之比：越高越有冲击力，越低越压。" },
-  { label: "立体声相关性", sub: "", key: "stereo_correlation", dp: 2, ref: [-1, 1],
-    tip: "左右相关：近 1 声像稳，近 0 更宽散，负值提示反相风险。" },
 ];
 const rpNiceStep = (range, want) => {
   const raw = range / want;
@@ -3269,8 +4332,9 @@ function renderDynamics() {
   const pair = rpPair();
   const rows = [];
   RP_DYN.forEach((d) => {
-    const b = pair && pair.inM ? rpNum(pair.inM[d.key]) : null;
-    const a = pair ? rpNum(pair.outM[d.key]) : null;
+    const pick = (m) => (m ? rpNum(d.get ? d.get(m) : m[d.key]) : null);
+    const b = pair ? pick(pair.inM) : null;
+    const a = pair ? pick(pair.outM) : null;
     const fmt = (v) => (v == null ? "—" : rpNumLabel(v, d.dp));
     /* 量程取该属性的常用总范围：换一首歌轴不会变，圆点位置读得出绝对高低，
        不同文件之间也能横向比较。只有取值超出默认范围时才带余量外扩。 */
@@ -3754,6 +4818,143 @@ document.querySelectorAll("#rp-spec-tabs .rp-spec-tab").forEach((btn) => {
     rpSpecFade(() => renderSpectral(), 240);
   });
 });
+/* ── 处理量化明细：展示各 DSP 阶段的真实动作幅度（替代无意义的宽带相关性） ── */
+function renderTelemetry() {
+  const wrap = $("rp-telemetry");
+  if (!wrap) return;
+  const pair = rpPair();
+  const rep = pair && rp.reports.get(pair.path);
+  const m = rep && rep.mastering;
+  const lim = m && m.limiter;
+  const sc = lim && lim.soft_clip;
+  const res = m && m.resonance;
+  const ls = m && m.low_side;
+  const hyg = rep && rep.stages && rep.stages.hygiene && rep.stages.hygiene.low_cut;
+
+  const fmtSign = (v, dp = 1, unit = " dB") => {
+    if (v == null || !Number.isFinite(v)) return "—";
+    if (Math.abs(v) < Math.pow(10, -dp) / 2) return `0.${"0".repeat(dp)}${unit}`;
+    return `${v > 0 ? "+" : "−"}${Math.abs(v).toFixed(dp)}${unit}`;
+  };
+
+  // 1. 限幅压减
+  let limVal = "—", limSub = "峰值 / P95", limCls = "is-idle";
+  if (pair) {
+    const maxGr = rpNum(lim && lim.max_gain_reduction_db);
+    const p95Gr = rpNum(lim && lim.gain_reduction_p95_db);
+    if (maxGr != null) {
+      limVal = maxGr > 0.05 ? `−${maxGr.toFixed(1)} dB` : "0.0 dB";
+      limSub = p95Gr != null ? `P95 −${p95Gr.toFixed(1)} dB${m && m.dynamic_budget_limited ? " · 预算保护" : ""}` : "限制器峰值压减";
+      limCls = maxGr >= 4.5 ? "is-warn" : (maxGr > 0.05 ? "is-active" : "is-idle");
+    } else {
+      limVal = "未启用"; limSub = "母带旁路或无统计";
+    }
+  }
+
+  // 2. 软削峰柔化
+  let scVal = "—", scSub = "4× 过采样削峰", scCls = "is-idle";
+  if (pair) {
+    const gr = rpNum(sc && sc.max_clip_gr_db);
+    if (sc && sc.applied && gr != null && gr > 0.02) {
+      scVal = `−${gr.toFixed(1)} dB`;
+      scSub = `上限 ${Number(sc.soft_clip_db || 1.2).toFixed(1)} dB 柔化`;
+      scCls = "is-active";
+    } else if (sc) {
+      scVal = "未触发"; scSub = "瞬态未触顶";
+    } else {
+      scVal = "—"; scSub = "无软削峰记录";
+    }
+  }
+
+  // 3. 动态共振抑制
+  let resVal = "—", resSub = "浑浊 / 刺耳峰", resCls = "is-idle";
+  if (pair) {
+    const bands = res && res.bands ? Object.values(res.bands) : [];
+    const maxCut = bands.reduce((acc, b) => Math.max(acc, rpNum(b && b.max_attenuation_db) || 0), 0);
+    if (res && res.applied && maxCut > 0.05) {
+      resVal = `−${maxCut.toFixed(1)} dB`;
+      const mud = rpNum(res.bands && res.bands.mud && res.bands.mud.max_attenuation_db) || 0;
+      const harsh = rpNum(res.bands && res.bands.harsh && res.bands.harsh.max_attenuation_db) || 0;
+      resSub = `中低 −${mud.toFixed(1)} / 刺耳 −${harsh.toFixed(1)} dB`;
+      resCls = "is-active";
+    } else if (res) {
+      resVal = "未触发"; resSub = "未检出窄带共振";
+    } else {
+      resVal = "—"; resSub = "密度关闭或旧版报告";
+    }
+  }
+
+  // 4. 低频收束（<90 Hz Mono-Maker / <180 Hz S/M 变化）
+  let lsVal = "—", lsSub = "低频侧向收敛", lsCls = "is-idle";
+  if (pair) {
+    const lsDb = rpNum(ls && ls.low_side_change_db);
+    if (ls && ls.applied && lsDb != null) {
+      lsVal = fmtSign(lsDb, 1, " dB");
+      lsSub = `<${Math.round(ls.cutoff_hz || 90)} Hz · ${Math.round((ls.amount || 0.7) * 100)}% 收束`;
+      lsCls = lsDb < -0.3 ? "is-active" : "is-idle";
+    } else {
+      const rIn = rpNum(pair.inM && pair.inM.low_band_side_mid && pair.inM.low_band_side_mid.ratio);
+      const rOut = rpNum(pair.outM && pair.outM.low_band_side_mid && pair.outM.low_band_side_mid.ratio);
+      if (rIn != null && rOut != null && rIn > 1e-4 && rOut > 1e-4) {
+        const dDb = 20 * Math.log10(rOut / rIn);
+        lsVal = fmtSign(dDb, 1, " dB");
+        lsSub = "<180 Hz 侧向能量变化";
+        lsCls = dDb < -0.5 ? "is-active" : (dDb > 0.5 ? "is-boost" : "is-idle");
+      } else {
+        lsVal = "直通"; lsSub = "低频已单声道";
+      }
+    }
+  }
+
+  // 5. 自适应低切
+  let hyVal = "—", hySub = "零相位次声高通", hyCls = "is-idle";
+  if (pair) {
+    const hz = rpNum(hyg && hyg.hz);
+    if (hyg && hyg.applied && hz != null && hz > 0) {
+      hyVal = `${Math.round(hz)} Hz`;
+      hySub = "自适应次声清理";
+      hyCls = "is-active";
+    } else if (hyg) {
+      hyVal = "直通"; hySub = "未检出次声泄漏";
+    } else {
+      hyVal = "—"; hySub = "无低切记录";
+    }
+  }
+
+  // 6. 动态余量 PLR（True Peak − Integrated LUFS）与削波检查
+  let plrVal = "—", plrSub = "真峰与响度差", plrCls = "is-idle";
+  if (pair) {
+    const tpOut = rpNum(pair.outM.true_peak_4x_dbtp);
+    const lufsOut = rpNum(pair.outM.integrated_lufs);
+    const tpIn = rpNum(pair.inM && pair.inM.true_peak_4x_dbtp);
+    const lufsIn = rpNum(pair.inM && pair.inM.integrated_lufs);
+    const clips = Number(pair.outM.clipping_samples || 0);
+    if (tpOut != null && lufsOut != null) {
+      const plr = tpOut - lufsOut;
+      const plrIn = (tpIn != null && lufsIn != null) ? tpIn - lufsIn : null;
+      plrVal = `${plr.toFixed(1)} dB`;
+      const deltaTxt = plrIn != null ? `原 ${plrIn.toFixed(1)} dB · ` : "";
+      plrSub = clips > 0 ? `${deltaTxt}削波 ${clips} 采样` : `${deltaTxt}0 削波`;
+      plrCls = clips > 0 || plr < 5.5 ? "is-warn" : (plrIn != null && plr > plrIn + 0.3 ? "is-boost" : "is-active");
+    }
+  }
+
+  const cells = [
+    { k: "限幅压减", v: limVal, s: limSub, cls: limCls, tip: "母带限制器最大与 P95 增益压减，越小代表动态越宽松自然。" },
+    { k: "软削峰", v: scVal, s: scSub, cls: scCls, tip: "限幅前 4× 过采样瞬态软削峰实际柔化幅度。" },
+    { k: "共振抑制", v: resVal, s: resSub, cls: resCls, tip: "动态窄带共振抑制在 200–600 Hz（浑浊）与 2–5.5 kHz（刺耳）的最大衰减。" },
+    { k: "低频收束", v: lsVal, s: lsSub, cls: lsCls, tip: "低频 Side 通道收束幅度，收敛后低音结像更凝聚、单声道更稳。" },
+    { k: "自适应低切", v: hyVal, s: hySub, cls: hyCls, tip: "依据曲目次声泄漏自动裁决的零相位高通截止频率。" },
+    { k: "动态余量 PLR", v: plrVal, s: plrSub, cls: plrCls, tip: "真峰值减整合响度（Peak-to-Loudness Ratio）：商业流行常约 7–10 dB，低于 6 dB 偏挤压。" },
+  ];
+  wrap.innerHTML = cells.map((c) =>
+    `<div class="rp-tel-cell ${c.cls}" title="${escapeHtml(c.tip)}">` +
+    `<span class="rp-tel-k">${c.k}</span>` +
+    `<strong class="rp-tel-v">${c.v}</strong>` +
+    `<span class="rp-tel-s">${c.s}</span></div>`
+  ).join("");
+}
+
 async function renderReport(mode) {
   await loadReportData();
   if (state.view !== "report") return;   // 异步加载期间用户已切走
@@ -3763,6 +4964,7 @@ async function renderReport(mode) {
   drawSpectrumChart($("rp-spectrum"));
   renderDynamics();
   renderStereoFans();
+  renderTelemetry();
   /* 频谱变化区只做淡入淡出：换版本时新位图一次画好、旧画面以快照淡出；
      其余面板仍由重放钩子做数值/几何动画（入场裁剪、换版本插值）。 */
   if (mode === "morph") rpSpecFade(() => renderSpectral(), 240);

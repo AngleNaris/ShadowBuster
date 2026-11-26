@@ -129,6 +129,7 @@ def analyze_low_band(audio, sample_rate, requested_hz):
                          if sub_energy > 1e-30 and ref_energy > 1e-30 else -300.0),
         "envelope_correlation": None,
         "silent_leak_db": None,
+        "sub_active_range_db": None,
         "active_frames": 0,
         "silent_frames": 0,
         "duration_seconds": float(len(data) / sample_rate),
@@ -140,6 +141,8 @@ def analyze_low_band(audio, sample_rate, requested_hz):
     analysis["silent_frames"] = int(np.count_nonzero(~active))
     if analysis["active_frames"] >= LOW_CUT_MIN_ACTIVE_FRAMES:
         a, b = sub_db[active], ref_db[active]
+        analysis["sub_active_range_db"] = float(
+            np.percentile(a, 90) - np.percentile(a, 10))
         if (float(np.std(a)) >= LOW_CUT_MIN_ENVELOPE_STD_DB
                 and float(np.std(b)) >= LOW_CUT_MIN_ENVELOPE_STD_DB):
             analysis["envelope_correlation"] = float(np.corrcoef(a, b)[0, 1])
@@ -168,12 +171,20 @@ def choose_low_cut_hz(audio, sample_rate, requested_hz):
     chosen = float(requested_hz)
     correlation = analysis["envelope_correlation"]
     leak = analysis["silent_leak_db"]
+    sub_range = analysis["sub_active_range_db"]
     if correlation is not None:
         for min_corr, min_ratio_db, max_leak_db, tier_hz in LOW_CUT_MUSICAL_TIERS:
             if correlation < min_corr or analysis["sub_ratio_db"] < min_ratio_db:
                 continue
-            if max_leak_db is not None and (leak is None or leak > max_leak_db):
-                continue
+            if max_leak_db is not None:
+                if leak is not None:
+                    if leak > max_leak_db:
+                        continue
+                elif sub_range is None or sub_range < abs(max_leak_db):
+                    # 无静默段（连续饱满编曲）时改用活跃帧内次声起伏幅度（P90-P10）
+                    # 排除恒定 rumble 托底上叠加微弱音乐起伏的误判，同时不再误杀
+                    # 全程饱满的音乐性 sub（如连续 EDM/Pop）。
+                    continue
             chosen = 0.0 if tier_hz is None else min(float(tier_hz), float(requested_hz))
             analysis["tier"] = {"min_correlation": min_corr, "chosen_hz": chosen}
             break

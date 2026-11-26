@@ -50,6 +50,26 @@ def test_off_is_identity():
 
 
 @needs_plugin
+def test_density_scope_routes_full_mix_and_selected_bands():
+    x = pulsing_sections()[:2 * SR]
+    low, _ = densify(x, scope="low")
+    high, _ = densify(x, scope="high")
+    low_high, selected = densify(x, scope="high,low")
+    assert selected["scope"] == "low,high"
+    assert set(selected["bands"]) == {"low", "high_mid", "high"}
+    np.testing.assert_allclose(low_high - x, (low - x) + (high - x), atol=1e-12)
+    global_out, broadband = densify(x, scope="global")
+    all_bands, multiband = densify(x, scope="low,mid,high")
+    assert list(broadband["bands"]) == ["global"] and broadband["crossovers_hz"] == []
+    assert len(multiband["bands"]) == 4
+    assert not np.allclose(global_out, all_bands)
+    np.testing.assert_array_equal(all_bands, densify(x)[0])
+    np.testing.assert_array_equal(densify(x, scope="none")[0], x)
+    with pytest.raises(ValueError):
+        densify(x, scope="global,high")
+
+
+@needs_plugin
 @pytest.mark.parametrize("mode", [m for m in DENSITY_MODES if m != "off"])
 def test_reduces_in_section_swing_but_keeps_section_contrast(mode):
     x = pulsing_sections()

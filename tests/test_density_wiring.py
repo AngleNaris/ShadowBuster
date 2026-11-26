@@ -29,8 +29,9 @@ def test_cli_forwards_density(tmp_path, monkeypatch, argv, expected):
     monkeypatch.setattr(backend, "run_batch", lambda inputs, out, **kw: seen.update(kw) or [])
     src = tmp_path / "a.wav"
     src.write_bytes(b"")
-    processing_cli.main(["-i", str(src), "-o", str(tmp_path / "out")] + argv)
+    processing_cli.main(["-i", str(src), "-o", str(tmp_path / "out"), "--density-scope", "high,low"] + argv)
     assert seen["density"] == expected
+    assert seen["density_scope"] == "low,high"
 
 
 @pytest.mark.parametrize("mode", DENSITY_MODES)
@@ -38,9 +39,10 @@ def test_independent_mastering_command_carries_density(monkeypatch, mode):
     calls = []
     monkeypatch.setattr(backend, "_run_stream", lambda cmd, *a, **k: calls.append(cmd))
     monkeypatch.setattr(backend, "read_mastering_stats", lambda path: {})
-    backend.stage_soren("in.wav", "out.wav", style_mode="off", density=mode)
+    backend.stage_soren("in.wav", "out.wav", style_mode="off", density=mode, density_scope="low,high")
     cmd = calls[-1]
     assert cmd[cmd.index("--density") + 1] == mode
+    assert cmd[cmd.index("--density-scope") + 1] == "low,high"
 
 
 def test_loud_mastering_command_carries_original_source_and_ffmpeg(monkeypatch, tmp_path):
@@ -60,6 +62,7 @@ def test_gui_mapping_forwards_density():
     import main as app_main
     assert app_main.collect_pipeline_kwargs({})[0]["density"] == "light"
     assert app_main.collect_pipeline_kwargs({"density": "standard"})[0]["density"] == "standard"
+    assert app_main.collect_pipeline_kwargs({"density_scope": "low,high"})[0]["density_scope"] == "low,high"
 
 
 def test_packaged_mastering_uses_bundled_runtime_not_gpu_env(tmp_path, monkeypatch):

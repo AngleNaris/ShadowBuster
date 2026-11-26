@@ -4,9 +4,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import LOUDNESS_TARGETS
+from . import ALL_DENSITY_BANDS, LOUDNESS_TARGETS, normalize_density_scope
 from .density import DENSITY_MODES
+from .finalizer import DEFAULT_SOFT_CLIP_DB
 from .pipeline import master_file
+from .soundstage import DEFAULT_LOW_SIDE_AMOUNT, DEFAULT_LOW_SIDE_HZ
 
 
 def main():
@@ -27,6 +29,16 @@ def main():
                         help="Section-relative multiband density compression before the limiter.")
     parser.add_argument("--no-reference-cache", action="store_true",
                         help="Disable the content-addressed reference tonal target cache.")
+    parser.add_argument("--density-scope", type=normalize_density_scope, default=ALL_DENSITY_BANDS,
+                        help="global, none or a comma-separated selection of low,mid,high")
+    parser.add_argument("--soft-clip-db", type=float, default=DEFAULT_SOFT_CLIP_DB,
+                        help="Bounded 4x oversampled pre-limiter soft clip depth in dB (0=off).")
+    parser.add_argument("--resonance-amount", type=float, default=0.0,
+                        help="Bounded dynamic resonance suppression 0-1 (0=off).")
+    parser.add_argument("--low-side-amount", type=float, default=DEFAULT_LOW_SIDE_AMOUNT,
+                        help="Gentle low-end Side Mono-Maker tightening 0-1 (0=off).")
+    parser.add_argument("--low-side-hz", type=float, default=DEFAULT_LOW_SIDE_HZ,
+                        help="Cutoff frequency (Hz) for low-end Side Mono-Maker.")
     args = parser.parse_args()
     print("MASTERING_PROGRESS 5", flush=True)
     reference_cache = reference_cache_artifact = None
@@ -48,7 +60,9 @@ def main():
         strength=args.strength, eq_profile=args.eq_profile,
         lowpass=args.lowpass_cutoff, space_wet=args.space_wet, width_db=args.width_db, density=args.density,
         reference_cache=reference_cache, reference_cache_artifact=reference_cache_artifact,
-        section_source=args.section_source, drums_source=args.drums_source)
+        section_source=args.section_source, drums_source=args.drums_source, density_scope=args.density_scope,
+        soft_clip_db=args.soft_clip_db, resonance_amount=args.resonance_amount,
+        low_side_amount=args.low_side_amount, low_side_hz=args.low_side_hz)
     print(f"LUFS {stats['actual_lufs']:.2f}; TP {stats['true_peak_dbtp']:.2f} dBTP", flush=True)
     print("MASTERING_PROGRESS 100", flush=True)
 

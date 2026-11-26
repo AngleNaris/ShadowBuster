@@ -17,7 +17,16 @@ CSS = (ROOT / "ui" / "style.css").read_text(encoding="utf-8")
 def test_soren_field_order_swaps_loudness_and_blend():
     block = HTML[HTML.index('data-rack="soren"'):HTML.index("<!-- ═══ 阶段流水线")]
     labels = re.findall(r'class="(?:field-label|fader-label)"[^>]*>([^<]+)<', block)
+    # 压缩范围收进「密度」背面原位翻转卡，母带恢复干净两行布局
     assert labels == ["参考音频", "风格强度", "EQ 风格", "密度", "响度"]
+    assert 'id="btn-density-flip"' in block
+    assert 'id="density-scope-face"' in block
+    assert 'class="seg density-scope"' in block
+    for scope in ("global", "low", "mid", "high"):
+        assert f'data-scope="{scope}"' in block
+    painter = APP[APP.index("function paintParamAvailability()"):APP.index("/* ─── 自定义下拉组件")]
+    assert "if (scopeOff && state.densityFlipped) setDensityFlipped(false, false);" in painter
+    assert "flipBtn.disabled = scopeOff;" in painter
 
 
 def test_bypassed_rack_disables_controls_but_keeps_head_switch():

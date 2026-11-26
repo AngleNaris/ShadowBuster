@@ -18,6 +18,7 @@ import sys
 
 import numpy as np
 from scipy import ndimage, signal
+from . import ALL_DENSITY_BANDS, normalize_density_scope
 
 CROSSOVERS_HZ = (120.0, 2000.0, 10000.0)
 BAND_NAMES = ("low", "low_mid", "high_mid", "high")
@@ -83,11 +84,12 @@ def _reduction_db(band, out, sr):
     return np.maximum(10 * np.log10(p_in[keep] / np.maximum(p_out[keep], 1e-30)), 0.0)
 
 
-def densify(audio, mode="light", sr=44100, input_lufs=None):
+def densify(audio, mode="light", sr=44100, input_lufs=None, *, scope=ALL_DENSITY_BANDS):
     if mode not in DENSITY_MODES:
         raise ValueError(f"Unknown density mode: {mode}")
-    report = {"mode": mode, "applied": False}
-    if mode == "off" or len(audio) < sr:
+    scope = normalize_density_scope(scope)
+    report = {"mode": mode, "scope": scope, "applied": False}
+    if mode == "off" or scope == "none" or len(audio) < sr:
         return audio.copy(), report
     if input_lufs is None:
         from audio_metrics import integrated_lufs
@@ -95,8 +97,15 @@ def densify(audio, mode="light", sr=44100, input_lufs=None):
     shift = input_lufs - REFERENCE_LUFS + MODES[mode]
     result = np.zeros_like(audio)
     bands = {}
-    for name, band, (threshold, ratio, attack, release) in zip(
-            BAND_NAMES, split_bands(audio, sr), BANDS):
+    if scope == "global":
+        routes = [("global", "global", audio, (-22.0, 2.0, 15.0, 100.0))]
+    else:
+        routes = zip(("low", "mid", "high", "high"), BAND_NAMES, split_bands(audio, sr), BANDS)
+    selected = scope.split(",")
+    for group, name, band, (threshold, ratio, attack, release) in routes:
+        if group not in selected:
+            result += band
+            continue
         plugin = _compressor(ratio, attack, release)
         follow = _follow_db(band, sr)
         chunks = []
@@ -114,6 +123,6 @@ def densify(audio, mode="light", sr=44100, input_lufs=None):
                        "gain_reduction_p50_active_db": float(np.median(active)) if len(active) else 0.0,
                        "gain_reduction_p95_db": float(np.percentile(reduction, 95)) if len(reduction) else 0.0}
     report.update(applied=True, engine="ZL Compressor 0.6.1", style=STYLE,
-                  crossovers_hz=list(CROSSOVERS_HZ), input_lufs=input_lufs,
+                  crossovers_hz=[] if scope == "global" else list(CROSSOVERS_HZ), input_lufs=input_lufs,
                   threshold_shift_db=shift, section_seconds=SECTION_SECONDS, bands=bands)
     return result, report

@@ -42,9 +42,21 @@ def main(argv=None):
         parser.add_argument('--'+flag, type=bounded(low, high), default=default)
     parser.add_argument('--vocal-comp-amount', type=bounded(0, 1), default=0.0,
                         help='bounded broadband vocal compression 0-1 (0=off, exact)')
+    parser.add_argument('--vocal-deess-amount', type=bounded(0, 1), default=0.0,
+                        help='bounded split-band vocal de-esser 0-1 (0=off, exact)')
+    parser.add_argument('--vocal-defizz-amount', type=bounded(0, 1), default=0.0,
+                        help='bounded >=5kHz harmonic-preserving vocal de-fizz 0-1 (0=off, exact)')
     parser.add_argument('--vocal-air-db', type=bounded(0, 3), default=None,
                         help='boost-only vocal air high-shelf dB (0-3); omit to disable')
     parser.add_argument('--bass-auto-clarity', action='store_true')
+    parser.add_argument('--bass-sat-even', type=bounded(0, 1), default=0.0,
+                        help='asymmetric 2nd-order even harmonic bass saturation warmth 0-1 (0=odd tanh)')
+    parser.add_argument('--resonance-amount', type=bounded(0, 1), default=0.0,
+                        help='bounded mastering dynamic resonance suppression 0-1 (0=off)')
+    parser.add_argument('--low-side-amount', type=bounded(0, 1), default=None,
+                        help='gentle low-end Side Mono-Maker tightening 0-1 (default 0.7 in mastering)')
+    parser.add_argument('--low-side-hz', type=bounded(0, 250), default=None,
+                        help='cutoff frequency Hz for low-end Side Mono-Maker (default 90 Hz)')
     parser.add_argument('--sidechain-amount', type=bounded(0, 1), default=0.0,
                         help='Kick/Bass 低频侧链强度，默认关闭')
     parser.add_argument('--sidechain-attack-ms', type=bounded(1, 50), default=5.0)
@@ -91,7 +103,10 @@ def main(argv=None):
                         default=backend.DEFAULTS['loudness'])
     parser.add_argument('--density', choices=['off', 'light', 'standard'],
                         default=backend.DEFAULTS['density'],
-                        help='母带多频段密度压缩（ZL Compressor）；仅无风格/EQ/参考母带路径生效')
+                        help='母带密度压缩强度，仅无风格/EQ/参考母带路径生效')
+    parser.add_argument('--density-scope', type=backend.normalize_density_scope,
+                        default=backend.DEFAULTS['density_scope'],
+                        help='global 为全局宽带，分频可组合 low,mid,high，none 为空选')
     parser.add_argument('--eq-profile', default=backend.DEFAULTS['eq_profile'],
                         help='global user EQ, active with or without reference/style matching')
     parser.add_argument('--style-mode', choices=['styled','off','eq_only'], default='off')

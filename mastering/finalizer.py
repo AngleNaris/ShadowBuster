@@ -35,6 +35,9 @@ LOOKAHEAD_MS = 10.0
 ATTACK_RAMP_MS = 5.0
 RELEASE_FAST_RATIO = .25
 RELEASE_MEMORY_MS = 50.0
+# Approved E-variant default for independent mastering pipeline (2026-11-23 listening):
+# 4x oversampled stereo-linked C1 peak shaving before linked_limiter.
+DEFAULT_SOFT_CLIP_DB = 1.2
 
 
 def true_peak_db(audio):
@@ -78,6 +81,46 @@ def _local_engagement(reduction, sample_rate):
     windows = np.lib.stride_tricks.sliding_window_view(points, width)[::1000]
     return (float(np.max(np.mean(windows > .1, axis=1))),
             float(np.max(np.median(windows, axis=1))))
+
+
+def soft_clip_peaks(audio, ceiling_db=LIMITER_CEILING_DB, soft_clip_db=0.0):
+    """Stereo-linked, C1-smooth, bounded pre-limiter peak shaver (4x oversampled domain).
+
+    Below ``ceiling_db`` the signal is untouched (gain = 1.0). Above ``ceiling_db``,
+    excess ``e = 20*log10(peak / ceiling)`` is smoothly shaved by
+    ``delta_db = soft_clip_db * (1 - 1 / cosh(e / soft_clip_db))``:
+      - C1 continuous at the ceiling (``delta'(0) = 0``, zero knee kink);
+      - strictly monotonic (``output' >= 0.5`` everywhere, never folds);
+      - strictly bounded attenuation (< ``soft_clip_db``), so sustained loud peaks
+        still flow cleanly into ``linked_limiter`` and its dynamic budgets;
+      - stereo-linked single gain curve (preserves L/R channel ratio identically).
+    """
+    if not math.isfinite(soft_clip_db) or not 0.0 <= soft_clip_db <= 6.0:
+        raise ValueError(f"soft_clip_db must be finite within [0, 6], got {soft_clip_db!r}")
+    if soft_clip_db == 0.0 or len(audio) == 0:
+        return audio, {"applied": False, "soft_clip_db": 0.0,
+                       "clipped_fraction": 0.0, "max_clip_gr_db": 0.0}
+    ceiling = 10 ** (ceiling_db / 20.0)
+    peak = np.max(np.abs(audio), axis=1)
+    over = peak > ceiling
+    if not np.any(over):
+        return audio, {"applied": False, "soft_clip_db": float(soft_clip_db),
+                       "clipped_fraction": 0.0, "max_clip_gr_db": 0.0}
+    excess_db = 20.0 * np.log10(peak[over] / ceiling)
+    # 1 / cosh(u) = 2 * exp(-u) / (1 + exp(-2u)) avoids float overflow for large u.
+    u = excess_db / soft_clip_db
+    e_neg = np.exp(-u)
+    sech = (2.0 * e_neg) / (1.0 + e_neg * e_neg)
+    gr_over = soft_clip_db * (1.0 - sech)
+    gain = np.ones_like(peak)
+    gain[over] = 10.0 ** (-gr_over / 20.0)
+    out = audio * gain[:, None]
+    return out, {
+        "applied": True,
+        "soft_clip_db": float(soft_clip_db),
+        "clipped_fraction": float(np.mean(over)),
+        "max_clip_gr_db": float(np.max(gr_over)),
+    }
 
 
 def linked_limiter(audio, sample_rate, release_ms, *, release_mode="adaptive"):
@@ -126,10 +169,12 @@ def linked_limiter(audio, sample_rate, release_ms, *, release_mode="adaptive"):
     return out, stats
 
 
-def finalize(audio, sample_rate=44100, loudness="normal"):
+def finalize(audio, sample_rate=44100, loudness="normal", *, soft_clip_db=0.0):
     """Return float audio and measured statistics, before final quantization."""
     if loudness not in LOUDNESS_TARGETS:
         raise ValueError(f"Unknown loudness option: {loudness}")
+    if not math.isfinite(soft_clip_db) or not 0.0 <= soft_clip_db <= 6.0:
+        raise ValueError(f"soft_clip_db must be finite within [0, 6], got {soft_clip_db!r}")
     data = np.asarray(audio, dtype=np.float64)
     if sample_rate != 44100:
         raise ValueError("Mastering requires 44100 Hz; resample at the input boundary")
@@ -155,9 +200,16 @@ def finalize(audio, sample_rate=44100, loudness="normal"):
     budget_limited = False
     reason = "iteration_limit"
     for attempt in range(18):
-        limited, stats = linked_limiter(up * 10 ** (drive / 20),
-                                       sample_rate * OVERSAMPLING, release_ms)
-        if stats["max_gain_reduction_db"] == 0:
+        driven = up * 10 ** (drive / 20)
+        if soft_clip_db > 0.0:
+            driven, clip_stats = soft_clip_peaks(driven, LIMITER_CEILING_DB, soft_clip_db)
+        else:
+            clip_stats = None
+        limited, stats = linked_limiter(driven, sample_rate * OVERSAMPLING, release_ms)
+        if clip_stats is not None:
+            stats["soft_clip"] = clip_stats
+        untouched = stats["max_gain_reduction_db"] == 0 and not (clip_stats and clip_stats["applied"])
+        if untouched:
             # If gain alone meets the ceiling, preserve the original spectrum
             # exactly instead of imposing an unnecessary resampling round trip.
             candidate = data * 10 ** (drive / 20)

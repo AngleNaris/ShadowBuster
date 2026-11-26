@@ -38,30 +38,52 @@ def _decaying_hits(freqs, sec, amp, period=0.25, decay=0.03):
     return x * gate
 
 
+def _repeated_hits(freqs, sec, amp, period=0.25, decay=0.03):
+    """周期性重复鼓点（每拍重新起音并指数衰减）。"""
+    t = np.arange(int(SR * sec)) / SR
+    phase = t % period
+    x = np.zeros_like(t)
+    for k, f in enumerate(freqs):
+        x = x + amp * np.exp(-phase / decay) * np.sin(2 * np.pi * f * t + k)
+    return x
+
+
 # ── DSP-07 / DSP-16：稳态不误触发；电平无关 ────────────────────────────
 
-def test_steady_sine_no_sustained_transient_boost():
-    """稳态正弦：启动段后额外增益 P95 < 0.05 dB（连续正弦不是瞬态）。"""
-    x = _steady_sine(60.0, 2.0, 0.4)
+@pytest.mark.parametrize("freq", (60.0, 1000.0, 3000.0, 12000.0))
+def test_steady_sine_no_sustained_transient_boost(freq):
+    """稳态正弦（含带内 1k/3k/12kHz）：启动段后额外增益 < 0.05 dB（连续正弦不是瞬态）。"""
+    x = _steady_sine(freq, 2.0, 0.4)
     out = bass.transient_emphasize(x, SR, 1.0)
     seg = out[int(0.5 * SR):]          # 排除启动段
     x_seg = x[int(0.5 * SR):]
     added_db = 20 * np.log10(
-        np.abs(out - x).max() / (np.abs(x_seg).max() + 1e-30) + 1e-30)
+        np.abs(seg - x_seg).max() / (np.abs(x_seg).max() + 1e-30) + 1e-30)
     assert added_db < -26.0             # 额外分量 ≤ 0.05 dB 量级（−26 dB 幅度比）
 
 
+def test_transient_boosts_onset_not_sustain():
+    """真实周期敲击：起音明显增强，持续/尾音不抬升（回归 _frame_onepole 递归极点）。"""
+    x = _repeated_hits((90.0, 250.0, 3000.0, 10000.0), 2.0, 0.4, period=0.5, decay=0.03)
+    g_main, g_hf = bass.transient_emphasize_curves(x, SR, 0.5)
+    assert float(np.max(g_main)) > 10 ** (1.2 / 20.0)     # 起音增强 > +1.2 dB
+    assert float(np.max(g_hf)) > 10 ** (0.6 / 20.0)       # 高频起音增强 > +0.6 dB
+    assert float(np.median(g_main)) < 10 ** (0.05 / 20.0) # 持续/尾音保持原样
+    assert float(np.median(g_hf)) < 10 ** (0.05 / 20.0)
+
+
 def test_transient_character_invariant_to_level_scaling():
-    """同一素材整体 ±6 dB：相对门 + dB 比值检测 → 处理性格（曲线峰值/
-    分位数）不随整曲电平缩放改变（旧实现按全曲最大值归一，量程必变）。"""
-    x = _decaying_hits((60.0, 200.0, 3000.0), 1.0, 0.4)
-    for scale_db in (-6.0, 0.0, +6.0):
+    """同一素材整体 ±6 dB：相对门 + dB 比值检测 → 处理性格（整条曲线）
+    不随整曲电平缩放改变（旧实现按全曲最大值归一，量程必变）。"""
+    x = _repeated_hits((60.0, 200.0, 3000.0), 1.5, 0.4, period=0.25, decay=0.03)
+    ref_main, ref_hf = bass.transient_emphasize_curves(x, SR, 0.5)
+    assert float(np.max(ref_main)) > 1.12
+    assert float(np.median(ref_main)) < 1.01
+    for scale_db in (-6.0, +6.0):
         s = 10 ** (scale_db / 20.0)
-        g_main, _ = bass.transient_emphasize_curves(x * s, SR, 0.5)
-        assert float(np.max(g_main)) == pytest.approx(1.2334, rel=1e-3), \
-            f'level {scale_db} dB 曲线峰值漂移'
-        assert float(np.percentile(g_main, 95)) == pytest.approx(
-            float(np.max(g_main)), rel=1e-3)
+        g_main, g_hf = bass.transient_emphasize_curves(x * s, SR, 0.5)
+        np.testing.assert_allclose(g_main, ref_main, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(g_hf, ref_hf, rtol=1e-6, atol=1e-6)
 
 
 def test_single_outlier_does_not_steal_range():
@@ -116,15 +138,15 @@ def test_channel_swap_symmetry():
 # ── DSP-17：amount 单调 / 连续 ─────────────────────────────────────────
 
 def test_amount_monotonic_and_continuous():
-    """amount 扫描：起音处增益非递减；相邻档位差有界（无台阶爆音）。"""
-    x = _decaying_hits((60.0, 200.0, 3000.0), 0.5, 0.4)
-    onset = int(0.02 * SR)             # 第一个鼓点起音附近
+    """amount 扫描：起音处增益严格单调递增且有界（无台阶爆音）。"""
+    x = _repeated_hits((60.0, 200.0, 3000.0), 0.75, 0.4, period=0.25, decay=0.03)
+    onset = int(0.24 * SR)             # 第二拍鼓点起音附近（t=0.25s）
     win = slice(onset, onset + int(0.05 * SR))
-    prev_peak = -1.0
+    prev_peak = 1.0
     for amount in (0.05, 0.2, 0.4, 0.6, 0.8, 1.0):
         g_main, _ = bass.transient_emphasize_curves(x, SR, amount)
         peak = float(np.max(g_main[win]))
-        assert peak >= prev_peak - 1e-9, f'amount={amount} 起音增益回退'
+        assert peak > prev_peak, f'amount={amount} 起音增益未单调递增'
         prev_peak = peak
         assert float(np.max(g_main)) <= 10 ** (4.0 * amount / 20.0) + 1e-9
 

@@ -2,7 +2,7 @@
 import math
 
 import numpy as np
-from scipy import fft
+from scipy import fft, signal
 
 from audio_metrics import guard_metrics
 
@@ -86,3 +86,42 @@ def widen(audio, wet=0.0, width_db=0.0, sr=44100):
         return audio.copy(), report
     report.update(applied=True, accepted_delta_gain=admitted, before=before, after=after)
     return result, report
+
+
+DEFAULT_LOW_SIDE_HZ = 90.0
+DEFAULT_LOW_SIDE_AMOUNT = 0.7
+
+
+def tighten_low_side(audio, sr=44100, cutoff_hz=DEFAULT_LOW_SIDE_HZ, amount=0.0):
+    """Gentle 12 dB/oct zero-phase Side high-pass (Elliptical Mono-Maker).
+
+    Tightens excessive sub-bass Side spread below ``cutoff_hz`` without touching
+    Mid (bit-exact preserved) or narrowing stereo width above ~2.5*cutoff_hz.
+    ``amount == 0`` or ``cutoff_hz == 0`` returns a copy unchanged.
+    """
+    if not np.isfinite([cutoff_hz, amount]).all() or not 0.0 <= amount <= 1.0:
+        raise ValueError("Invalid low-side tightening parameters")
+    if cutoff_hz < 0.0 or cutoff_hz > 250.0:
+        raise ValueError(f"low_side_hz must be within [0, 250], got {cutoff_hz!r}")
+    data = np.asarray(audio, dtype=np.float64)
+    report = {"applied": False, "cutoff_hz": float(cutoff_hz), "amount": float(amount)}
+    if amount == 0.0 or cutoff_hz == 0.0 or data.ndim != 2 or data.shape[1] != 2 or len(data) < 32:
+        return data.copy(), report
+    mid = (data[:, 0] + data[:, 1]) * 0.5
+    side = (data[:, 0] - data[:, 1]) * 0.5
+    if float(np.mean(side * side)) < 1e-16:
+        report["reason"] = "no_existing_side"
+        return data.copy(), report
+    # 1st-order Butterworth + sosfiltfilt = smooth 12 dB/oct zero-phase HPF (minimal pre-ringing).
+    sos = signal.butter(1, float(cutoff_hz), btype="highpass", fs=sr, output="sos")
+    pad = min(len(side) - 1, int(round(0.25 * sr)))
+    hp_side = signal.sosfiltfilt(sos, side, padlen=pad)
+    new_side = (1.0 - float(amount)) * side + float(amount) * hp_side
+    out = np.column_stack((mid + new_side, mid - new_side))
+    lo_sos = signal.butter(2, [20.0, max(25.0, float(cutoff_hz))], btype="bandpass", fs=sr, output="sos")
+    s_before = signal.sosfiltfilt(lo_sos, side, padlen=0)
+    s_after = signal.sosfiltfilt(lo_sos, new_side, padlen=0)
+    eb, ea = float(np.mean(s_before ** 2)), float(np.mean(s_after ** 2))
+    att_db = float(10.0 * math.log10(ea / eb)) if eb > 1e-24 and ea > 1e-24 else 0.0
+    report.update(applied=True, low_side_change_db=round(att_db, 3))
+    return out, report

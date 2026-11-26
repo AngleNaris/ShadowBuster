@@ -152,6 +152,35 @@ def test_rumble_keeps_requested_low_cut():
     assert analysis["envelope_correlation"] < 0.35
 
 
+def test_continuous_musical_sub_without_silence_is_preserved():
+    """全程饱满无静音段（silent_leak_db=None）的音乐性 sub 不再被误切。"""
+    sr = 44100
+    t = np.arange(int(sr * 4.0)) / sr
+    env = 0.5 + 0.4 * np.sin(2 * np.pi * 2.0 * t)   # 120 BPM 连续律动，无静音帧
+    mono = env * (0.25 * np.sin(2 * np.pi * 31.5 * t)
+                  + 0.35 * np.sin(2 * np.pi * 63.0 * t))
+    chosen, analysis = premaster_hygiene.choose_low_cut_hz(
+        np.column_stack((mono, mono)), sr, 40.0)
+    assert analysis["silent_leak_db"] is None
+    assert analysis["sub_active_range_db"] >= 6.0
+    assert chosen == 0.0
+
+
+def test_continuous_rumble_floor_with_tiny_wiggle_still_filtered():
+    """无静音段但次声主要由恒定 rumble 托底（起伏极小）时，不误豁免低切。"""
+    sr = 44100
+    t = np.arange(int(sr * 4.0)) / sr
+    env = 0.5 + 0.4 * np.sin(2 * np.pi * 2.0 * t)
+    mono = (0.25 * np.sin(2 * np.pi * 22.0 * t)               # 恒定 rumble 托底
+            + env * 0.03 * np.sin(2 * np.pi * 31.5 * t)       # 微弱随乐起伏
+            + env * 0.35 * np.sin(2 * np.pi * 100.0 * t))
+    chosen, analysis = premaster_hygiene.choose_low_cut_hz(
+        np.column_stack((mono, mono)), sr, 40.0)
+    assert analysis["silent_leak_db"] is None
+    assert analysis["sub_active_range_db"] < 3.0
+    assert chosen >= 35.0
+
+
 def test_constant_tone_and_short_material_keep_requested():
     # 恒定电平（合成测试音）：包络无起伏 → 无联动证据 → 请求值
     sr = 44100

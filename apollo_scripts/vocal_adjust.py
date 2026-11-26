@@ -12,9 +12,10 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from scipy import signal
+from scipy import ndimage, signal
 
 from audio_validation import finite_range, validate_audio_pair
+from bass_enhance import _ar_envelope
 
 FRAME_SECONDS = 0.100
 HOP_SECONDS = 0.050
@@ -192,16 +193,12 @@ def apply_vocal_compression(vocals, sr, amount, report=None):
     gr_db = np.minimum(over * 0.4 * amount, VOCAL_COMP_MAX_GR_DB * amount)
     gr_db[~active] = 0.0
     # 有限斜率包络（attack/release 一阶），插值到样本；立体声共用同一曲线。
+    # 复用 bass_enhance._ar_envelope（Numba JIT，fastmath=False），与原循环逐位等价。
     sample_gr = np.interp(np.arange(len(v)) / sr, centers, gr_db,
                           left=gr_db[0] if len(gr_db) else 0.0, right=0.0)
     pole_a = -np.expm1(-1.0 / (sr * VOCAL_COMP_ATTACK_S))
     pole_r = -np.expm1(-1.0 / (sr * VOCAL_COMP_RELEASE_S))
-    smoothed = np.empty_like(sample_gr)
-    state = 0.0
-    for i, target in enumerate(sample_gr):
-        pole = pole_a if target > state else pole_r
-        state += pole * (target - state)
-        smoothed[i] = state
+    smoothed = _ar_envelope(sample_gr, pole_a, pole_r)
     out = v * (10 ** (-smoothed / 20.0))[:, None]
     if not np.isfinite(out).all():
         raise RuntimeError("vocal compression produced non-finite samples")
@@ -215,6 +212,229 @@ def apply_vocal_compression(vocals, sr, amount, report=None):
                        "attack_s": VOCAL_COMP_ATTACK_S, "release_s": VOCAL_COMP_RELEASE_S,
                        "scope": "broadband linked gain on vocal stem; spectrum untouched"})
     return out
+
+
+# ── 人声有界去齿音（De-Esser，opt-in，amount=0 精确恒等）──────────────────
+# 经典分频相对齿音检测（5–9.5 kHz 齿音带 vs 300–3500 Hz 主体带）：
+#   - 正常元音歌唱时主体带能量远高于齿音带，不触发（保留人声亮度与空气感）；
+#   - 仅当齿音带相对主体带超过 −6 dB 阈值时，平滑衰减齿音带分量（≤4.0×amount dB）；
+#   - 立体声功率域联动检测（左右共用单条衰减曲线，反相不抵消），零相位带通精确重组，
+#     带外频率（含 >10 kHz 空气感与中低频主体）不受影响。
+VOCAL_DEESS_LO_HZ = 5000.0
+VOCAL_DEESS_HI_HZ = 9500.0
+VOCAL_DEESS_REF_LO_HZ = 300.0
+VOCAL_DEESS_REF_HI_HZ = 3500.0
+VOCAL_DEESS_RATIO_THRESHOLD_DB = -6.0
+VOCAL_DEESS_MAX_GR_DB = 4.0
+VOCAL_DEESS_ENV_MS = 5.0
+VOCAL_DEESS_ATTACK_S = 0.002
+VOCAL_DEESS_RELEASE_S = 0.040
+
+
+def apply_vocal_deesser(vocals, sr, amount, report=None):
+    """Bounded split-band vocal de-esser; exact identity when amount == 0."""
+    v = _audio(vocals, "vocals")
+    sr = _rate(sr)
+    amount = finite_range(amount, "vocal-deess-amount", 0.0, 1.0)
+    if amount == 0.0 or sr * 0.45 <= VOCAL_DEESS_LO_HZ:
+        if report is not None:
+            report.update({"applied": False, "amount": float(amount)})
+        return v
+    sib_hi = min(VOCAL_DEESS_HI_HZ, sr * 0.45)
+    sib_sos = signal.butter(2, [VOCAL_DEESS_LO_HZ, sib_hi], btype="bandpass", fs=sr, output="sos")
+    ref_sos = signal.butter(2, [VOCAL_DEESS_REF_LO_HZ, min(VOCAL_DEESS_REF_HI_HZ, sr * 0.45)],
+                            btype="bandpass", fs=sr, output="sos")
+    sib = signal.sosfiltfilt(sib_sos, v, axis=0, padlen=0)
+    ref = signal.sosfiltfilt(ref_sos, v, axis=0, padlen=0)
+    win = max(1, round(sr * VOCAL_DEESS_ENV_MS / 1000.0))
+    kernel = np.ones(win, dtype=np.float64) / win
+    sib_pow = np.convolve(np.mean(sib * sib, axis=1), kernel, mode="same")
+    ref_pow = np.convolve(np.mean(ref * ref, axis=1), kernel, mode="same")
+    sib_rms = np.sqrt(np.maximum(sib_pow, 0.0))
+    ref_rms = np.sqrt(np.maximum(ref_pow, 0.0))
+    floor = max(1e-6, float(np.percentile(sib_rms, 95)) * 0.05)
+    active = sib_rms > floor
+    if not active.any():
+        if report is not None:
+            report.update({"applied": False, "reason": "no_sibilance", "amount": float(amount)})
+        return v
+    ratio_db = 20.0 * np.log10((sib_rms + 1e-12) / (ref_rms + 1e-12))
+    over = np.clip(ratio_db - VOCAL_DEESS_RATIO_THRESHOLD_DB, 0.0, None)
+    target_gr = np.where(active, np.minimum(over * 0.5 * amount, VOCAL_DEESS_MAX_GR_DB * amount), 0.0)
+    if float(target_gr.max()) <= 1e-9:
+        if report is not None:
+            report.update({"applied": False, "reason": "below_threshold", "amount": float(amount)})
+        return v
+    pole_a = -np.expm1(-1.0 / (sr * VOCAL_DEESS_ATTACK_S))
+    pole_r = -np.expm1(-1.0 / (sr * VOCAL_DEESS_RELEASE_S))
+    gr_db = _ar_envelope(target_gr, pole_a, pole_r)
+    gain = 10.0 ** (-gr_db / 20.0)
+    out = v + (gain[:, None] - 1.0) * sib
+    if not np.isfinite(out).all():
+        raise RuntimeError("vocal de-esser produced non-finite samples")
+    if report is not None:
+        report.update({"applied": True, "amount": float(amount),
+                       "band_hz": [VOCAL_DEESS_LO_HZ, sib_hi],
+                       "max_gr_db": float(VOCAL_DEESS_MAX_GR_DB * amount),
+                       "gr_p95_db": float(np.percentile(gr_db, 95)),
+                       "gr_max_db": float(gr_db.max()),
+                       "scope": "split-band linked sibilance attenuation; band-outside untouched"})
+    return out
+
+
+# ── 人声 AI 嘶声 / 电噪平滑抑制（De-Fizz，opt-in，amount=0 精确恒等）───────
+# 针对 AI 神经声码器（Suno 类）伴随人声调制的宽带“莎莎声 / 电流声”：
+#   - 仅作用 ≥5 kHz（4.5–5.5 kHz 余弦过渡），4.5 kHz 以下人声主体/清晰度零触碰；
+#   - 识别高谱平坦度（SFM > 0.35）噪声态内容，并重点压平 7.5 kHz 以上反常高于
+#     5.5–7.5 kHz 基准的 AI 声码器高频隆起（如 8.5–11.5 kHz 白噪峰）；
+#   - 保留真实谐波峰（tonal_guard），并对增益掩码做时频二维高斯平滑，杜绝“水声”；
+#   - 立体声人声在 ≥5 kHz 出现低相干（LR_coh < 0.25）的高平坦度侧向电噪时，
+#     仅对 Side 施加额外有界衰减，保持中置人声清晰与左右对称。
+VOCAL_DEFIZZ_LO_HZ = 5000.0
+VOCAL_DEFIZZ_HI_HZ = 18000.0
+VOCAL_DEFIZZ_FFT = 2048
+VOCAL_DEFIZZ_HOP = 512
+VOCAL_DEFIZZ_BLOCK_S = 8.0
+VOCAL_DEFIZZ_CONTEXT_S = 1.0
+VOCAL_DEFIZZ_BASE_MAX_DB = 5.0
+VOCAL_DEFIZZ_HUMP_MAX_DB = 4.5
+VOCAL_DEFIZZ_TOTAL_MAX_DB = 9.0
+VOCAL_DEFIZZ_SIDE_MAX_DB = 4.0
+
+
+def _defizz_chunk(chunk, sr, amount):
+    """Process one (frames, ch) chunk with smooth harmonic-preserving fizz attenuation."""
+    n_ch = chunk.shape[1]
+    nperseg = min(VOCAL_DEFIZZ_FFT, len(chunk))
+    if nperseg < 16:
+        return chunk.copy(), 0.0, 0.0
+    noverlap = min(nperseg - VOCAL_DEFIZZ_HOP, nperseg * 3 // 4)
+    hop = max(1, nperseg - noverlap)
+    noverlap = nperseg - hop
+    spectra = [signal.stft(chunk[:, c], sr, nperseg=nperseg, noverlap=noverlap)[2]
+               for c in range(n_ch)]
+    f = np.fft.rfftfreq(nperseg, 1.0 / sr)
+    hi_limit = min(VOCAL_DEFIZZ_HI_HZ, sr * 0.48)
+    if hi_limit <= VOCAL_DEFIZZ_LO_HZ:
+        return chunk.copy(), 0.0, 0.0
+
+    power = np.mean([np.abs(Z) ** 2 for Z in spectra], axis=0)
+    mag = np.sqrt(power)
+    # 5.5-7.5 kHz 平均功率密度作为自然高频滚降基准，用于识别 ≥7.5 kHz 的 AI 异常隆起。
+    ref_mask = (f >= 5500.0) & (f < min(7500.0, hi_limit))
+    ref_density = (np.mean(power[ref_mask], axis=0)
+                   if np.any(ref_mask) else np.zeros(power.shape[1]))
+    # 活跃门限：静音段不乱动
+    active_e = np.sum(power[(f >= 200.0) & (f < hi_limit)], axis=0)
+    active_floor = max(1e-12, float(np.percentile(active_e, 95)) * 1e-4)
+    active = active_e > active_floor
+
+    att_db = np.zeros_like(mag)
+    side_extra_db = np.zeros_like(mag)
+    local_med = ndimage.median_filter(mag, size=(9, 1), mode="nearest")
+    tonal_guard = np.clip((3.0 - mag / np.maximum(local_med, 1e-12)) / 2.0, 0.0, 1.0)
+    tonal_guard = ndimage.gaussian_filter(tonal_guard, sigma=(1.0, 1.0), mode="nearest")
+
+    for lo in np.arange(VOCAL_DEFIZZ_LO_HZ, hi_limit, 1000.0):
+        hi = min(lo + 1000.0, hi_limit)
+        sel = (f >= lo) & (f < hi)
+        if np.count_nonzero(sel) < 4:
+            continue
+        pb = np.maximum(power[sel], 1e-24)
+        band_density = np.mean(pb, axis=0)
+        sfm = np.exp(np.mean(np.log(pb), axis=0)) / band_density
+        fizz = np.clip((sfm - 0.35) / 0.25, 0.0, 1.0) * active
+        if lo >= 7500.0 and np.any(ref_mask):
+            hump_db = 10.0 * np.log10(band_density / np.maximum(ref_density, 1e-24))
+            hump = np.clip((hump_db + 2.0) / 8.0, 0.0, 1.0)
+        else:
+            hump = 0.0
+        band_att = np.minimum(
+            (VOCAL_DEFIZZ_BASE_MAX_DB * fizz + VOCAL_DEFIZZ_HUMP_MAX_DB * fizz * hump) * amount,
+            VOCAL_DEFIZZ_TOTAL_MAX_DB * amount,
+        )
+        att_db[sel] = band_att[None, :] * tonal_guard[sel]
+        if n_ch == 2:
+            zl, zr = spectra[0][sel], spectra[1][sel]
+            denom = np.sqrt(np.maximum(np.sum(np.abs(zl) ** 2, axis=0)
+                                       * np.sum(np.abs(zr) ** 2, axis=0), 1e-24))
+            coh = np.sum((zl.conj() * zr).real, axis=0) / denom
+            incoh = np.clip((0.25 - coh) / 0.35, 0.0, 1.0)
+            s_att = (VOCAL_DEFIZZ_SIDE_MAX_DB * amount * fizz * incoh)
+            side_extra_db[sel] = s_att[None, :] * tonal_guard[sel]
+
+    # 时频二维平滑，彻底消除逐 bin 门限引起的水声/音乐噪声。
+    att_db = ndimage.gaussian_filter(att_db, sigma=(2.5, 2.0), mode="nearest")
+    side_extra_db = ndimage.gaussian_filter(side_extra_db, sigma=(2.5, 2.0), mode="nearest")
+
+    # 4.5-5.5 kHz 余弦过渡，保证 <4.5 kHz 精确零触碰。
+    lo_taper = 0.5 - 0.5 * np.cos(np.pi * np.clip((f - 4500.0) / 1000.0, 0.0, 1.0))
+    hi_taper = 0.5 - 0.5 * np.cos(np.pi * np.clip((hi_limit - f) / 1000.0, 0.0, 1.0))
+    taper = (lo_taper * hi_taper)[:, None]
+    att_db = np.clip(att_db * taper, 0.0, VOCAL_DEFIZZ_TOTAL_MAX_DB * amount)
+    side_extra_db = np.clip(side_extra_db * taper, 0.0, VOCAL_DEFIZZ_SIDE_MAX_DB * amount)
+
+    if not np.any(att_db > 1e-6) and not np.any(side_extra_db > 1e-6):
+        return chunk.copy(), 0.0, 0.0
+
+    gain_common = 10.0 ** (-att_db / 20.0)
+    if n_ch == 2:
+        zm = 0.5 * (spectra[0] + spectra[1]) * gain_common
+        zs = 0.5 * (spectra[0] - spectra[1]) * gain_common * (10.0 ** (-side_extra_db / 20.0))
+        out_spectra = [zm + zs, zm - zs]
+    else:
+        out_spectra = [spectra[0] * gain_common]
+
+    # Delta reconstruction keeps <4.5 kHz bit-exact untouched.
+    outs = []
+    for Z_orig, Z_new in zip(spectra, out_spectra):
+        _, delta = signal.istft(Z_new - Z_orig, sr, nperseg=nperseg, noverlap=noverlap)
+        if len(delta) < len(chunk):
+            delta = np.pad(delta, (0, len(chunk) - len(delta)))
+        outs.append(chunk[:, len(outs)] + delta[:len(chunk)])
+    out = np.column_stack(outs)
+    high_bins = (f >= VOCAL_DEFIZZ_LO_HZ) & (f < hi_limit)
+    max_att = float(np.max(att_db[high_bins])) if np.any(high_bins) else 0.0
+    max_side = float(np.max(side_extra_db[high_bins])) if np.any(high_bins) else 0.0
+    return out, max_att, max_side
+
+
+def apply_vocal_defizz(vocals, sr, amount, report=None):
+    """Bounded harmonic-preserving AI vocal de-fizz / de-buzz; exact identity when amount == 0."""
+    v = _audio(vocals, "vocals")
+    sr = _rate(sr)
+    amount = finite_range(amount, "vocal-defizz-amount", 0.0, 1.0)
+    if amount == 0.0 or sr * 0.48 <= VOCAL_DEFIZZ_LO_HZ:
+        if report is not None:
+            report.update({"applied": False, "amount": float(amount)})
+        return v
+    if not np.any(v):
+        if report is not None:
+            report.update({"applied": False, "reason": "silence", "amount": float(amount)})
+        return v
+    block = max(VOCAL_DEFIZZ_FFT, int(VOCAL_DEFIZZ_BLOCK_S * sr) // VOCAL_DEFIZZ_HOP * VOCAL_DEFIZZ_HOP)
+    context = int(VOCAL_DEFIZZ_CONTEXT_S * sr) // VOCAL_DEFIZZ_HOP * VOCAL_DEFIZZ_HOP
+    out = np.empty_like(v)
+    max_att = 0.0
+    max_side = 0.0
+    for start in range(0, len(v), block):
+        end = min(start + block, len(v))
+        lo = max(0, start - context)
+        hi = min(len(v), end + context)
+        processed, att_c, side_c = _defizz_chunk(v[lo:hi], sr, amount)
+        out[start:end] = processed[start - lo:end - lo]
+        max_att = max(max_att, att_c)
+        max_side = max(max_side, side_c)
+    if not np.isfinite(out).all():
+        raise RuntimeError("vocal de-fizz produced non-finite samples")
+    applied = max_att > 0.05 or max_side > 0.05
+    if report is not None:
+        report.update({"applied": bool(applied), "amount": float(amount),
+                       "band_hz": [VOCAL_DEFIZZ_LO_HZ, min(VOCAL_DEFIZZ_HI_HZ, sr * 0.48)],
+                       "max_broadband_att_db": round(max_att, 3),
+                       "max_side_extra_att_db": round(max_side, 3),
+                       "scope": "smooth harmonic-preserving >=5kHz fizz + incoherent Side attenuation"})
+    return out if applied else v
 
 
 # ── 人声空气 EQ（只加不削；与母带 8kHz 高架联动）───────────────────────
@@ -318,12 +538,15 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
                                  frame_seconds=FRAME_SECONDS, hop_seconds=HOP_SECONDS,
                                  vocal_scale=1.0, return_report=False,
                                  balance_target_db=None, balance_mode=None,
-                                 comp_amount=0.0, air_db=None):
+                                 comp_amount=0.0, air_db=None, deess_amount=0.0,
+                                 defizz_amount=0.0):
     """Return unnormalized audio; reports measure estimated sources before mastering.
 
     vocal_scale follows ONLY global attenuation upstream. Separation leakage and
     unscaled stem deltas remain part of the accompaniment residual estimate.
     comp_amount: bounded broadband vocal compression (0 = off, exact).
+    deess_amount: bounded split-band vocal de-esser (0 = off, exact).
+    defizz_amount: bounded >=5kHz harmonic-preserving vocal de-fizz (0 = off, exact).
     air_db: boost-only high-shelf air lift; None = off (exact). The caller is
     responsible for any mastering-EQ coordination (UI mapping mirrors the
     mastering high-shelf cut so vocal air survives the final shelf).
@@ -340,16 +563,24 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
         raise ValueError("reference-vocals requires reference-mix")
     v = raw_v * scale
     comp_report = {"applied": False}
+    deess_report = {"applied": False}
+    defizz_report = {"applied": False}
     air_report = {"applied": False}
     extra_delta = None
     comp_amount = finite_range(comp_amount, "vocal-comp-amount", 0.0, 1.0)
+    deess_amount = finite_range(deess_amount, "vocal-deess-amount", 0.0, 1.0)
+    defizz_amount = finite_range(defizz_amount, "vocal-defizz-amount", 0.0, 1.0)
     air_value = 0.0 if air_db is None else finite_range(
         float(air_db), "vocal-air-db", 0.0, 6.0)
+    if defizz_amount > 0:
+        v = apply_vocal_defizz(v, sr, defizz_amount, report=defizz_report)
     if comp_amount > 0:
         v = apply_vocal_compression(v, sr, comp_amount, report=comp_report)
+    if deess_amount > 0:
+        v = apply_vocal_deesser(v, sr, deess_amount, report=deess_report)
     if air_value > 0:
         v = apply_vocal_air(v, sr, air_value, report=air_report)
-    if comp_amount > 0 or air_value > 0:
+    if comp_amount > 0 or deess_amount > 0 or defizz_amount > 0 or air_value > 0:
         extra_delta = v - raw_v * scale
     # The current vocal and accompaniment estimates must describe the same
     # signal. Otherwise the removed vocal energy is mistaken for accompaniment.
@@ -430,7 +661,7 @@ def apply_mid_prominence_control(in_mix, vocals, sr, user_gain_db=0.0,
     report = {"schema_version": 1, "mode": "auto_fixed_target" if auto_metrics is not None else ("mid_ratio" if metrics is not None else "legacy_stem_gain"),
               "target_offset_db": user, "fixed_baseline_db": target_db, "vocal_scale": scale,
               "bypass": user == 0 and target_db is None and extra_delta is None,
-              "comp": comp_report, "air": air_report,
+              "comp": comp_report, "deess": deess_report, "defizz": defizz_report, "air": air_report,
               "sample_rate": sr, "frames": len(mix), "channels": mix.shape[1],
               "evaluation_endpoint": "pre_master", "source_model": "vocals plus accompaniment residual estimate",
               "actual_gain_min_db": float(sample_db.min()), "actual_gain_max_db": float(sample_db.max()),
@@ -506,6 +737,10 @@ def main():
     ap.add_argument("--report-json", type=Path)
     ap.add_argument("--vocal-comp-amount", type=float, default=0.0,
                     help="bounded broadband vocal compression 0-1 (0=off, exact)")
+    ap.add_argument("--vocal-deess-amount", type=float, default=0.0,
+                    help="bounded split-band vocal de-esser 0-1 (0=off, exact)")
+    ap.add_argument("--vocal-defizz-amount", type=float, default=0.0,
+                    help="bounded >=5kHz harmonic-preserving vocal de-fizz 0-1 (0=off, exact)")
     ap.add_argument("--vocal-air-db", type=float, default=None,
                     help="boost-only high-shelf air lift dB (e.g. mirror of the "
                          "mastering 8k high-shelf cut); omit to disable")
@@ -527,18 +762,21 @@ def main():
             mix, vocals, sr, args.vocal_gain_db, ref_mix, ref_vocals,
             vocal_scale=args.vocal_scale, return_report=True, balance_target_db=args.balance_target_db,
             balance_mode=args.balance_mode, comp_amount=args.vocal_comp_amount,
-            air_db=args.vocal_air_db)
+            air_db=args.vocal_air_db, deess_amount=args.vocal_deess_amount,
+            defizz_amount=args.vocal_defizz_amount)
     except ValueError as exc:
         ap.error(str(exc))
     peak = float(np.abs(out).max())
     ceiling = 10 ** (-0.5 / 20)
     auto_mode = args.balance_target_db is not None or args.balance_mode == REFERENCE_MODE
     vocal_touched = args.vocal_gain_db != 0 or args.vocal_comp_amount > 0 or \
+        args.vocal_deess_amount > 0 or args.vocal_defizz_amount > 0 or \
         (args.vocal_air_db is not None and args.vocal_air_db > 0)
     scale = 1.0 if auto_mode else (min(1.0, ceiling / peak) if peak and vocal_touched else 1.0)
     out *= scale
     bypass = args.vocal_gain_db == 0 and not auto_mode and \
-        args.vocal_comp_amount == 0 and (args.vocal_air_db is None or args.vocal_air_db == 0)
+        args.vocal_comp_amount == 0 and args.vocal_deess_amount == 0 and \
+        args.vocal_defizz_amount == 0 and (args.vocal_air_db is None or args.vocal_air_db == 0)
     if bypass:
         if args.in_mix.resolve() != args.out.resolve():
             shutil.copyfile(args.in_mix, args.out)

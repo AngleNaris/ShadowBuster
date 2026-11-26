@@ -17,7 +17,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=97">
+<link rel="stylesheet" href="style.css?v=101">
 </head>
 <body>
 
@@ -38,6 +38,7 @@
     <nav class="topbar-nav" aria-label="视图切换">
       <span class="tab-glider" id="tab-glider" aria-hidden="true"></span>
       <button class="tab-btn" id="tab-process" type="button" aria-pressed="true">效果器</button>
+      <button class="tab-btn" id="tab-meter" type="button" aria-pressed="false">仪表</button>
       <button class="tab-btn" id="tab-report" type="button" aria-pressed="false">报告</button>
     </nav>
   </header>
@@ -289,6 +290,9 @@
           <span class="field-label">参考音频</span>
           <div class="file-card ref-card" id="ref-card" tabindex="0" role="button" aria-label="参考音频">
             <input class="path-input" id="ref-path" type="text" readonly placeholder="可选 · 拖入音频作音色基准" aria-label="参考音频路径">
+            <button class="ref-clear" id="btn-ref-clear" type="button" hidden title="清除参考音频" aria-label="清除参考音频">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7m0-7l-7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"/></svg>
+            </button>
           </div>
         </div>
         <div class="field">
@@ -310,12 +314,37 @@
             <button type="button" class="seg-btn" data-eq="Fusion" aria-pressed="false">融合</button>
           </div>
         </div>
-        <div class="field">
-          <span class="field-label">密度</span>
-          <div class="seg cols-3" role="group" aria-label="密度">
-            <button type="button" class="seg-btn" data-density="off" aria-pressed="false">关</button>
-            <button type="button" class="seg-btn" data-density="light" aria-pressed="true">轻</button>
-            <button type="button" class="seg-btn" data-density="standard" aria-pressed="false">标准</button>
+        <div class="field field-density" id="density-field">
+          <div class="field-head">
+            <span class="field-label" id="density-field-label">密度</span>
+            <button class="flip-toggle" id="btn-density-flip" type="button"
+                    aria-expanded="false" aria-controls="density-scope-face"
+                    title="翻转设置压缩范围">
+              <span class="flip-toggle-text" id="density-scope-badge">全局</span>
+              <svg class="flip-toggle-ic" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M12.5 5.5A5 5 0 0 0 3.7 4.2M3.5 2v2.6h2.6M3.5 10.5a5 5 0 0 0 8.8 1.3M12.5 14v-2.6H9.9"
+                      fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square"/>
+              </svg>
+            </button>
+          </div>
+          <div class="density-flip" id="density-flip">
+            <div class="density-flip-inner" id="density-flip-inner">
+              <div class="density-face density-face--front" id="density-mode-face">
+                <div class="seg cols-3" role="group" aria-label="密度">
+                  <button type="button" class="seg-btn" data-density="off" aria-pressed="false">关</button>
+                  <button type="button" class="seg-btn" data-density="light" aria-pressed="true">轻</button>
+                  <button type="button" class="seg-btn" data-density="standard" aria-pressed="false">标准</button>
+                </div>
+              </div>
+              <div class="density-face density-face--back" id="density-scope-face" aria-hidden="true" inert>
+                <div class="seg density-scope" role="group" aria-label="压缩范围">
+                  <button type="button" class="seg-btn" data-scope="global" aria-pressed="true" title="一台宽带压缩器处理全曲" aria-label="压缩范围：全局">全</button>
+                  <button type="button" class="seg-btn" data-scope="low" aria-pressed="false" title="120 Hz 以下，可多选" aria-label="压缩范围：低频">低</button>
+                  <button type="button" class="seg-btn" data-scope="mid" aria-pressed="false" title="120 Hz 至 2 kHz，可多选" aria-label="压缩范围：中频">中</button>
+                  <button type="button" class="seg-btn" data-scope="high" aria-pressed="false" title="2 kHz 以上，可多选" aria-label="压缩范围：高频">高</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="field">
@@ -344,6 +373,102 @@
   </section>
 
   </div><!-- /pane-process -->
+
+  <section class="pane-view" id="pane-meter" hidden aria-label="实时仪表">
+    <div class="pane-body">
+      <div class="mt-grid">
+        <figure class="rp-fig mt-fig mt-fig--rta">
+          <figcaption>
+            <span class="rp-cap-zh">实时频谱</span>
+            <span class="mt-tag" id="mt-source">待机</span>
+            <span class="mt-legend" aria-hidden="true">
+              <i class="mt-dot mt-dot--mid"></i>Mid
+              <i class="mt-dot mt-dot--side"></i>Side
+              <i class="mt-dot mt-dot--peak"></i>Peak
+            </span>
+            <button class="mt-reset" id="btn-meter-reset" type="button" title="重置峰值保持与短时峰值">重置峰值</button>
+          </figcaption>
+          <canvas id="mt-rta" aria-label="实时 Mid/Side 频谱分析仪"></canvas>
+        </figure>
+
+        <figure class="rp-fig mt-fig mt-fig--loud">
+          <figcaption>
+            <span class="rp-cap-zh">响度与峰值</span>
+            <span class="mt-sub">BS.1770 K 加权 · 监听前采样</span>
+          </figcaption>
+          <div class="mt-loud-body">
+            <div class="mt-readouts">
+              <div class="mt-readout mt-readout--primary">
+                <span class="mt-rk">瞬时响度 M</span>
+                <strong class="mt-rv" id="mt-val-m">—</strong>
+                <span class="mt-ru">LUFS · 400ms</span>
+              </div>
+              <div class="mt-readout">
+                <span class="mt-rk">短时响度 S</span>
+                <strong class="mt-rv" id="mt-val-s">—</strong>
+                <span class="mt-ru">LUFS · 3s</span>
+              </div>
+              <div class="mt-readout">
+                <span class="mt-rk">短时峰值</span>
+                <strong class="mt-rv" id="mt-val-smax">—</strong>
+                <span class="mt-ru">LUFS · Max</span>
+              </div>
+              <div class="mt-readout" id="mt-peak-box">
+                <span class="mt-rk">峰值保持</span>
+                <strong class="mt-rv" id="mt-val-peak">—</strong>
+                <span class="mt-ru">dBFS</span>
+              </div>
+              <div class="mt-readout">
+                <span class="mt-rk">瞬时动态</span>
+                <strong class="mt-rv" id="mt-val-crest">—</strong>
+                <span class="mt-ru">dB · Crest</span>
+              </div>
+            </div>
+            <canvas id="mt-bars" aria-label="L/R 峰值与 M/S 响度电平表"></canvas>
+          </div>
+        </figure>
+
+        <figure class="rp-fig mt-fig mt-fig--scope">
+          <figcaption>
+            <span class="rp-cap-zh">分频声场动态</span>
+            <span class="mt-sub" id="mt-val-width">宽度 —</span>
+            <span class="mt-sub mt-sub--right" id="mt-val-bal">平衡 居中</span>
+          </figcaption>
+          <div class="mt-scopes" id="mt-scope">
+            <div class="mt-scope-cell">
+              <div class="mt-scope-hd"><b>低频</b><i>20–250 Hz</i><span class="mt-scope-w" id="mt-scope-w-low">—</span></div>
+              <canvas id="mt-scope-low" aria-label="低频实时声场极坐标图"></canvas>
+            </div>
+            <div class="mt-scope-cell">
+              <div class="mt-scope-hd"><b>中频</b><i>250–4k Hz</i><span class="mt-scope-w" id="mt-scope-w-mid">—</span></div>
+              <canvas id="mt-scope-mid" aria-label="中频实时声场极坐标图"></canvas>
+            </div>
+            <div class="mt-scope-cell">
+              <div class="mt-scope-hd"><b>高频</b><i>4–20k Hz</i><span class="mt-scope-w" id="mt-scope-w-high">—</span></div>
+              <canvas id="mt-scope-high" aria-label="高频实时声场极坐标图"></canvas>
+            </div>
+          </div>
+          <div class="mt-bal-bar" aria-label="左右声道平衡">
+            <span class="mt-bal-end">L</span>
+            <div class="mt-bal-track">
+              <span class="mt-bal-mid"></span>
+              <span class="mt-bal-fill" id="mt-bal-fill"></span>
+              <span class="mt-bal-dot" id="mt-bal-dot"></span>
+            </div>
+            <span class="mt-bal-end">R</span>
+          </div>
+        </figure>
+
+        <figure class="rp-fig mt-fig mt-fig--history">
+          <figcaption>
+            <span class="rp-cap-zh">响度走势</span>
+            <span class="mt-sub">20s 响度轨迹 · M / S LUFS</span>
+          </figcaption>
+          <canvas id="mt-history" aria-label="20 秒实时响度走势图"></canvas>
+        </figure>
+      </div>
+    </div>
+  </section>
 
   <section class="pane-view" id="pane-report" hidden aria-label="处理报告">
     <div class="pane-body">
@@ -375,6 +500,10 @@
           </div>
         </figure>
       </div>
+      <figure class="rp-fig rp-fig--proc">
+        <figcaption><span class="rp-cap-zh">处理量化明细</span></figcaption>
+        <div class="rp-telemetry" id="rp-telemetry"></div>
+      </figure>
     </div>
   </section>
 
@@ -507,7 +636,7 @@
 
 </div>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script src="draft_audio.js?v=7"></script>
-<script src="app.js?v=93"></script>
+<script src="draft_audio.js?v=8"></script>
+<script src="app.js?v=98"></script>
 </body>
 </html>

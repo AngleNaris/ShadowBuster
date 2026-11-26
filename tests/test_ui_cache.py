@@ -170,5 +170,9 @@ def test_asset_versions_bumped_for_cache_busting():
     # + 报告页顶部信息行（文件名/格式/图例/分析时间）与四张摘要 KPI 卡整块移除；
     #   首卡与播放器的间距收到 12px，与卡片间距一致。
     # + 母带面板新增「密度」分段（EQ | 密度 | 响度 同排，面板保持两行）。
-    assert 'style.css?v=97' in HTML
-    assert 'app.js?v=93' in HTML
+    # + 密度/压缩范围原位翻转卡、报告页量化明细、实时 DAW 仪表 Tab。
+    # + 仪表视图三频极坐标声场动态（填充/描边/外侧点阵）与响度走势精简。
+    # + 母带参考音频支持一键清除（#btn-ref-clear）；响度走势图切歌/切版本不清空轨迹。
+    assert 'style.css?v=101' in HTML
+    assert 'draft_audio.js?v=8' in HTML
+    assert 'app.js?v=98' in HTML

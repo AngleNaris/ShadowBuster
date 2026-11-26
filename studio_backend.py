@@ -13,14 +13,16 @@ import threading
 import subprocess
 from pathlib import Path
 
+from apollo_scripts.low_freq_policy import low_frequency_authorization
 from apollo_scripts.stage_metadata import (SCHEMA_VERSION, audio_metadata,
                                            read_report, write_report)
 from apollo_scripts.vocal_config import REFERENCE_MODE
+from mastering import ALL_DENSITY_BANDS, normalize_density_scope
 from audio_metrics import (quality_report_path, quality_summary, read_quality_report,
                            write_quality_report)
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.15"
+APP_VERSION = "1.6.16"
 GPU_ENV_VERSION = "1.6.11"
 
 # ── 处理默认值单一来源（开发规格 v2 §5.2/§12.1，P0-03；ENG-01）──────────
@@ -49,6 +51,7 @@ DEFAULTS = {
     "loudness": "normal",
     # 母带密度压缩（mastering/density.py，ZL Compressor）：off | light | standard
     "density": "light",
+    "density_scope": ALL_DENSITY_BANDS,
     "eq_profile": "Neutral",
     "style_mode": "styled",
     "style_blend": 0.85,
@@ -758,13 +761,14 @@ def _run_reported(cmd, in_mix, out_wav, report_json, stage, cancel):
 def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, trans=0.3,
                bass_gain_db=0.0, auto_clarity=False, sidechain_amount=0.0,
                sidechain_attack_ms=5.0, sidechain_release_ms=150.0,
-               sidechain_max_duck_db=6.0, clarity_auth=None, progress=None,
-               cancel=None, report_json=None):
+               sidechain_max_duck_db=6.0, clarity_auth=None, sat_even=0.0,
+               progress=None, cancel=None, report_json=None):
     """贝斯增强。auto_clarity: opt-in 保守清晰度 EQ（--auto-clarity），
     默认关闭；关闭时命令行与旧行为完全一致（位级透传）。sidechain_amount 默认 0，
     仅在 drums.wav 存在且显式开启时对 Bass 低频应用有界 Kick 侧链。
     clarity_auth: auto-clarity 授权 0-1（低频旋钮派生，规格 §6.3/§6.4；
-    None=由 DSP 脚本按本阶段四个低频参数自算）。"""
+    None=由 DSP 脚本按本阶段四个低频参数自算）。
+    sat_even: 非对称 2 次偶次谐波温暖度 0-1（0=纯奇次 tanh）。"""
     if progress:
         progress(0.0, "贝斯增强")
     bass = stem_dir / "bass.wav"
@@ -778,6 +782,8 @@ def stage_bass(stem_dir, in_mix, out_wav, sub_db=6.0, sat=0.3, punch_db=2.0, tra
            "--sidechain-attack-ms", str(sidechain_attack_ms),
            "--sidechain-release-ms", str(sidechain_release_ms),
            "--sidechain-max-duck-db", str(sidechain_max_duck_db)]
+    if sat_even:
+        cmd += ["--sat-even", str(float(sat_even))]
     if clarity_auth is not None:
         cmd += ["--clarity-auth", str(float(clarity_auth))]
     drums = Path(stem_dir) / "drums.wav"
@@ -820,10 +826,12 @@ def stage_drums(stem_dir, rest_wav, out_wav, punch_db=2.0, trans=0.3,
 def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
                  reference_vocals=None, vocal_scale=1.0, progress=None, cancel=None,
                  balance_target_db=None, balance_mode=None, comp_amount=0.0,
-                 air_db=None):
+                 air_db=None, deess_amount=0.0, defizz_amount=0.0):
     """人声平衡；显式固定目标下 0 dB 仍执行自动平衡。
 
     comp_amount: 有界宽带人声压缩（0=关，命令行与旧行为一致）。
+    deess_amount: 有界分频人声去齿音（0=关，命令行与旧行为一致）。
+    defizz_amount: 有界 ≥5 kHz 谐波保护人声去嘶声/去电噪（0=关，命令行与旧行为一致）。
     air_db: 人声空气高架（只加不削）；None=关。UI 映射按母带 8kHz 高架衰减
     （SOREN_HIGH_SHELF_MID_DB）镜像补偿，保证人声空气感穿过母带不丢失。"""
     if progress:
@@ -831,7 +839,7 @@ def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
     stem_dir = Path(stem_dir)
     vocals = stem_dir / "vocals.wav"
     if balance_mode is None and balance_target_db is None and gain_db == 0 \
-            and not comp_amount and not air_db:
+            and not comp_amount and not deess_amount and not defizz_amount and not air_db:
         shutil.copyfile(in_mix, out_wav)
     elif not vocals.exists():
         shutil.copyfile(in_mix, out_wav)
@@ -842,6 +850,10 @@ def stage_vocals(stem_dir, in_mix, out_wav, gain_db=0.0, reference_mix=None,
         cmd += ["--vocal-scale", str(vocal_scale)]
         if comp_amount:
             cmd += ["--vocal-comp-amount", str(comp_amount)]
+        if deess_amount:
+            cmd += ["--vocal-deess-amount", str(deess_amount)]
+        if defizz_amount:
+            cmd += ["--vocal-defizz-amount", str(defizz_amount)]
         if air_db is not None:
             cmd += ["--vocal-air-db", str(air_db)]
         if balance_mode is not None:
@@ -1188,7 +1200,8 @@ def _emit_mastering_log(report_cb, mastered_path):
 def stage_mastering(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
                     *, reference=None, match_source=None, strength=.85,
                     eq_profile="Neutral", lowpass_cutoff=None, space_wet=0.0, width_db=0.0,
-                    density="light", section_source=None, drums_source=None):
+                    density="light", section_source=None, drums_source=None, density_scope=ALL_DENSITY_BANDS,
+                    resonance_amount=0.0, low_side_amount=None, low_side_hz=None):
     """Independent finalizer and optional protected reference matching."""
     from mastering import LOUDNESS_TARGETS
     if loudness not in LOUDNESS_TARGETS:
@@ -1199,7 +1212,8 @@ def stage_mastering(input_wav, out_wav, loudness="normal", progress=None, cancel
     env = os.environ.copy()
     env["PYTHONPATH"] = str(MASTERING_ROOT)
     cmd = [_mastering_python(), "-m", "mastering", str(Path(input_wav).resolve()),
-           str(Path(out_wav).resolve()), "--loudness", loudness, "--density", density]
+           str(Path(out_wav).resolve()), "--loudness", loudness, "--density", density,
+           "--density-scope", density_scope]
     if reference:
         cmd += ["--reference", str(Path(reference).resolve()), "--strength", str(strength)]
         if match_source:
@@ -1209,14 +1223,20 @@ def stage_mastering(input_wav, out_wav, loudness="normal", progress=None, cancel
         env["SB_FFMPEG"] = ffmpeg_bin()
         if section_source is not None:
             cmd += ["--section-source", str(Path(section_source).resolve())]
-        if density != "off" and drums_source is not None:
-            cmd += ["--drums-source", str(Path(drums_source).resolve())]
+    if density != "off" and density_scope != "none" and drums_source is not None:
+        cmd += ["--drums-source", str(Path(drums_source).resolve())]
     if eq_profile != "Neutral":
         cmd += ["--eq-profile", eq_profile]
     if lowpass_cutoff is not None:
         cmd += ["--lowpass-cutoff", str(lowpass_cutoff)]
     if space_wet > 0 and width_db > 0:
         cmd += ["--space-wet", str(space_wet), "--width-db", str(width_db)]
+    if resonance_amount:
+        cmd += ["--resonance-amount", str(float(resonance_amount))]
+    if low_side_amount is not None:
+        cmd += ["--low-side-amount", str(float(low_side_amount))]
+    if low_side_hz is not None:
+        cmd += ["--low-side-hz", str(float(low_side_hz))]
     _run_stream(cmd, MASTERING_ROOT, env=env, cancel=cancel,
                 on_progress=(lambda f: progress(f * .999, label)) if progress else None)
     if progress:
@@ -1233,12 +1253,13 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
                 upstream_delta_path=None, upstream_delta_hash=None,
                 style_blend=0.85, match_source=None,
                 final_space_wet=0.0, final_width_db=0.0, density="light", section_source=None,
-                drums_source=None):
+                drums_source=None, density_scope=ALL_DENSITY_BANDS,
+                resonance_amount=0.0, low_side_amount=None, low_side_hz=None):
     if style_mode not in ("styled", "off", "eq_only"):
         raise ValueError(f"Unknown Soren style mode: {style_mode}")
     reference_active = style_mode == "styled" and bool(reference)
     if style_mode in ("off", "eq_only") or reference_active:
-        options = {"density": density}
+        options = {"density": density, "density_scope": density_scope}
         if reference_active:
             options.update(reference=reference, match_source=match_source, strength=style_blend)
         if section_source is not None:
@@ -1252,6 +1273,12 @@ def stage_soren(input_wav, out_wav, genre="Pop", loudness="normal",
             options["lowpass_cutoff"] = lowpass_cutoff
         if final_space_wet > 0 and final_width_db > 0:
             options.update(space_wet=final_space_wet, width_db=final_width_db)
+        if resonance_amount:
+            options["resonance_amount"] = resonance_amount
+        if low_side_amount is not None:
+            options["low_side_amount"] = low_side_amount
+        if low_side_hz is not None:
+            options["low_side_hz"] = low_side_hz
         return stage_mastering(input_wav, out_wav, loudness, progress, cancel, **options)
     if progress:
         progress(0.0, f"Soren 母带（{genre or '自定义参考'} / {loudness} / {eq_profile}）")
@@ -1488,7 +1515,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                  bass_gain_db=0.0, bass_auto_clarity=False, sidechain_amount=0.0,
                  sidechain_attack_ms=5.0, sidechain_release_ms=150.0,
                  sidechain_max_duck_db=6.0, clarity_auth=None, vocal_gain_db=None,
-                 genre=None, loudness=None, density=None,
+                 genre=None, loudness=None, density=None, density_scope=None,
                  eq_profile=None, reference=None, quality=None, guidance=None,
                  device="cuda", progress=None, cancel=None, work_dir=None,
                  lowpass_cutoff=None, space_wet=None, space_denoise=None,
@@ -1502,7 +1529,9 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                  guitar_presence_db=0.0, guitar_harsh_cut_db=0.0, guitar_width_db=0.0,
                  synth_gain_db=0.0, synth_mud_cut_db=0.0, synth_presence_db=0.0,
                  synth_harsh_cut_db=0.0, synth_width_db=0.0,
-                 vocal_comp_amount=0.0, vocal_air_db=None):
+                 vocal_comp_amount=0.0, vocal_deess_amount=0.0, vocal_defizz_amount=0.0,
+                 vocal_air_db=None, bass_sat_even=0.0, resonance_amount=0.0,
+                 low_side_amount=None, low_side_hz=None):
     # 处理默认值一律取 DEFAULTS（单一来源，ENG-01）：不传参 = 产品默认，
     # 与 GUI/CLI 解析结果一致；显式传参（含 0）不受影响。
     sub_db = DEFAULTS["sub_db"] if sub_db is None else sub_db
@@ -1513,6 +1542,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
     genre = DEFAULTS["genre"] if genre is None else genre
     loudness = DEFAULTS["loudness"] if loudness is None else loudness
     density = DEFAULTS["density"] if density is None else density
+    density_scope = normalize_density_scope(DEFAULTS["density_scope"] if density_scope is None else density_scope)
     eq_profile = DEFAULTS["eq_profile"] if eq_profile is None else eq_profile
     quality = DEFAULTS["quality"] if quality is None else quality
     guidance = DEFAULTS["guidance"] if guidance is None else guidance
@@ -1807,6 +1837,14 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             # 先清掉上次失败运行可能遗留的报告：阶段重算会重写、缓存命中会按
             # 哈希恢复；透传分支不产报告时保持缺失，诊断绝不引用过期数据。
             bass_report.unlink(missing_ok=True)
+            # CLI/直接调用方启用 bass_auto_clarity 但未显式传 clarity_auth 时，
+            # 须按完整四颗低频旋钮（含鼓 punch/trans）派生授权，避免 stage_bass 因
+            # punch_db=0/trans=0 误算为低授权（与 main.py GUI 映射口径一致）。
+            effective_clarity_auth = (
+                low_frequency_authorization(sub_db, punch_db, trans, sat)
+                if bass_auto_clarity and clarity_auth is None
+                else clarity_auth
+            )
             bass_scale = run_bass(stem_dir, lew_src, bass_out, sub_db=sub_db, sat=sat,
                        punch_db=0.0, trans=0.0, bass_gain_db=bass_gain_db,
                        auto_clarity=bass_auto_clarity,
@@ -1814,7 +1852,8 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                        sidechain_attack_ms=sidechain_attack_ms,
                        sidechain_release_ms=sidechain_release_ms,
                        sidechain_max_duck_db=sidechain_max_duck_db,
-                       clarity_auth=clarity_auth,
+                       clarity_auth=effective_clarity_auth,
+                       sat_even=bass_sat_even,
                        progress=cb(2), cancel=cancel, report_json=bass_report)
             extra = _stage_report_extra(bass_report, "bass")
             if extra is not None:
@@ -1910,7 +1949,8 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
                          reference_mix=original_mix,
                          reference_vocals=original_vocals,
                          vocal_scale=vocal_scale,
-                         comp_amount=vocal_comp_amount, air_db=vocal_air_db,
+                         comp_amount=vocal_comp_amount, deess_amount=vocal_deess_amount,
+                         defizz_amount=vocal_defizz_amount, air_db=vocal_air_db,
                          progress=cb(4, 0.5, 0.5), cancel=cancel)
         if "soren" in bypass:
             shutil.copyfile(vocal_out, mastered)
@@ -1946,14 +1986,22 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             mastering_options = {}
             if reference_active:
                 mastering_options["match_source"] = input_wav
-            if independent_mastering and loudness == "loud":
-                mastering_options["section_source"] = input_wav
+            if independent_mastering:
+                if loudness == "loud":
+                    mastering_options["section_source"] = input_wav
                 drums_source = stem_dir / "drums.wav"
-                if density != "off" and "drums" not in bypass and drums_source.is_file():
+                if density != "off" and density_scope != "none" and "drums" not in bypass and drums_source.is_file():
                     mastering_options["drums_source"] = drums_source
+                if resonance_amount:
+                    mastering_options["resonance_amount"] = resonance_amount
+                if low_side_amount is not None:
+                    mastering_options["low_side_amount"] = low_side_amount
+                if low_side_hz is not None:
+                    mastering_options["low_side_hz"] = low_side_hz
             # Accompaniment width is already in the repaired working stems.
             # Shared reference tone may follow; never widen the whole mix again.
             run_soren(premaster, mastered, genre=genre, loudness=loudness, density=density,
+                        density_scope=density_scope,
                         eq_profile=eq_profile, reference=reference,
                         lowpass_cutoff=lowpass_cutoff, progress=cb(5, 0.08, 0.92),
                         cancel=cancel, style_mode=style_mode,
@@ -1975,6 +2023,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             final_report.unlink(missing_ok=True)
         quality_params = {
             "genre": genre, "loudness": loudness, "density": density, "eq_profile": eq_profile,
+            "density_scope": density_scope,
             "style_mode": style_mode, "style_blend": style_blend,
             "bypass": sorted(bypass), "quality_level": quality, "guidance": guidance,
             # 请求值（母带旁路时为 0 也不会执行本阶段，实际响应见 stages.hygiene）

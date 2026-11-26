@@ -289,6 +289,7 @@ class Player extends AudioWorkletProcessor {
     }
     original(value) { if(this.node)this.node.port.postMessage({type:'original',value}); }
     delta(value) { if(this.node)this.node.port.postMessage({type:'delta',value}); }
+    getMeterSource() { return this.loaded && this.context && this.node ? {context:this.context,node:this.node} : null; }
     stop() { if(this.node)this.play(false);else this.playing=false; }
   }
   root.DraftDSP=DraftDSP; root.DraftPlayer=DraftPlayer;
