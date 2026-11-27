@@ -22,7 +22,7 @@ from audio_metrics import (quality_report_path, quality_summary, read_quality_re
                            write_quality_report)
 # 应用版本号（单一来源）：设置界面显示 / 打包与安装器读取。
 # 与 packaging/installer.iss 的 MyAppVersion 保持一致（tests/test_app_version.py 有同步校验）。
-APP_VERSION = "1.6.16"
+APP_VERSION = "1.6.17"
 GPU_ENV_VERSION = "1.6.11"
 
 # ── 处理默认值单一来源（开发规格 v2 §5.2/§12.1，P0-03；ENG-01）──────────
@@ -1987,8 +1987,7 @@ def run_pipeline(input_wav, output_dir, *, sub_db=None, sat=None, punch_db=None,
             if reference_active:
                 mastering_options["match_source"] = input_wav
             if independent_mastering:
-                if loudness == "loud":
-                    mastering_options["section_source"] = input_wav
+                mastering_options["section_source"] = input_wav
                 drums_source = stem_dir / "drums.wav"
                 if density != "off" and density_scope != "none" and "drums" not in bypass and drums_source.is_file():
                     mastering_options["drums_source"] = drums_source

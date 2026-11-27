@@ -288,7 +288,7 @@ def test_off_pipeline_cache_and_report_without_soren(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "APOLLO_DIR", tmp_path / "no-models")
     calls = []
     def local_stage(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
-                    density="light", density_scope="low,mid,high"):
+                    density="light", density_scope="low,mid,high", section_source=None):
         calls.append(density_scope)
         return master_file(input_wav, out_wav, loudness)
     monkeypatch.setattr(backend, "stage_mastering", local_stage)
@@ -372,7 +372,7 @@ def test_master_file_refuses_source_overwrite(tmp_path):
 def test_pipeline_resamples_before_independent_mastering(tmp_path, monkeypatch, rate):
     monkeypatch.setattr(backend, "_ensure_dev_runtime", lambda: pytest.fail("Soren requested"))
     def local_stage(input_wav, out_wav, loudness="normal", progress=None, cancel=None,
-                    density="light", density_scope="low,mid,high"):
+                    density="light", density_scope="low,mid,high", section_source=None):
         return master_file(input_wav, out_wav, loudness)
     monkeypatch.setattr(backend, "stage_mastering", local_stage)
     src = tmp_path / "input.wav"
@@ -422,3 +422,30 @@ def test_finalize_with_soft_clip_reduces_limiter_peak_gr_on_spiky_audio():
     _, s1 = finalize(spiky, SR, "normal", soft_clip_db=1.5)
     assert s1["true_peak_dbtp"] <= TRUE_PEAK_CEILING_DB
     assert s1["actual_lufs"] > s0["actual_lufs"] + 0.2
+
+
+def test_unified_zl_limiter_reports_telemetry_and_budgets_overload():
+    pytest.importorskip("pedalboard")
+    if not PLUGIN_PATH.exists():
+        pytest.skip("ZL Limiter VST3 is required")
+    from mastering.loud import ZL_TIER_PROFILES, finalize_zl
+
+    # All tiers report unified ZL Limiter telemetry + soft-clip metadata.
+    for mode in ("soft", "dynamic", "normal", "loud"):
+        y, st = finalize_zl(music(2.0), SR, mode)
+        assert y.shape == (SR * 2, 2) and np.isfinite(y).all()
+        lim = st["limiter"]
+        assert lim["engine"] == "ZL Limiter 0.0.1"
+        assert lim["lookahead_ms"] >= 6.0 and lim["attack_ms"] <= 25.0
+        assert "max_gain_reduction_db" in lim and "gain_reduction_p95_db" in lim
+        assert "soft_clip" in lim
+
+    # Extreme spiky/high-crest signal on loud tier must be protected by GR budget,
+    # never slamming blindly to +24 dB drive.
+    extreme = music(2.0) * 0.02
+    extreme[::8820] += 0.9
+    _, st_ext = finalize_zl(extreme, SR, "loud")
+    prof = ZL_TIER_PROFILES["loud"]
+    assert st_ext["dynamic_budget_limited"]
+    assert st_ext["limiter"]["gain_reduction_p95_db"] <= prof["gr_p95_budget_db"] + 1e-6
+    assert st_ext["limiter"]["max_gain_reduction_db"] <= prof["gr_peak_budget_db"] + 1e-6

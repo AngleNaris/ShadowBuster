@@ -1,6 +1,6 @@
 """ShadowBuster mastering. Safe to import from the lightweight desktop shell."""
 
-ENGINE_VERSION = "shadowbuster-mastering-v10"
+ENGINE_VERSION = "shadowbuster-mastering-v11"
 ALL_DENSITY_BANDS = "low,mid,high"
 
 

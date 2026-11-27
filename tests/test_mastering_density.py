@@ -101,6 +101,22 @@ def test_section_following_keeps_contrast_a_fixed_threshold_loses(monkeypatch):
 
 
 @needs_plugin
+def test_partial_band_compression_preserves_tonal_balance_without_midhigh_lift():
+    """Compressing only low (<120 Hz) must tighten low-end dynamics without sinking
+    low energy relative to mid/high (which previously caused a +4..6 dB mid-high lift)."""
+    x = pulsing_sections()
+    y, report = densify(x, "standard", sr=SR, scope="low")
+    assert report["applied"] and list(report["bands"]) == ["low"]
+    assert report["bands"]["low"]["makeup_gain_db"] > 0.5
+    in_bands = split_bands(x, SR)
+    out_bands = split_bands(y, SR)
+    in_low_vs_rest = 10 * np.log10(np.mean(in_bands[0] ** 2) / np.mean((x - in_bands[0]) ** 2))
+    out_low_vs_rest = 10 * np.log10(np.mean(out_bands[0] ** 2) / np.mean((y - out_bands[0]) ** 2))
+    assert abs(out_low_vs_rest - in_low_vs_rest) < 0.25
+    assert in_section_spread(out_bands[0]) < in_section_spread(in_bands[0]) - 0.5
+
+
+@needs_plugin
 def test_is_deterministic():
     x = pulsing_sections()
     np.testing.assert_array_equal(densify(x, "light")[0], densify(x, "light")[0])

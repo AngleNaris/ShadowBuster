@@ -31,8 +31,8 @@ def main():
                         help="Disable the content-addressed reference tonal target cache.")
     parser.add_argument("--density-scope", type=normalize_density_scope, default=ALL_DENSITY_BANDS,
                         help="global, none or a comma-separated selection of low,mid,high")
-    parser.add_argument("--soft-clip-db", type=float, default=DEFAULT_SOFT_CLIP_DB,
-                        help="Bounded 4x oversampled pre-limiter soft clip depth in dB (0=off).")
+    parser.add_argument("--soft-clip-db", type=float, default=None,
+                        help="Bounded 4x oversampled pre-limiter soft clip depth in dB (0=off; omit for tier default).")
     parser.add_argument("--resonance-amount", type=float, default=0.0,
                         help="Bounded dynamic resonance suppression 0-1 (0=off).")
     parser.add_argument("--low-side-amount", type=float, default=DEFAULT_LOW_SIDE_AMOUNT,

@@ -2,9 +2,10 @@
 
 Bands are split by complementary subtraction of zero-phase low-passes (they sum back
 to the input exactly); each band runs one ZL Compressor instance (Optical style,
-AGPL-3.0, fetched by tools/fetch_plugins.py) through pedalboard. There is no
-per-band makeup: unequal reduction tilts the tone the way the user's reference
-Audition chain did, and the finalizer restores loudness.
+AGPL-3.0, fetched by tools/fetch_plugins.py) through pedalboard. Each compressed
+band receives RMS-matched automatic makeup gain so compressing a subset of bands
+(e.g. scope="low") tightens that band's dynamics without sinking it relative to
+uncompressed bands and tilting the rest of the spectrum up.
 
 Band settings come from the user's Audition "流行音乐大师" variant (2026-11-05
 listening: Optical preferred over Classic/Clean). Its thresholds assume a
@@ -113,12 +114,23 @@ def densify(audio, mode="light", sr=44100, input_lufs=None, *, scope=ALL_DENSITY
             plugin.threshold_db_threshold_db = float(np.clip(threshold + shift + follow[index], -100, 0))
             chunk = np.ascontiguousarray(band[start:start + BLOCK].T, dtype=np.float32)
             chunks.append(plugin.process(chunk, sr, reset=index == 0))
-        out = np.concatenate(chunks, axis=1).T.astype(np.float64)
+        raw_out = np.concatenate(chunks, axis=1).T.astype(np.float64)
+        reduction = _reduction_db(band, raw_out, sr)
+        # RMS-matched per-band makeup: keeps tonal balance invariant when only a
+        # subset of bands (e.g. low-only) is compressed while preserving dynamic tightening.
+        p_in = float(np.mean(band * band))
+        p_out = float(np.mean(raw_out * raw_out))
+        if p_out > 1e-20 and p_in > p_out:
+            makeup_db = min(12.0, 10.0 * math.log10(p_in / p_out))
+            out = raw_out * (10.0 ** (makeup_db / 20.0))
+        else:
+            makeup_db = 0.0
+            out = raw_out
         result += out
-        reduction = _reduction_db(band, out, sr)
         active = reduction[reduction > .1]
         bands[name] = {"threshold_db": threshold + shift, "ratio": ratio,
                        "attack_ms": attack, "release_ms": release,
+                       "makeup_gain_db": round(makeup_db, 3),
                        "active_fraction": float(len(active) / max(len(reduction), 1)),
                        "gain_reduction_p50_active_db": float(np.median(active)) if len(active) else 0.0,
                        "gain_reduction_p95_db": float(np.percentile(reduction, 95)) if len(reduction) else 0.0}

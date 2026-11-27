@@ -12,7 +12,7 @@ from .resonance import tame_resonances
 from .soundstage import DEFAULT_LOW_SIDE_AMOUNT, DEFAULT_LOW_SIDE_HZ, tighten_low_side, widen
 from .density import densify
 from .drum_attack import RESTORE_FRACTION, detect_attacks, restore_attacks
-from .loud import finalize_loud, section_profile
+from .loud import finalize_zl, section_profile, zl_limiter_available
 from .tone import apply_eq
 
 
@@ -20,7 +20,7 @@ def master_file(input_path, output_path, loudness="normal", *, reference=None,
                 match_source=None, strength=.85, eq_profile="Neutral", lowpass=None,
                 space_wet=0.0, width_db=0.0, density="light", reference_cache=None,
                 reference_cache_artifact=None, section_source=None, drums_source=None,
-                density_scope=ALL_DENSITY_BANDS, soft_clip_db=DEFAULT_SOFT_CLIP_DB,
+                density_scope=ALL_DENSITY_BANDS, soft_clip_db=None,
                 resonance_amount=0.0, low_side_amount=DEFAULT_LOW_SIDE_AMOUNT,
                 low_side_hz=DEFAULT_LOW_SIDE_HZ):
     if Path(input_path).resolve() == Path(output_path).resolve():
@@ -49,7 +49,8 @@ def master_file(input_path, output_path, loudness="normal", *, reference=None,
     elif reference:
         ref_report["reason"] = "zero_strength"
     print("MASTERING_PROGRESS 35", flush=True)
-    sections = section_profile(audio, sr, section_source) if loudness == "loud" else None
+    use_zl = loudness == "loud" or zl_limiter_available()
+    sections = section_profile(audio, sr, section_source) if use_zl else None
     attacks = None
     attack_report = {"applied": False, "reason": "no_drums_source"}
     if density != "off" and density_scope != "none" and drums_source is not None:
@@ -74,10 +75,11 @@ def master_file(input_path, output_path, loudness="normal", *, reference=None,
             "applied": False, "reason": "density_inactive"}
         if report["applied"]:
             compressed = restore_attacks(tamed, compressed, sr, attacks)
-        if sections is not None:
-            result, stats = finalize_loud(compressed, sr, sections)
+        if use_zl:
+            result, stats = finalize_zl(compressed, sr, loudness, sections, soft_clip_db=soft_clip_db)
         else:
-            result, stats = finalize(compressed, sr, loudness, soft_clip_db=soft_clip_db)
+            sc = DEFAULT_SOFT_CLIP_DB if soft_clip_db is None else soft_clip_db
+            result, stats = finalize(compressed, sr, loudness, soft_clip_db=sc)
         stats["drum_attack"] = report
         stats["resonance"] = resonance_report
         stats["low_side"] = low_side_report

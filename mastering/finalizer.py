@@ -304,7 +304,8 @@ def master_file(input_path, output_path, loudness="normal"):
     """Write PCM24 with TPDF dither exactly once, then verify the actual file."""
     if Path(input_path).resolve() == Path(output_path).resolve():
         raise ValueError("Input and output must be different files")
-    if loudness == "loud":
+    from .loud import zl_limiter_available
+    if loudness == "loud" or zl_limiter_available():
         from .pipeline import master_file as master
         return master(input_path, output_path, loudness, density="off")
     audio, sr = sf.read(input_path, dtype="float64", always_2d=True)
